@@ -132,7 +132,7 @@ impl Route {
             ground.push(h);
             distances.push(distance);
         }
-        let profile = vertical_profile(&ground, &distances);
+        let profile = vertical_profile(&ground, &distances)?;
         for (p, z) in points.iter_mut().zip(profile) {
             p.z = z;
         }
@@ -145,7 +145,7 @@ impl Route {
         let straight_distances = (0..straight_ground.len())
             .map(|i| i as f64 * SAMPLE_STEP)
             .collect::<Vec<_>>();
-        let straight_points = vertical_profile(&straight_ground, &straight_distances)
+        let straight_points = vertical_profile(&straight_ground, &straight_distances)?
             .into_iter()
             .enumerate()
             .map(|(i, h)| DVec3::new(0.0, i as f64 * SAMPLE_STEP, h))
@@ -188,7 +188,7 @@ fn column_x(column: usize) -> f64 {
     (column as f64 - (COLUMNS / 2) as f64) * COLUMN_STEP
 }
 
-fn vertical_profile(ground: &[f64], distances: &[f64]) -> Vec<f64> {
+fn vertical_profile(ground: &[f64], distances: &[f64]) -> Option<Vec<f64>> {
     let mut heights = ground
         .iter()
         .map(|h| h + DECK_CLEARANCE)
@@ -230,7 +230,11 @@ fn vertical_profile(ground: &[f64], distances: &[f64]) -> Vec<f64> {
         heights[i] =
             heights[i].min(heights[i + 1] + LOCAL_GRADE * (distances[i + 1] - distances[i]));
     }
-    heights
+    let caps: Vec<_> = ground.iter().map(|g| g + 32.0).collect();
+    let links: Vec<_> = (1..heights.len())
+        .map(|i| (i - 1, i, distances[i] - distances[i - 1], LOCAL_GRADE))
+        .collect();
+    crate::road_vertical::smooth(&mut heights, &caps, &[], &links, || false).then_some(heights)
 }
 
 fn estimated_cut_volume(ground: &[f64], points: &[DVec3], distances: &[f64]) -> f64 {
@@ -251,15 +255,51 @@ fn estimated_cut_volume(ground: &[f64], points: &[DVec3], distances: &[f64]) -> 
 mod tests {
     use super::*;
     #[test]
+    fn vertical_profile_limits_grade_changes_over_a_sharp_mountain_ridge() {
+        let distances: Vec<_> = (0..301).map(|i| i as f64 * SAMPLE_STEP).collect();
+        let ground: Vec<_> = distances
+            .iter()
+            .map(|d| 1800.0 + (400.0 - (d - 1500.0).abs() * 0.4).max(0.0))
+            .collect();
+        let heights = vertical_profile(&ground, &distances).unwrap();
+        for h in heights.windows(3) {
+            assert!(
+                (h[2] - 2.0 * h[1] + h[0]).abs() / SAMPLE_STEP.powi(2)
+                    <= crate::road_vertical::MAX_GRADE_CHANGE_PER_METER
+            );
+        }
+        assert!(
+            heights
+                .windows(2)
+                .all(|h| (h[1] - h[0]).abs() / SAMPLE_STEP <= MAX_GRADE)
+        );
+        assert!(heights.iter().zip(ground).all(|(h, g)| *h <= g + 32.0));
+    }
+
+    #[test]
     fn alpine_grade_limit_follows_twenty_percent_ground_without_deep_cuts() {
         assert_eq!(MAX_GRADE, 0.25);
         let route = Route::plan(|p| Some(1800.0 + 0.20 * p.y)).unwrap();
         // The end curves deliberately flatten; test the sustained climb.
-        assert!(route.ground.iter().zip(&route.points).skip(100)
-            .take(route.ground.len() - 200).all(|(g, p)| g - p.z < 1.0));
-        assert!(route.points.windows(2).any(|p| {
-            (p[1].z - p[0].z).abs() / (p[1] - p[0]).truncate().length() > 0.19
-        }));
+        assert!(
+            route
+                .ground
+                .iter()
+                .zip(&route.points)
+                .skip(100)
+                .take(route.ground.len() - 200)
+                .all(|(g, p)| g - p.z < 1.0)
+        );
+        // The horizontal planner may meander on steep ground. Check that the
+        // vertical solver itself still permits a sustained 20% straight climb.
+        let distances: Vec<_> = (0..3001).map(|i| i as f64 * SAMPLE_STEP).collect();
+        let ground: Vec<_> = distances.iter().map(|d| 1800.0 + 0.20 * d).collect();
+        let heights = vertical_profile(&ground, &distances).unwrap();
+        assert!(
+            heights
+                .windows(2)
+                .any(|h| (h[1] - h[0]) / SAMPLE_STEP > 0.19)
+        );
     }
 
     #[test]

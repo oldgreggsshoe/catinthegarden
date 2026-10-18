@@ -10,7 +10,53 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current work, 18 October: live planet-wide village roads and forest clearance.**
+**Current follow-up, 18 October: smoother road-gradient transitions.**
+The 25% maximum remains unchanged. Both the network and old pilot now use
+generation-time constrained vertical profiles, with maximum station grade
+change 0.005/m (at most 10 percentage points per 20m; 25% to flat needs at least
+50m, usually longer after broad filtering). Flat junction mouths follow the
+5m pad plus acute-angle overlap, capped at their former 20m extent. This avoids
+artificially spending a whole 20m station flat at every bend. Exact terminal/
+gateway elevations, shared-node connectivity and pier/roof caps are retained;
+searched interior elevations may move to form curves. A bounded, cancellable
+worker solve feeds the same cached geometry, excavation, trees and collision.
+No per-frame solve, shader/presentation change or new dependency. The initial
+500m-transition idea was infeasible at existing short junction/access routes;
+do not claim that setting shipped.
+
+Validation: 712 app tests pass, the same six unrelated failures remain, 56 are
+ignored (final serial run). All five production Vulkan road tests pass. All
+four real worker/startup checks pass: nine-region sets retain all244 village,
+all15 mountain and all76 undersea-site villages. The new acute-mouth, unequal
+station, exact-anchor/cap, sharp-ridge and cancellation regressions pass. Logs:
+`/tmp/stuff-road-curves-{full-serial-final,gpu-final,assets-final-adaptive}.log`.
+An earlier concurrent run hit the unmodified FFT timing assertion; it passes
+in the idle serial run. Release/check builds pass.
+
+Opened the village overview, undersea walk and legacy pilot captures. The
+undersea walk goes straight into a bend wall by its last frame, as before;
+it does not follow a driving path and does not prove vehicle-ready junctions.
+The first mountain replay was interrupted by Escape before its final capture;
+its complete rerun `road_network_walk/1792364327-1033561` passes and capture003 was opened. Current same-binary village overview pair,
+13 steady samples each: 56.304ms visible /39.670ms roads+cuts hidden, so road
+rendering still costs ~16.63ms. This is not an FPS-improvement claim, nor a
+matched before/after comparison with the older camera pose. Evidence:
+`test-runs/road-vertical-curves-validation.json`.
+
+**Next user requirement: vehicle-drivable horizontal alignments and proper
+junctions. Not implemented in this vertical pass.** Current joined strips,
+round pads and intersecting bore liners remain provisional. Plan continuous
+signed-curvature-limited bends, starting around a 100m main-road radius with
+slower village approaches; shared gateway headings/cross-sections as well as
+positions; a unified rounded T/Y/junction outline and surface with properly
+terminated markings; a single open chamber for tunnel junctions; swept-path
+and parapet/support clearance checks. Engineer/collision-test the final curved
+alignment BEFORE producing decks, cuts, bores and forest exclusion, and recheck
+all grade/cover constraints. Cache/chunk the geometry; do not add a per-frame
+curve solve or one draw call per junction. Confirm design speeds/reference
+vehicle dimensions during that pass. Preserve presentation/jitter policy.
+
+**Previous work: live planet-wide village roads and forest clearance.**
 The user confirmed the default jitter workaround works ("all good"). Preserve
 synchronized presentation with CPU/GPU overlap; no new presentation change is
 part of this network work. The earlier recurrence logged `sync_present:false`;

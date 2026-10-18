@@ -14,6 +14,64 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Vertical-curve follow-up, 18 October
+
+The user's **25% maximum grade is unchanged**. `road_vertical.rs` additionally
+limits the difference in signed grades between neighbouring segment midpoints
+to **0.005 per metre**, using their actual, possibly unequal station spacing.
+This is at most 10 percentage points over 20m, rather than a crest flipping
+from +25% to -25% in one station. Flat-to-25% needs at least 50m; broad filtering
+normally gives gentler transitions. The original 0.0005/m proposal could not
+retain the existing short approaches/junctions; it is not the shipped limit.
+
+The bounded solver runs only during generation, for the network and legacy
+pilot. Flat mouths are collapsed into one height variable; terminal/gateway
+anchors stay exact, and grade, pier and sampled roof-cover caps remain hard
+constraints. Filtered heights are projected onto these constraints together
+with the station-curvature constraints, not smoothed and then clipped back
+into sharp ramps. Final physical grade/curvature are checked and curvature is
+included in the survey JSON. Rejection/budget exhaustion stays explicit.
+
+Only actual flat mouths get extra apron stations. Their length is the 5m pad
+radius plus any acute-angle road-rectangle overlap, no greater than the old
+20m extent. Ordinary straight lattice nodes retain the usual <=20m spacing.
+Searched interior elevations now seed the profile rather than pinning every
+10m-quantized lattice height; all incident branches still share one node
+height. Meshes, excavation, forest clearing and walking use the resulting
+stations together. Cancellation is checked during filtering/projection;
+source identity includes the curve code. No new render pass, per-frame curve
+work, shader dependency or presentation change is introduced.
+
+Validation: **712 pass /same six unrelated failures /56 ignored** in the final
+serial app suite; all five production Vulkan road tests pass; all four real
+startup/residency checks retain all244 village,15 mountain and76 undersea-site
+villages. The final village set has22,968 spans/853,380 vertices; its initial
+39-village plan has4,093 spans/428,070 vertices. Maximum station spacing remains
+20m, with extra points only at real mouths. Logs:
+`/tmp/stuff-road-curves-{full-serial-final,gpu-final,assets-final-adaptive}.log`.
+
+Opened village overview `road_network_overview/1792364126-1032938`, undersea
+walk `road_network_walk/1792364087-1032779` and legacy pilot
+`road_surface_trial/1792364222-1033260`: assertions pass. As before, the straight
+undersea walk eventually faces a bend wall; this is not vehicle-route following
+or finished tunnel-junction acceptance. A mountain replay interrupted by
+Escape is not counted as a complete test; the completed rerun `road_network_walk/1792364327-1033561` passes, with capture003 opened.
+
+Current X11/Immediate640x360 synchronized same-binary village pair,13 steady
+samples each: **56.304ms visible /39.670ms roads+cuts hidden**. The remaining
+render cost is ~16.63ms. No new render-time solve/pass is introduced, but this
+is **not an FPS improvement claim**, nor a matched comparison with the old
+inspection pose. Timings, binary hash and captures:
+`test-runs/road-vertical-curves-validation.json`.
+
+Next requested pass (not implemented here): continuous horizontal bends with
+minimum radius/curvature transitions, shared seam headings, vehicle swept-path
+checks and real unified junction meshes/markings. Tunnel intersections need one
+open chamber, not overlapping tubes with obstructing internal faces. Refit and
+resurvey final curved alignments before generating excavation/collision/trees;
+never merely round the rendered strip. Junction geometry should be cached and
+chunked, not new per-frame routing or one draw call per intersection.
+
 ## Live integration, 18 October
 
 - `road_network_stream.rs`: one body-pinned CPU worker owns source I/O, the

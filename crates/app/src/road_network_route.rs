@@ -784,7 +784,7 @@ fn reroute_with_limit(
         return Err("height-aware rerouting produced a non-tree".into());
     }
     let fixed: Vec<_> = heights.into_iter().enumerate().collect();
-    let p = match Profile::fit_fixed(&result, radius, terrain, &fixed)? {
+    let p = match Profile::fit_seeded(&result, radius, terrain, &fixed)? {
         Ok(p) => p,
         Err(verification) => {
             return Ok(Err(Rejected {

@@ -39,6 +39,7 @@ mod road_network_survey;
 mod road_render;
 mod road_route;
 mod road_tunnel;
+mod road_vertical;
 #[cfg(test)]
 mod relief_survey;
 mod scenario;

@@ -14,6 +14,9 @@ use std::{
 };
 
 pub(crate) const STEP: f64 = 20.0;
+// Cover the 5m junction pad (and any acute-angle mouth overlap below), rather
+// than flattening a whole 20m survey station regardless of the junction shape.
+const APRON_LENGTH: f64 = crate::road::HALF_WIDTH;
 // Radial heights (unlike the pilot's tangent z) already include curvature.
 // Retain 0.1 percentage point for tessellation below the user's 25% limit.
 const GRADE: f64 = crate::road_route::MAX_GRADE - 0.001;
@@ -29,6 +32,7 @@ pub struct Profile {
     pub directions: Vec<[f64; 3]>,
     pub segments: Vec<[usize; 2]>,
     pub maximum_grade: f64,
+    pub maximum_grade_change_per_meter: f64,
     pub maximum_deck_above_ground_meters: f64,
     pub minimum_sampled_undersea_roof_cover_meters: Option<f64>,
     pub undersea_segments: usize,
@@ -163,12 +167,13 @@ impl Profile {
         radius: f64,
         terrain: &impl Survey,
     ) -> Result<Result<Self, Rejected>, String> {
-        Self::fit_fixed(region, radius, terrain, &[])
+        Self::fit_seeded(region, radius, terrain, &[])
     }
 
-    /// The height-aware router fixes shared lattice states as well as terminal
-    /// anchors; do not subsequently slide a junction onto a different level.
-    pub(crate) fn fit_fixed(
+    /// Searched lattice heights seed a feasible piecewise-linear profile.
+    /// Vertical curves may adjust interior heights, but never terminal anchors;
+    /// every shared junction still has one height for all its incident roads.
+    pub(crate) fn fit_seeded(
         region: &Region,
         radius: f64,
         terrain: &impl Survey,
@@ -182,18 +187,89 @@ impl Profile {
             .iter()
             .map(|n| DVec3::from_array(n.direction))
             .collect();
+        let mut original_adj = vec![Vec::new(); region.nodes.len()];
+        for e in &region.edges {
+            original_adj[e.a].push(e.b);
+            original_adj[e.b].push(e.a);
+        }
+        let mut flat_nodes = vec![false; region.nodes.len()];
+        let mut apron_lengths = vec![APRON_LENGTH; region.nodes.len()];
+        for i in 0..region.nodes.len() {
+            let neighbours: Vec<_> = original_adj[i]
+                .iter()
+                .copied()
+                .filter(|&j| dirs[j].distance(dirs[i]) > 1e-10)
+                .collect();
+            let gateway = region
+                .terminals
+                .iter()
+                .any(|t| DVec3::from_array(t.direction).distance(dirs[i]) < 1e-10);
+            let flat = gateway
+                || neighbours.len() > 2
+                || (neighbours.len() == 2 && {
+                    let up = dirs[i];
+                    let a = (dirs[neighbours[0]] - up * dirs[neighbours[0]].dot(up))
+                        .normalize_or_zero();
+                    let b = (dirs[neighbours[1]] - up * dirs[neighbours[1]].dot(up))
+                        .normalize_or_zero();
+                    a.dot(b) > -0.995
+                });
+            flat_nodes[i] = flat;
+            if flat {
+                // At an acute fork, the two road rectangles overlap farther
+                // than the round pad. Keep that entire mouth on one plane;
+                // otherwise the curved ramps would intersect with a lip.
+                let up = dirs[i];
+                let tangents: Vec<_> = neighbours
+                    .iter()
+                    .map(|&j| (dirs[j] - up * dirs[j].dot(up)).normalize_or_zero())
+                    .collect();
+                for (j, a) in tangents.iter().enumerate() {
+                    for b in &tangents[j + 1..] {
+                        let cosine = a.dot(*b).clamp(-1.0, 1.0 - 1e-9);
+                        let overlap = APRON_LENGTH * ((1.0 + cosine) / (1.0 - cosine)).sqrt();
+                        apron_lengths[i] = apron_lengths[i].max(overlap.min(STEP));
+                    }
+                }
+            }
+        }
         let mut segments = Vec::new();
         for edge in &region.edges {
             let a = dirs[edge.a];
             let b = dirs[edge.b];
-            let count = (distance(a, b, radius) / STEP).ceil().max(1.0) as usize;
+            let length = distance(a, b, radius);
+            let start = if flat_nodes[edge.a] {
+                apron_lengths[edge.a]
+            } else {
+                0.0
+            };
+            let end = if flat_nodes[edge.b] {
+                apron_lengths[edge.b]
+            } else {
+                0.0
+            };
+            let mut stations = Vec::new();
+            if length > start + end {
+                let run = length - start - end;
+                let count = (run / STEP).ceil() as usize;
+                for i in 0..=count {
+                    if (i == 0 && start == 0.0) || (i == count && end == 0.0) {
+                        continue;
+                    }
+                    let t = (start + run * i as f64 / count as f64) / length;
+                    if t > 0.0 && t < 1.0 {
+                        stations.push(t);
+                    }
+                }
+            }
+            stations.push(1.0);
             let mut last = edge.a;
-            for i in 1..=count {
-                let next = if i == count {
+            for t in stations {
+                let next = if t == 1.0 {
                     edge.b
                 } else {
                     let j = dirs.len();
-                    dirs.push(a.lerp(b, i as f64 / count as f64).normalize());
+                    dirs.push(a.lerp(b, t).normalize());
                     j
                 };
                 segments.push([last, next]);
@@ -225,33 +301,9 @@ impl Profile {
             adjacency[b].push((a, length));
         }
         // Flat junction/turn aprons stop intersecting deck planes producing
-        // steps across a mouth. Densified first stations share the hub height;
+        // steps across a mouth. Mouth-length first stations share the hub height;
         // the global envelope still enforces grade and all terminal anchors.
-        let mut original_adj = vec![Vec::new(); region.nodes.len()];
-        for e in &region.edges {
-            original_adj[e.a].push(e.b);
-            original_adj[e.b].push(e.a);
-        }
-        for i in 0..region.nodes.len() {
-            let neighbours: Vec<_> = original_adj[i]
-                .iter()
-                .copied()
-                .filter(|&j| dirs[j].distance(dirs[i]) > 1e-10)
-                .collect();
-            let gateway = region
-                .terminals
-                .iter()
-                .any(|t| DVec3::from_array(t.direction).distance(dirs[i]) < 1e-10);
-            let flat = gateway
-                || neighbours.len() > 2
-                || (neighbours.len() == 2 && {
-                    let up = dirs[i];
-                    let a = (dirs[neighbours[0]] - up * dirs[neighbours[0]].dot(up))
-                        .normalize_or_zero();
-                    let b = (dirs[neighbours[1]] - up * dirs[neighbours[1]].dot(up))
-                        .normalize_or_zero();
-                    a.dot(b) > -0.995
-                });
+        for (i, &flat) in flat_nodes.iter().enumerate() {
             if flat {
                 let adjacent: Vec<_> = adjacency[i].iter().map(|(j, _)| *j).collect();
                 for j in adjacent {
@@ -273,31 +325,26 @@ impl Profile {
             .zip(&caps)
             .map(|(g, cap)| g.ocean.then_some(cap + UNDERSEA_COVER))
             .collect();
+        let smooth_caps = caps.clone();
+        let mut anchors = Vec::new();
         let mut low_sources = vec![f64::INFINITY; dirs.len()];
         let mut upper_sources = caps;
         for (terminal, &i) in region.terminals.iter().zip(&region.terminal_nodes) {
             let anchor = terminal_sample(terminal, radius, terrain)?.anchor;
+            anchors.push((i, anchor));
             low_sources[i] = -anchor;
             upper_sources[i] = anchor;
         }
+        let mut seeded = vec![f64::NAN; dirs.len()];
         for &(i, height) in fixed {
             if i >= region.nodes.len() || !height.is_finite() {
                 return Err("invalid fixed road-profile state".into());
-            }
-            if height > upper_sources[i] + 1e-6 {
-                return Ok(Err(Rejected {
-                    reason: "fixed state exceeds clearance/cover cap",
-                    node: i,
-                    required_minimum_meters: height,
-                    allowed_maximum_meters: upper_sources[i],
-                }));
             }
             // A fixed state may coincide with a terminal, but cannot change it.
             if low_sources[i].is_finite() && (height + low_sources[i]).abs() > 1e-6 {
                 return Err("fixed state moved a village/gateway anchor".into());
             }
-            low_sources[i] = -height;
-            upper_sources[i] = height;
+            seeded[i] = height;
         }
         let lower: Vec<_> = envelope(low_sources, &adjacency)
             .into_iter()
@@ -318,7 +365,9 @@ impl Profile {
             .iter()
             .enumerate()
             .map(|(i, g)| {
-                let h = if g.ocean {
+                let h = if seeded[i].is_finite() {
+                    seeded[i]
+                } else if g.ocean {
                     g.height - UNDERSEA_DECK_DEPTH
                 } else {
                     g.height + CLEARANCE
@@ -326,7 +375,34 @@ impl Profile {
                 h.max(lower[i]).min(upper[i])
             })
             .collect();
-        let heights = envelope(desired, &adjacency);
+        let mut heights = envelope(desired, &adjacency);
+        let links: Vec<_> = segments
+            .iter()
+            .map(|&[a, b]| {
+                let flat = adjacency[a]
+                    .iter()
+                    .any(|&(j, length)| j == b && length == 0.0);
+                (
+                    a,
+                    b,
+                    distance(dirs[a], dirs[b], minimum_radius),
+                    if flat { 0.0 } else { GRADE },
+                )
+            })
+            .collect();
+        if !crate::road_vertical::smooth(&mut heights, &smooth_caps, &anchors, &links, || {
+            terrain.cancelled()
+        }) {
+            if terrain.cancelled() {
+                return Err("road generation superseded".into());
+            }
+            return Ok(Err(Rejected {
+                reason: "vertical-curve constraints rejected alignment or exhausted solver budget",
+                node: 0,
+                required_minimum_meters: 0.0,
+                allowed_maximum_meters: 0.0,
+            }));
+        }
         let maximum_grade = segments
             .iter()
             .map(|&[a, b]| {
@@ -334,6 +410,37 @@ impl Profile {
                     / distance(dirs[a], dirs[b], radius + heights[a].min(heights[b])).max(1e-9)
             })
             .fold(0.0, f64::max);
+        let mut physical_adjacency = vec![Vec::new(); dirs.len()];
+        for &[a, b] in &segments {
+            let length = distance(dirs[a], dirs[b], radius + heights[a].min(heights[b]));
+            if length > 0.001 {
+                physical_adjacency[a].push((b, length));
+                physical_adjacency[b].push((a, length));
+            }
+        }
+        let maximum_grade_change_per_meter = physical_adjacency
+            .iter()
+            .enumerate()
+            .filter_map(|(i, adjacent)| {
+                let &[(a, la), (b, lb)] = adjacent.as_slice() else {
+                    return None;
+                };
+                Some(
+                    ((heights[b] - heights[i]) / lb - (heights[i] - heights[a]) / la).abs()
+                        / ((la + lb) * 0.5),
+                )
+            })
+            .fold(0.0, f64::max);
+        if maximum_grade > crate::road_route::MAX_GRADE
+            || maximum_grade_change_per_meter > crate::road_vertical::MAX_GRADE_CHANGE_PER_METER
+        {
+            return Ok(Err(Rejected {
+                reason: "physical grade/vertical curve verification failed",
+                node: 0,
+                required_minimum_meters: 0.0,
+                allowed_maximum_meters: 0.0,
+            }));
+        }
         let maximum_deck_above_ground_meters = ground
             .iter()
             .zip(&heights)
@@ -353,6 +460,7 @@ impl Profile {
             directions: dirs.into_iter().map(|d| d.to_array()).collect(),
             segments,
             maximum_grade,
+            maximum_grade_change_per_meter,
             maximum_deck_above_ground_meters,
             minimum_sampled_undersea_roof_cover_meters: min_cover,
             undersea_segments,
@@ -365,6 +473,34 @@ mod tests {
     use super::*;
     use crate::road_network::{Ground, Node, RoadEdge, Terminal, TerminalKind};
     use planet_coretypes::{CubeFace, TileKey};
+
+    #[test]
+    fn road_network_vertical_curves_keep_acute_junction_overlaps_flat() {
+        let mut region = tree();
+        let branch = direction(853.553390593, 353.553390593).to_array();
+        region.nodes[3].direction = branch;
+        region.terminals[2].direction = branch;
+        let profile = Profile::fit(
+            &region,
+            4e6,
+            &Surface {
+                steep: false,
+                water: true,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let hub = DVec3::from_array(profile.directions[1]);
+        let expected = APRON_LENGTH * (std::f64::consts::PI / 8.0).tan().recip();
+        for &[a, b] in &profile.segments {
+            if a == 1 || b == 1 {
+                let other = if a == 1 { b } else { a };
+                let length = distance(hub, DVec3::from_array(profile.directions[other]), 4e6);
+                assert!((length - expected).abs() < 0.001);
+                assert_eq!(profile.heights_meters[1], profile.heights_meters[other]);
+            }
+        }
+    }
     #[test]
     fn road_network_profile_allows_twenty_percent_but_rejects_twenty_six_percent() {
         struct Ramp(f64);
@@ -467,6 +603,9 @@ mod tests {
         };
         let p = Profile::fit(&r, 4e6, &surface).unwrap().unwrap();
         assert!(p.maximum_grade <= GRADE + 1e-8);
+        assert!(
+            p.maximum_grade_change_per_meter <= crate::road_vertical::MAX_GRADE_CHANGE_PER_METER
+        );
         assert!(p.maximum_deck_above_ground_meters <= PIER_CAP + 1e-6);
         assert_eq!(p.segments.iter().filter(|s| s.contains(&1)).count(), 3);
         for &i in &r.terminal_nodes {

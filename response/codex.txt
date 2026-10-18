@@ -115,3 +115,29 @@ Validated village, mountain and undersea routes. 706 tests passed; six pre-exist
 FPS still needs work: about 55 ms versus 39 ms with roads/cuts hidden at 640×360.
 
 Committed and pushed.
+
+I’ll inspect the road profile and its tests, then limit how quickly the gradient changes while keeping the 25% maximum.
+
+The network currently limits slope but allows abrupt changes between slopes. I’ll add a vertical-curve limit of roughly 1 percentage point per 20 metres—so flat to 25% takes about 500 metres. I’ll keep shared junctions, village entrances and tunnel-cover constraints intact, and apply the same limit to the old test road. This is generation-time work, not a new per-frame effect.
+
+The first, gentler setting is rejecting some existing mountain and island routes: short flat junction aprons leave too little room for those long transitions. I’m testing a tighter curve radius so the roads become smoother without losing connections or exceeding 25%.
+
+The 25% maximum is unchanged, and gradient smoothing is implemented. The mountain-network check now passes.
+
+The tricky part was preserving flat junctions without forcing abrupt ramps beside them. I’ve shortened those flat sections to the actual junction footprint. I’m still checking island tunnels, village connections and the rendered result before committing.
+
+All four network checks now pass, including all 244 villages in the village test area, 15 in the mountains and 76 in the island/undersea area. I’m doing the final rendered walking checks and performance check now.
+
+Agreed—vertical smoothing alone won’t make them vehicle-ready. The current joined road strips and junction pads are provisional.
+
+For the horizontal/junction pass:
+- Broad bends with gradual entry/exit curvature, not instant changes of heading. I’d start around a 100m minimum radius on main roads, with slower, tighter village approaches.
+- One shared junction surface with rounded branch mouths—not overlapping road rectangles or a circular patch. Approaches ease into its grade; markings stop or turn appropriately instead of crossing each other.
+- Check a vehicle’s swept path through every turn, including clearance from parapets, supports and tunnel walls.
+- Generate cuts, tunnels, trees and collision from that same final alignment, then recheck the 25% slope and vertical transitions.
+
+All geometry stays precomputed/cached to protect FPS. I’ll finish validating the vertical changes first, then tackle horizontal curves and proper junctions as a separate pass.
+
+Yes—continuous bends and one shared, rounded junction mesh, with open chambers underground—not overlapping road strips.
+
+The vertical-smoothing pass is tested and pushed, retaining the 25% maximum. Horizontal curves and proper junctions are next; the current pads remain provisional.
