@@ -79,3 +79,7 @@ All four sampled network profiles now pass engineering checks. I’m still worki
 Moved the 30 km test to steeper mountains, allowed 25% gradients, and retained five tunnels.
 
 Network routing and bounded excavation are tested and pushed. Planet-wide live meshes, streaming and undersea traversal are still unfinished.
+
+I’d left the workaround opt-in; your latest runs had it off. It now enables automatically with roads, keeping the FPS optimization.
+
+Rebuilt, tested and pushed. Please retry walking—live confirmation is still needed.

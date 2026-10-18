@@ -125,6 +125,12 @@ flight speed. Look up/down and move forward to climb/descend. **G** switches
 between walking and flying; Space jumps while walking. There is no replay
 timer or automatic exit in this mode.
 
+Road launches automatically enable the synchronized-presentation workaround
+previously used for scene jitter, retaining CPU/GPU preparation overlap.
+`PLANET_SYNC_PRESENT=0` explicitly disables it for comparisons; `=1` forces it
+on even without roads. The startup log records `sync_present`. Live visual
+acceptance of the optimized path remains to be confirmed.
+
 Run the driving replay, or replace the scenario with
 `road_viaduct_overview` to inspect a deep cut, taller legs and an aerial view.
 `road_route_survey` captures six locations across the route, including the
@@ -215,6 +221,7 @@ Render-path parity across raster and ray needs a display:
 | `PLANET_RAY_EXPERIMENTS` | Raymarch experiment bitmask |
 | `PLANET_PRESENT_MODE` | `immediate` to bypass vsync when measuring |
 | `PLANET_FRAME_LATENCY` | Desired frame latency |
+| `PLANET_SYNC_PRESENT` | GPU-completion fence before presenting; automatic for road experiments, otherwise off; `0`/`1` override |
 
 ## Build trees
 

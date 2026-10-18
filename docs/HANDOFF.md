@@ -10,6 +10,38 @@ surface appearance and crest geometry.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
+**Current priority (18 October): jitter reported again, including road walking.**
+Latest user runs `manual/1792344531-951752`, `1792344509-951571`,
+`1792344494-951387` all log `sync_present:false`,1280x800,Fifo,c21cfdb.
+Thus the previous workaround was NOT active; these runs do not establish that
+optimized synchronized presentation regressed. They do not distinguish unset
+from an explicit disabling value. Do not assert the compositor mechanism is
+proven or the live recurrence is cured.
+
+`presentation_sync_enabled(value,road_experiment)` now defaults ON only when
+planet road experiments are active and no explicit variable is supplied.
+Explicit0/false/off (and other non-enabling values) still disable;1/true/on
+force it on,including non-road launches. Non-road defaults remain off. The
+existing overlapped GPU fence implementation is unchanged. README documents it.
+Policy regression failed before the fix,then passed with all override cases.
+11 presentation-filter tests pass;full suite695 pass/same6 baseline failures/
+50ignored;release builds. Logs `/tmp/stuff-road-sync-default-{red,green,full-tests,build}.log`.
+
+Live own-process default activation (SYNC variable removed),X11/Fifo1280x800:
+`manual/1792345062-954307`,sync_present:true,no fence failures,clean exit.
+Walking forward/back4s each gave125 steady trace samples,no backwards CPU
+steps,clearance stable1.700m. No capture readbacks were used. Evidence:
+`test-runs/road-turn-jitter/road-walk-auto-sync-2026-10-18.json`;
+`/tmp/stuff-road-walk-visible-{trace.txt,result.json,app.log,control.log}`.
+First attempt `manual/1792345005-953046` was display-sleep throttled (~1fps),
+not useful motion evidence; DPMS was transiently woken and the test repeated.
+No persistent display setting changed. This validates CPU walking and default
+activation,NOT compositor frame ordering or the user's visual acceptance.
+Next: user retries normal roads launch. If it still jumps with logged sync:true,
+compare serial-vs-overlapped fencing on that walking repro and instrument final
+camera/collider changes before further fixes. Do not resume network work while
+this live jitter report remains unresolved.
+
 **New requested work (18 October):** move the road test to steeper mountains,
 allow up to 25% physical grade, and finish the whole-planet village network.
 Shared junctions and tunnel-only island connections still apply. Implement in
@@ -77,7 +109,7 @@ network rerouting tests). Logs `/tmp/stuff-present-overlap-{red,tests,build,full
 The GPU-completion guarantee is retained, but the user has not yet confirmed
 the live jitter result on this optimized scheduling path.
 
-**Current priority (18 October): road-enabled downward-turn jitter.**
+**Earlier investigation (18 October): road-enabled downward-turn jitter.**
 
 User reports back-and-forth whole-scene jumps away from the road, looking down
 over green terrain, with either Q/E or mouse; level/upward and blue-terrain
@@ -97,9 +129,9 @@ on Intel HD 530, with the app running via Xwayland when WAYLAND_DISPLAY is unset
 NVIDIA documents a rendering/presentation synchronization limitation for this
 stack: https://download.nvidia.com/XFree86/Linux-x86_64/550.163.01/README/wayland-issues.html
 The live result supports this lead, but the exact mechanism is not proven.
-`PLANET_SYNC_PRESENT=1` is an **opt-in
-diagnostic/workaround** for the main planet renderer: wait for the submitted GPU
-frame before `present()`. It defaults off and does not fence offscreen profiling;
+`PLANET_SYNC_PRESENT=1` began as an **opt-in diagnostic/workaround** for the main
+planet renderer: wait for the submitted GPU frame before `present()`. It now
+defaults on for roads only (see recurrence above) and does not fence offscreen profiling;
 the original serial version removed CPU/GPU overlap (now recovered above).
 Wait failures are logged and the
 incomplete frame is not presented. Keep the flag available for this stack;
@@ -114,7 +146,7 @@ routing tests). Release build passes. Matched X11/Immediate 640x360
 are pixel-identical. One pair, 12 non-capture samples each: 34.20 ms off versus
 48.16 ms on (~29 versus ~21 FPS); the measured wait is in `present_ms`. This is
 why the original serial fence was diagnostic and defaulted OFF. The improved
-scheduling above keeps that same opt-in flag.
+scheduling above keeps that same flag, now automatic for roads unless overridden.
 Results: `test-runs/road-turn-jitter/present-sync-comparison.json`;
 logs: `/tmp/stuff-present-sync-{green,full-tests,final-build}.log`.
 

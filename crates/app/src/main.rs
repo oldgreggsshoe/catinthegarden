@@ -108,8 +108,10 @@ fn should_start_interactive_fullscreen(scenario_active: bool) -> bool {
     !scenario_active
 }
 
-fn presentation_sync_enabled(value: Option<&str>) -> bool {
-    matches!(value.map(str::trim), Some("1" | "true" | "on"))
+fn presentation_sync_enabled(value: Option<&str>, road_experiment: bool) -> bool {
+    // Road launches need the frame-completion workaround on the affected
+    // compositor/driver stack. Keep explicit overrides and non-road defaults.
+    value.map_or(road_experiment, |value| matches!(value.trim(), "1" | "true" | "on"))
 }
 
 /// Consume the single pending image only after its own submission completes.
@@ -1878,8 +1880,10 @@ impl State {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(2),
         };
-        let sync_present =
-            presentation_sync_enabled(std::env::var("PLANET_SYNC_PRESENT").ok().as_deref());
+        let sync_present = presentation_sync_enabled(
+            std::env::var("PLANET_SYNC_PRESENT").ok().as_deref(),
+            road::enabled() && body::active() == body::PLANET,
+        );
         tracing::info!(
             target: "planet::adapter",
             supported_present_modes = ?surface_capabilities.present_modes,
@@ -8067,12 +8071,20 @@ mod tests {
     }
 
     #[test]
-    fn presentation_sync_is_explicitly_opt_in() {
-        for value in [None, Some(""), Some("0"), Some("false"), Some("off")] {
-            assert!(!super::presentation_sync_enabled(value));
-        }
-        for value in ["1", "true", "on", " 1 "] {
-            assert!(super::presentation_sync_enabled(Some(value)));
+    fn presentation_sync_defaults_on_for_roads_only() {
+        assert!(!super::presentation_sync_enabled(None, false));
+        assert!(super::presentation_sync_enabled(None, true));
+    }
+
+    #[test]
+    fn presentation_sync_explicit_overrides_apply_with_and_without_roads() {
+        for roads in [false, true] {
+            for value in ["", "0", "false", "off", " 0 "] {
+                assert!(!super::presentation_sync_enabled(Some(value), roads));
+            }
+            for value in ["1", "true", "on", " 1 "] {
+                assert!(super::presentation_sync_enabled(Some(value), roads));
+            }
         }
     }
 
