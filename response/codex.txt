@@ -49,3 +49,9 @@ Added an opt-in diagnostic for a suspected [NVIDIA/Xwayland presentation-sync is
 Add `PLANET_SYNC_PRESENT=1` to your usual road launch and repeat that turn. **Not yet a confirmed fix.** It costs FPS (~29 → 21 in the paired test), so it remains off by default.
 
 Committed and pushed; live confirmation is still needed.
+
+That strongly points to presentation synchronization rather than road geometry. I’ll record your confirmation and keep the workaround opt-in, since it costs FPS.
+
+Good—keep `PLANET_SYNC_PRESENT=1` for now. Your result strongly points to frame-delivery synchronization rather than road geometry.
+
+I’ve recorded that. It stays opt-in because of the FPS cost; a smoother solution without that penalty is still outstanding.

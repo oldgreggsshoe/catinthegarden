@@ -19,21 +19,25 @@ Investigation used the recorded planet-frame eye
 `(1958253.256, 2100769.448, 2797795.660)`, yaw -2.30639, pitch -0.68028.
 CPU final camera and uploaded terrain basis agree; fixed-input view-focus drift
 was below 0.000001 m after loading. Camera-reprojected GPU captures do not show
-a confirmed whole-scene reversal. **The reported symptom is not yet reliably
-reproduced or fixed.** Capture readbacks wait for GPU completion and can mask a
+a confirmed whole-scene reversal. **User now reports that `PLANET_SYNC_PRESENT=1`
+"seems to fix it" in live use.** This strongly supports the presentation lead,
+but is not an automated repro or an instrumented compositor diagnosis.
+Capture readbacks wait for GPU completion and can mask a
 presentation synchronization issue; they cannot validate compositor frame order.
 
 Installed NVIDIA Vulkan driver is 550.163.01; the KDE Wayland compositor renders
 on Intel HD 530, with the app running via Xwayland when WAYLAND_DISPLAY is unset.
 NVIDIA documents a rendering/presentation synchronization limitation for this
 stack: https://download.nvidia.com/XFree86/Linux-x86_64/550.163.01/README/wayland-issues.html
-This is a lead, not a proven cause. `PLANET_SYNC_PRESENT=1` is now an **opt-in
+The live result supports this lead, but the exact mechanism is not proven.
+`PLANET_SYNC_PRESENT=1` is an **opt-in
 diagnostic/workaround** for the main planet renderer: wait for the submitted GPU
 frame before `present()`. It defaults off, does not fence offscreen profiling,
 and can reduce FPS by removing CPU/GPU overlap. Wait failures are logged and the
-incomplete frame is not presented. Add the flag to the user's existing road
-launch and compare the same green/downward turn with it on/off. Live symptom
-confirmation remains necessary. No driver or persistent system setting changed.
+incomplete frame is not presented. Keep the flag available for this stack;
+do not enable the expensive wait globally on the strength of this one result.
+Next follow-up is a performance-preserving solution, not terrain/camera tuning
+without new evidence. No driver or persistent system setting changed.
 
 Validation: explicit opt-in parsing test passes; full working-tree suite has
 682 pass / the same 6 known failures / 47 ignored (includes the 6 uncommitted
