@@ -363,6 +363,7 @@ scenarios! {
     "road_network_overview" => "../scenarios/road_network_overview.json",
     "road_network_walk" => "../scenarios/road_network_walk.json",
     "road_network_parking" => "../scenarios/road_network_parking.json",
+    "road_network_join" => "../scenarios/road_network_join.json",
     "road_network_signs" => "../scenarios/road_network_signs.json",
     "road_network_empty_spur" => "../scenarios/road_network_empty_spur.json",
     "road_network_manual_corners" => "../scenarios/road_network_manual_corners.json",
@@ -1160,7 +1161,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 137);
+        assert_eq!(SCENARIO_NAMES.len(), 138);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

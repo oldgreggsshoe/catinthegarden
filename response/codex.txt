@@ -263,3 +263,15 @@ Agreed—F5 stays untouched for now. I’ll finish the village entrance and bran
 Implemented and pushed: village entrance nameplates and double-sided branch signs with names, directions and road distances. The photographed-junction regression and rendered branch-sign check pass.
 
 F5 is unchanged, as requested.
+
+I’ll inspect the latest screenshot and trace the join geometry before changing it.
+
+I can see the narrow wedge through the deck and the break in the parapet. I’ll check three possibilities: mismatched endpoint positions, different cross-sections at a branch join, or an LOD seam. I’ll keep the fix limited to the join mesh and its regression test.
+
+The photographed gap is a roughly 19 cm wedge: the through road bends slightly at the junction, but its two ends don’t share a cross-section. I’ll join those sections and add a regression test, while keeping the side-road opening clear.
+
+The join fix is in place. I’ll finish the regression checks and compare a fresh screenshot at the same camera position, then commit and push it.
+
+The matched screenshots now show a continuous deck and parapet—the gap is gone. All 78 road-related tests pass, along with the scenario-loading check. I’ll commit and push this fix now.
+
+Fixed the road gap and parapet break. Verified with matching screenshots; 78 road tests pass. Committed and pushed.

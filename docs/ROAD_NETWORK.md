@@ -14,6 +14,21 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Narrow through-road junction seam, 19 October
+
+The photographed junction (`manual/1792415387-1209990/capture-001.png`) had a
+2.14degree through bend: skipping all branch miters left an18.67cm outer wedge.
+Mutually unambiguous nearly opposite arms now share the same bounded miter as
+ordinary smooth bends, while retaining branch-mouth metadata. Deck, parapet,
+paint and walking sections agree; the side-road mouth is still clipped open.
+This is a cached worker geometry correction, not a general acute-fork or
+support-clearance solution. `road_network_join` is the matched camera replay
+(use1024x640 for its reference-height60degree FOV).
+The photographed-vector regression first fails with0.18672m seam separation.
+All78 focused road tests and the scenario registry check now pass. Both opened
+matched replay captures (`1792427441-5584`, baseline `1792416377-1222838`) show
+continuous asphalt/parapet; the crack ROI has0 tan pixels (was110). No FPS claim.
+
 ## Bores versus detours, destinations and signs, 19 October
 
 The first terrain-weighted planner now lets estimated tunnel cost compete with

@@ -10,7 +10,27 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 19 October: cost-aware bores, village names and road signs.**
+**Current phase, 19 October: narrow through-road seam at a junction.**
+Manual `1792415387-1209990/capture-001.png` shows a deck wedge and broken
+outer parapet. Projected live mesh endpoints identify the same three-arm node;
+its through road bends2.14degrees. `join_ribbons` skipped every true branch,
+leaving butt sections18.67cm apart at the outer edge, not an LOD seam.
+It now shares the existing bounded miter between mutually unique near-opposite
+arms, retaining true branch flags and side-mouth clipping. Ambiguous/acute arms
+remain unpaired; ordinary sharp degree-two joins still reject. Deck, paint,
+parapet and exact walking triangles use the same sections. Worker-only change;
+no new geometry/draws, per-frame routing, grade or presentation changes.
+A regression uses the photographed arm vectors and checks seams, the outer
+parapet/walking floor and open side mouth. `road_network_join` reproduces the
+photographed camera at1024x640 (authored reference-height FOV60).
+Validation: original seam assertion fails at0.1867206m; fixed road checks78
+passed/18ignored, and every-listed-scenario load passes. Release build passes.
+Opened both captures from `road_network_join/1792427441-5584`, matched against
+baseline `1792416377-1222838`: deck/parapet seam gone, side mouth remains open.
+The narrow deck crack ROI goes110 ->0 tan pixels out of320. This is visual/mesh
+validation, not a measured FPS improvement. F5 remains untouched.
+
+**Previous phase, 19 October: cost-aware bores, village names and road signs.**
 `road_construction.rs` shares relative length/travel, excavation, support and
 bore estimates between the initial topology and height-aware search. Previously
 the first search penalised steep ground without pricing a bore, so an already
@@ -50,8 +70,8 @@ Opened `road_network_signs/1792414153-1199645` junction,
 `1792415034-1209238` reassurance4.5km; all scenario manifests pass. These are
 visual evidence, not an FPS gain. User app competed during parts of testing.
 
-**Current user priority:** finish village entrance/branch signs, commit/push,
-and conserve usage. F5/ray removal is EXPLICITLY DEFERRED until road work is done;
+**Current user priority:** fix the photographed narrow road join, commit/push,
+and conserve usage. Village entrance/branch signs are committed. F5/ray removal is EXPLICITLY DEFERRED until road work is done;
 no F5 removal edits have been made. When resuming that task, preserve raster's
 shadow-height faces but remove unused ray pipelines/warp/history resources.
 The ray pass itself never runs in raster mode; do not promise steady-state FPS.

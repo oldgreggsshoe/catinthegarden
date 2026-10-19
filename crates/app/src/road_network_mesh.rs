@@ -744,10 +744,46 @@ fn join_ribbons(roads: &mut [Road]) -> Result<(), String> {
                 roads[i].segment.junction_b = ends.len() > 1;
             }
         }
+        let mut pairs = Vec::new();
         if branch {
-            continue;
+            // Keep the smooth through carriageway watertight even where a side
+            // road joins it. Only pair mutually unambiguous opposite arms; an
+            // acute fork or a cropped branch is not an ordinary sharp bend.
+            let outward: Vec<_> = ends
+                .iter()
+                .map(|&(i, end)| {
+                    let s = roads[i].segment;
+                    let d = if end == 0 { s.b - s.a } else { s.a - s.b };
+                    d.truncate().normalize_or_zero()
+                })
+                .collect();
+            let limit = -(crate::road_network_align::MAX_ANGLE + 0.001).cos();
+            let partners: Vec<_> = outward
+                .iter()
+                .map(|a| {
+                    let mut matches = outward
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| a.dot(**b) < limit);
+                    let first = matches.next().map(|(i, _)| i);
+                    if matches.next().is_none() {
+                        first
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for (a, partner) in partners.iter().enumerate() {
+                if let Some(b) = *partner {
+                    if a < b && partners[b] == Some(a) {
+                        pairs.push([ends[a], ends[b]]);
+                    }
+                }
+            }
+        } else if let &[a, b] = ends.as_slice() {
+            pairs.push([a, b]);
         }
-        if let &[(a, ae), (b, be)] = ends.as_slice() {
+        for [(a, ae), (b, be)] in pairs {
             let sa = roads[a].ribbon.sides[ae];
             let sb = roads[b].ribbon.sides[be];
             let sign = if sa.dot(sb) >= 0.0 { 1.0 } else { -1.0 };
@@ -1309,6 +1345,66 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn photographed_branch_shares_its_through_deck_wall_and_walking_floor() {
+        let o = DVec3::Z * 1000.0;
+        // Local arm vectors from manual/1792415387-1209990: a 2.14 degree
+        // through bend at a fork left a 19 cm wedge in the outer deck edge.
+        let mut roads = [
+            test_road(o + DVec3::new(-16.101957, 1.020671, -0.027389), o),
+            test_road(o, o + DVec3::new(16.052621, -1.621168, 0.026859)),
+            test_road(o, o + DVec3::new(12.310280, -10.429397, 0.014792)),
+        ];
+        join_ribbons(&mut roads).unwrap();
+        assert!(roads.iter().all(|r| r.ribbon.branches.contains(&true)));
+        for offset in [-5.0, -4.82, -4.7, 4.7, 4.82, 5.0] {
+            let a = roads[0].ribbon.point(roads[0].segment, 1.0, offset);
+            let b = roads[1].ribbon.point(roads[1].segment, 0.0, offset);
+            assert!(
+                a.distance(b) < 1e-9,
+                "fork seam at offset {offset}: {} m",
+                a.distance(b)
+            );
+        }
+        let mut field = Field::build(
+            Frame::new(DVec3::Z, 4e6).unwrap(),
+            roads.iter().map(|r| r.segment).collect(),
+        )
+        .unwrap();
+        field
+            .set_deck_sections(roads.iter().map(|r| r.ribbon.sides).collect())
+            .unwrap();
+        for i in [0, 1] {
+            let r = &roads[i];
+            let wall = exposed(r.ribbon, r.segment, &field, -4.82, 4.82);
+            assert_eq!(
+                wall,
+                vec![(0.0, 1.0)],
+                "outside wall must reach the shared seam"
+            );
+            let q = [-5.0, 5.0].map(|o| {
+                [
+                    r.ribbon.point(r.segment, 0.0, o),
+                    r.ribbon.point(r.segment, 1.0, o),
+                ]
+            });
+            // Sample the outer triangle beside the photographed crack, away
+            // from overlapping side-road triangles (whose higher floor wins).
+            let [a, b, c] = [q[0][0], q[1][1], q[0][1]];
+            for weights in [[0.001, 0.001], [0.001, 0.5], [0.001, 0.998]] {
+                let p = a + (b - a) * weights[0] + (c - a) * weights[1];
+                let world = field.frame.world(p);
+                let h = world.length() - field.frame.radius;
+                assert!((field.deck_height(world.normalize(), h + 2.0).unwrap() - h).abs() < 1e-6);
+            }
+        }
+        let side = &roads[2];
+        assert!(
+            exposed(side.ribbon, side.segment, &field, 4.82, 4.82)[0].0 > 0.0,
+            "the side road mouth must remain open"
+        );
+    }
+
     #[test]
     fn residency_crop_does_not_reclassify_a_fork_as_a_sharp_bend() {
         let o = DVec3::Z * 1000.0;
