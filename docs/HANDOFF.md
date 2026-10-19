@@ -10,28 +10,62 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 19 October: snowy road-to-nowhere fixed; tunnel economics and signage next.**
-The photographed stop in `manual/1792411566-1161582` is a real gateway into an
-empty one-gateway region, not a hidden portal or failed resident publication.
-Coarse conservative occupancy kept an uninhabited branch. `Backbone::local`
-now lazily resolves actual village occupancy on the other side of each link,
-with memoized iterative/cancellable traversal independent of resident regions.
-Actual villages and necessary empty transit regions remain connected. The
-old 619 local spans (~10.75km) served no settlement and are no longer built.
-All nine asset-backed road checks pass. The exact-pose replay
-`road_network_empty_spur/1792412968-1193598` passes with three captures; final
-capture opened. Synthetic dead-branch test failed before the fix and passes.
-`cargo check` and release build pass. Initial full suite had the same six old
-failures plus a missing required scenario JSON field; that field is corrected,
-and the scenario-load recheck passes. No paired FPS claim.
+**Current phase, 19 October: cost-aware bores, village names and road signs.**
+`road_construction.rs` shares relative length/travel, excavation, support and
+bore estimates between the initial topology and height-aware search. Previously
+the first search penalised steep ground without pricing a bore, so an already
+feasible long detour never reached the tunnel-capable fallback. A synthetic
+ridge test fails before the change (31.83km detour vs15.62km direct), passes
+with a buried shorter route, and retains25% grade and0.005/m grade-rate limits.
+Real village/mountain/undersea and old manual-pose worker checks retain villages.
 
-**Next user request:** compare total road/detour and tunnel costs so viable
-shorter bores compete, print tunnel lengths over entrances, assign stable
-village names, and show road-network direction/distances at junctions and
-periodically en route. Right-hand-drive is being interpreted as left-hand
-traffic/signs. Sign search must not be limited to visible/resident villages.
-Older tunnel-material request is also pending. Preserve presentation/jitter
-fixes, road grade/curve/cover constraints and unrelated renderer edits.
+`road_navigation.rs` compresses ENGINEERED profiles, merging coincident aliases,
+and lazily engineers non-resident neighbours for exact shortest road distance.
+Queries exclude the incoming branch; bore queries stop at a real exit, never a
+cache boundary. A270km synthetic destination/200km bore crosses a non-rendered
+region. Metadata/search budgets remain bounded; unresolved destinations are
+omitted rather than invented, so this is not a complete global engineering audit.
+Nearest-exit wording is used for detected branching bores. Names derive from
+original village sites, not moved courts, array order, camera or residency;
+place-name duplicates are allowed. Nameplates stand at arrival courts.
+
+Junction approach boards are~40m before the hub; the user's next photo from
+inside the junction could therefore look past/at the backs of them. Added
+explicit double-sided name/distance fingers AT every departure branch mouth,
+pointing physically the same way on both faces, plus1km reassurance signs.
+Left-hand traffic is the agreed interpretation of right-hand-drive. Signs are
+built within1.8km, but destination searches have no distance horizon; bounded
+engineering failures still omit a destination. One worker publishes valid road
+meshes FIRST, then sends a separately generation-tagged sign batch. CPU font
+layout is worker-only; GPU boards/text use one extra cached atlas draw and the
+same camera-relative road frame. No presentation/fence/jitter change.
+
+**Validation:** full app733 passed/same6 preexisting failures/61ignored before
+the extra manual probe; all7 worker checks and all7 Vulkan road checks pass.
+Final77 focused road checks and the exact photographed-junction branch regression pass.
+Opened final branch replay `road_network_signs/1792415779-1213327` passes all
+three captures and shows legible two-sided names/arrows at the turns.
+Opened `road_network_signs/1792414153-1199645` junction,
+`1792414728-1208236` tunnel290m, `1792414834-1208556` village,
+`1792415034-1209238` reassurance4.5km; all scenario manifests pass. These are
+visual evidence, not an FPS gain. User app competed during parts of testing.
+
+**Current user priority:** finish village entrance/branch signs, commit/push,
+and conserve usage. F5/ray removal is EXPLICITLY DEFERRED until road work is done;
+no F5 removal edits have been made. When resuming that task, preserve raster's
+shadow-height faces but remove unused ray pipelines/warp/history resources.
+The ray pass itself never runs in raster mode; do not promise steady-state FPS.
+`mod foveated` and its startup constructor remain in main.rs as of this phase.
+
+**Still unfinished:** original shared-fork/support geometry and tunnel concrete
+texture/integrated lighting. Do not claim these are fixed by signage. Preserve
+unrelated local renderer/ocean edits and the road presentation/jitter fix.
+
+**Previous phase: snowy empty regional road spur.**
+The stop in `manual/1792411566-1161582` was a real gateway into an empty leaf,
+not a hidden portal. Exact memoized occupancy filters those branches independent
+of residency, retaining inhabited and necessary transit regions. Commit75efa50
+is pushed; its three-frame replay and nine asset checks passed.
 
 **Previous phase: village entrance courts and resident-road repair.**
 Circular40m paved parking/turning courts now share cached road meshes, cuts,
@@ -13002,3 +13036,46 @@ asset checks include old manual flight positions, mountain/village/undersea,
 681-village coarse-occupancy audit, and mountain survey probes. The initial full
 suite recorded725 pass/7 fail/60ignored; one was the new replay missing
 solid_color_screen, now fixed; six are preexisting FOV/tint/SUNK assertions.
+
+## 19 October — road cost and sign implementation evidence
+
+New modules: road_construction.rs (relative estimates, not currency or a global
+optimal-road proof), road_navigation.rs (compressed profile topology/names/queries),
+road_signs.rs/WGSL (cached physical boards, supports, normal font atlas glyphs).
+Bore flags now live on Prepared and are classified once in a canonical regional
+frame, shared by mesh and navigation rather than camera-cropped interpretation.
+
+Commands/logs:
+- /tmp/stuff-road-cost-{red,green,workers,full,check}.log
+- /tmp/stuff-road-signs-{final-focused,final-workers,final-gpu,full-final}.log
+- /tmp/stuff-road-branch-{focused,manual,release,replay}.log (final additions).
+- Seven worker checks include async signs after matching roads; village sign
+  atlas2048x128,6366 vertices before the branch-mouth addition. No frame-loop I/O.
+- Shader validation and glyph-front winding checks pass. All seven GPU tests use
+  Vulkan but NO GPU timestamps (unsafe on this Quadro).
+
+Run `PLANET_ROAD_EXPERIMENT=1` normally. For capture readiness only, set
+`PLANET_ROAD_SIGNS_WAIT=1`; `PLANET_ROAD_SIGN_VIEW=tunnel|village|distance|junction|branch`
+selects the inspected sign in scenario road_network_signs. `SITE=village` is
+useful for branch/nameplate views; default mountain for tunnel/distance. Normal
+interactive startup remains asynchronous. PLANET_DISABLE=road_signs hides only
+sign draws for future matched timings. No extra sign-enabling flag is needed.
+
+Latest manual photo `manual/1792414467-1200904` was taken at sim180.799, eye
+[1835167.09575,2115693.41939,2869280.88133]. Its old build planned signs successfully;
+new-build headless projection recovered three approach boards44/48/59m away:
+two outside the frame, the third back-facing. Direct GPU/manual acceptance at
+that old camera is not claimed. The follow-up adds branch-mouth fingers and an
+asset regression at this exact eye; temporary /tmp pose/board dumps were for
+diagnosis only and are not runtime dependencies.
+
+### Final branch-sign acceptance
+
+The exact manual-junction regression now verifies3 approach boards and6 branch
+faces (two per departure arm), all9 close to the photographed junction. It no
+longer writes /tmp dumps. The final branch capture shows HIGH HOLLYWATER240M
+and LITTLE ASHMERE260M at their mouths. Arrival nameplates remain at each court.
+Final focused run77 pass/18ignored; release build passes. All7 previous real
+worker and7 GPU checks pass; full suite733 pass/same6 failures before the final
+branch-only addition. No FPS gain is claimed. Road changes committed/pushed as
+one phase; F5 removal remains untouched and explicitly deferred by the user.

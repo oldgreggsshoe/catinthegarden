@@ -71,6 +71,10 @@ pub struct NetworkRenderer {
     empty: wgpu::BindGroup,
     instance: wgpu::Buffer,
     inspection: Option<(DVec3, DVec3)>,
+    signs: crate::road_signs::Renderer,
+    active_generation: u64,
+    pending_signs: Option<(u64, crate::road_signs::Mesh)>,
+    sign_pose: Option<(DVec3, DVec3)>,
 }
 impl NetworkRenderer {
     pub fn new(
@@ -133,7 +137,12 @@ impl NetworkRenderer {
             field_segments=active.snapshot.field.segments.len(),
             "road network startup region ready");
         worker.request(centre, true);
-        Ok(Self {
+        let signs = crate::road_signs::Renderer::new(device, format, camera);
+        let mut renderer = Self {
+            signs,
+            active_generation: 0,
+            pending_signs: None,
+            sign_pose: None,
             worker,
             active,
             pending: None,
@@ -142,7 +151,21 @@ impl NetworkRenderer {
             empty,
             instance,
             inspection,
-        })
+        };
+        // Automated sign views must wait on the data, not assume that a fixed
+        // number of rendered frames implies the worker has finished. Normal
+        // interactive startup remains asynchronous.
+        if std::env::var("PLANET_ROAD_SIGNS_WAIT").as_deref() == Ok("1") {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+            while renderer.signs.inspection.is_none() {
+                renderer.prepare(device, queue, terrain);
+                if std::time::Instant::now() > deadline {
+                    return Err("road sign readiness deadline".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        Ok(renderer)
     }
     fn allocate(device: &wgpu::Device, snapshot: Snapshot) -> Scene {
         let vertices = device.create_buffer(&wgpu::BufferDescriptor {
@@ -173,6 +196,7 @@ impl NetworkRenderer {
                 Some((eye, eye - (target - eye)))
             }
             "road_network_trial" | "road_network_walk" => Some((eye, target)),
+            "road_network_signs" => self.sign_pose.or(Some((eye, target))),
             "road_network_parking" => {
                 let up = eye.normalize();
                 let forward = (target - eye).normalize();
@@ -222,6 +246,25 @@ impl NetworkRenderer {
                 }
             }
         }
+        if let Some(signs) = self.worker.take_signs() {
+            self.pending_signs = Some(signs);
+        }
+        if self
+            .pending_signs
+            .as_ref()
+            .is_some_and(|(g, _)| !self.worker.current(*g))
+        {
+            self.pending_signs = None;
+        }
+        if self
+            .pending_signs
+            .as_ref()
+            .is_some_and(|(g, _)| *g == self.active_generation)
+        {
+            let (_, mesh) = self.pending_signs.take().unwrap();
+            self.sign_pose = self.sign_pose.or(mesh.inspection);
+            self.signs.upload(device, queue, mesh);
+        }
         let Some(upload) = &mut self.pending else {
             return;
         };
@@ -236,12 +279,15 @@ impl NetworkRenderer {
         }
         upload.copied = end;
         if end == data.len() {
+            let generation = upload.generation;
             let mut complete = self.pending.take().unwrap().scene;
             drop(std::mem::take(&mut complete.snapshot.vertices));
             terrain.set_network_road_cuts(complete.snapshot.field.clone());
             tracing::info!(target:"planet::roads",regions=complete.snapshot.keys.len(),villages=complete.snapshot.villages,
                 segments=complete.snapshot.segments,tunnel_segments=complete.snapshot.tunnels,
                 field_segments=complete.snapshot.field.segments.len(),"road network resident set published");
+            self.active_generation = generation;
+            self.signs.clear();
             self.active = complete;
         }
     }
@@ -330,6 +376,9 @@ impl NetworkRenderer {
                 if visible && !chunk.structures.is_empty() {
                     pass.draw(chunk.structures.clone(), 0..1);
                 }
+            }
+            if crate::subsystem_enabled("road_signs") {
+                self.signs.draw(pass, camera, &self.instance);
             }
         }
     }

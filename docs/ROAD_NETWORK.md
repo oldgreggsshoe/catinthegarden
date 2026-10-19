@@ -14,6 +14,42 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Bores versus detours, destinations and signs, 19 October
+
+The first terrain-weighted planner now lets estimated tunnel cost compete with
+surface-road length, climbing, cutting and supports. Previously only infeasible
+alignments reached the tunnel-capable height search, leaving feasible but very
+long detours untouched. `road_construction.rs` shares relative planning units
+(not real currency) with height search; tunnels cost more per metre, but can
+beat substantially longer switchbacks. Final grade25%, vertical-rate0.005/m,
+curves, fixed gateways and sampled cover are still verified, not relaxed.
+
+Village names derive deterministically from original sited directions. White
+arrival nameplates, green junction approach boards, double-sided branch-mouth
+name/distance fingers, and reassurance boards roughly every1km follow the road
+network. Branch arrows point towards the same destination on both faces.
+Traffic is left-hand (right-hand-drive cars); boards stand outside the lane or
+are ceiling-mounted inside bores. Existing walking collision does not yet include
+sign posts or a complete future vehicle envelope.
+
+Displayed distances are to arrival courts along engineered roads, not straight
+lines or coarse backbone costs. The worker can load neighbouring navigation
+profiles beyond GPU residency and has no kilometre cutoff. Search/metadata budgets
+and failed regional engineering can leave a destination unresolved; it is omitted,
+never fabricated. This does not establish complete global road feasibility.
+Tunnel headers use the same bore classification as the mesh, measuring to a real
+exit across regional boundaries. Detected branched bores show NEXT EXIT rather
+than pretending the entire multi-exit network has one length.
+
+Roads publish before potentially lengthy sign planning. Cached signs are tagged
+with their road generation and share its local frame; stale batches never attach
+to a new road field. Font layout and route searches run on the existing worker,
+not in movement/render frames. One bounded atlas/vertex draw renders boards and
+glyphs; no new dependency or per-sign draw call. Initial signs can take time to
+appear while the resident road neighbourhood is being engineered. Normal roads
+flags enable signs too. `road_network_signs` is the inspection replay; optional
+PLANET_ROAD_SIGNS_WAIT=1 waits for readiness before starting the replay clock.
+
 ## Empty regional destinations, 19 October
 
 Coarse macro occupancy is conservative, not proof that a region contains a

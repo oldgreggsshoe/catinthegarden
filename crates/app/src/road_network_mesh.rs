@@ -17,6 +17,7 @@ pub const MAX_VERTICES: usize = 1_500_000;
 pub struct Prepared {
     pub region: Region,
     pub profile: Profile,
+    pub tunnels: Vec<bool>,
     /// Original accepted centres, even though the road ends outside houses.
     pub village_centres: Vec<DVec3>,
 }
@@ -24,6 +25,38 @@ pub struct Prepared {
 impl Prepared {
     pub fn inspection_pose(&self, near: DVec3, radius: f64) -> Option<(DVec3, DVec3)> {
         let p = &self.profile;
+        if std::env::var("PLANET_ROAD_SIGN_VIEW").as_deref() == Ok("tunnel") {
+            let mut status = vec![(false, false, None); p.directions.len()];
+            for (index, &[a, b]) in p.segments.iter().enumerate() {
+                for (i, j) in [(a, b), (b, a)] {
+                    if self.tunnels[index] {
+                        status[i].0 = true;
+                        status[i].2 = Some(j);
+                    } else {
+                        status[i].1 = true;
+                    }
+                }
+            }
+            if let Some((i, (_, _, Some(j)))) = status
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.0 && s.1)
+                .min_by(|(a, _), (b, _)| {
+                    DVec3::from_array(p.directions[*a])
+                        .distance_squared(near.normalize())
+                        .total_cmp(
+                            &DVec3::from_array(p.directions[*b]).distance_squared(near.normalize()),
+                        )
+                })
+            {
+                let at = DVec3::from_array(p.directions[i]) * (radius + p.heights_meters[i]);
+                let next = DVec3::from_array(p.directions[*j]) * (radius + p.heights_meters[*j]);
+                return Some((
+                    at - (next - at).normalize() * 18.0 + at.normalize() * 2.0,
+                    at + at.normalize() * 7.5,
+                ));
+            }
+        }
         let node = self
             .region
             .terminals
@@ -208,11 +241,105 @@ fn prepare_at(
             plan.profile
         }
     };
+    let tunnels = classify_tunnels(&profile, region.key, radius, terrain)?;
     Ok(Prepared {
+        tunnels,
         region,
         profile,
         village_centres: centres,
     })
+}
+
+/// Stable worker metadata shared by geometry and navigation, never cropped by
+/// the camera's resident field. Keeping one classification prevents signs from
+/// measuring an open cut as a tunnel (or treating a cache edge as an exit).
+fn classify_tunnels(
+    p: &Profile,
+    key: TileKey,
+    radius: f64,
+    terrain: &impl Survey,
+) -> Result<Vec<bool>, String> {
+    let frame = Frame::new(road_network::direction(key, 0.5, 0.5), radius)?;
+    let points: Vec<_> = p
+        .directions
+        .iter()
+        .zip(&p.heights_meters)
+        .map(|(d, h)| frame.local(DVec3::from_array(*d) * (radius + h)))
+        .collect();
+    let mut adjacent = vec![Vec::new(); points.len()];
+    for &[a, b] in &p.segments {
+        adjacent[a].push(b);
+        adjacent[b].push(a);
+    }
+    let mut covered = Vec::new();
+    let mut ocean = Vec::new();
+    let mut ground = Vec::new();
+    for (i, &point) in points.iter().enumerate() {
+        let d = DVec3::from_array(p.directions[i]);
+        let g = terrain.ground(d)?;
+        let toward = adjacent[i]
+            .iter()
+            .find_map(|&j| {
+                ((points[j] - point).truncate().length() > 0.001).then_some(points[j] - point)
+            })
+            .unwrap_or(DVec3::Y);
+        let side = DVec3::new(toward.y, -toward.x, 0.0).normalize_or_zero();
+        let mut cover = true;
+        for offset in [-8.0, 0.0, 8.0] {
+            let q = frame.world(point + side * offset).normalize();
+            cover &= terrain.ground(q)?.height - p.heights_meters[i] >= 14.0;
+        }
+        if g.ocean && !cover {
+            return Err("undersea bore has insufficient side/roof cover".into());
+        }
+        covered.push(cover);
+        ocean.push(g.ocean);
+        ground.push(g.height);
+    }
+    // Covered connected components extend deep bores toward real portals.
+    // Shared sea gateways remain covered on BOTH neighbouring regions.
+    let mut tunnel = vec![false; p.segments.len()];
+    let mut edge_adjacency = vec![Vec::new(); points.len()];
+    for (j, &[a, b]) in p.segments.iter().enumerate() {
+        if covered[a] && covered[b] {
+            edge_adjacency[a].push(j);
+            edge_adjacency[b].push(j);
+        }
+    }
+    let mut visited = vec![false; points.len()];
+    for root in 0..points.len() {
+        if visited[root] || edge_adjacency[root].is_empty() {
+            continue;
+        }
+        let mut stack = vec![root];
+        let mut edges = std::collections::BTreeSet::new();
+        let mut deep_length = 0.0;
+        let mut sea = false;
+        while let Some(i) = stack.pop() {
+            if visited[i] {
+                continue;
+            }
+            visited[i] = true;
+            sea |= ocean[i] || terrain.settlement_core_at(DVec3::from_array(p.directions[i]))?;
+            for &e in &edge_adjacency[i] {
+                if edges.insert(e) {
+                    let [a, b] = p.segments[e];
+                    if (ground[a] - p.heights_meters[a]).min(ground[b] - p.heights_meters[b])
+                        >= 19.0
+                    {
+                        deep_length += points[a].distance(points[b]);
+                    }
+                    stack.push(if a == i { b } else { a });
+                }
+            }
+        }
+        if sea || deep_length >= crate::road_tunnel::MIN_LENGTH {
+            for e in edges {
+                tunnel[e] = true;
+            }
+        }
+    }
+    Ok(tunnel)
 }
 
 struct Chunk {
@@ -304,75 +431,7 @@ pub fn snapshot(
                 gateway_branches.insert(node_key(points[i]));
             }
         }
-        let mut covered = Vec::new();
-        let mut ocean = Vec::new();
-        let mut ground = Vec::new();
-        for (i, &point) in points.iter().enumerate() {
-            let d = DVec3::from_array(p.directions[i]);
-            let g = terrain.ground(d)?;
-            let toward = adjacent[i]
-                .iter()
-                .find_map(|&j| {
-                    ((points[j] - point).truncate().length() > 0.001).then_some(points[j] - point)
-                })
-                .unwrap_or(DVec3::Y);
-            let side = DVec3::new(toward.y, -toward.x, 0.0).normalize_or_zero();
-            let mut cover = true;
-            for offset in [-8.0, 0.0, 8.0] {
-                let q = frame.world(point + side * offset).normalize();
-                cover &= terrain.ground(q)?.height - p.heights_meters[i] >= 14.0;
-            }
-            if g.ocean && !cover {
-                return Err("undersea bore has insufficient side/roof cover".into());
-            }
-            covered.push(cover);
-            ocean.push(g.ocean);
-            ground.push(g.height);
-        }
-        // Covered connected components extend deep bores toward real portals.
-        // Shared sea gateways remain covered on BOTH neighbouring regions.
-        let mut tunnel = vec![false; p.segments.len()];
-        let mut edge_adjacency = vec![Vec::new(); points.len()];
-        for (j, &[a, b]) in p.segments.iter().enumerate() {
-            if covered[a] && covered[b] {
-                edge_adjacency[a].push(j);
-                edge_adjacency[b].push(j);
-            }
-        }
-        let mut visited = vec![false; points.len()];
-        for root in 0..points.len() {
-            if visited[root] || edge_adjacency[root].is_empty() {
-                continue;
-            }
-            let mut stack = vec![root];
-            let mut edges = std::collections::BTreeSet::new();
-            let mut deep_length = 0.0;
-            let mut sea = false;
-            while let Some(i) = stack.pop() {
-                if visited[i] {
-                    continue;
-                }
-                visited[i] = true;
-                sea |=
-                    ocean[i] || terrain.settlement_core_at(DVec3::from_array(p.directions[i]))?;
-                for &e in &edge_adjacency[i] {
-                    if edges.insert(e) {
-                        let [a, b] = p.segments[e];
-                        if (ground[a] - p.heights_meters[a]).min(ground[b] - p.heights_meters[b])
-                            >= 19.0
-                        {
-                            deep_length += points[a].distance(points[b]);
-                        }
-                        stack.push(if a == i { b } else { a });
-                    }
-                }
-            }
-            if sea || deep_length >= crate::road_tunnel::MIN_LENGTH {
-                for e in edges {
-                    tunnel[e] = true;
-                }
-            }
-        }
+        let tunnel = &plan.tunnels;
         let mut portal_status = vec![(false, false); points.len()];
         for (e, &[a, b]) in p.segments.iter().enumerate() {
             if (points[b] - points[a]).truncate().length() < 0.001 {

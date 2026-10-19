@@ -157,17 +157,7 @@ impl Span {
             if h > s.cap + 1e-7 {
                 return None;
             }
-            let cover = s.ground.height - h;
-            // Open cuts are expensive; sufficiently buried rock is a tunnel,
-            // whose cost grows more gently with overburden. Sea is ALWAYS bore.
-            let construction = if s.ground.ocean {
-                6.0 + cover.max(0.0) / 2000.0
-            } else if cover > 19.0 {
-                3.0 + cover / 2000.0
-            } else {
-                1.0 + 0.002 * (cover + crate::road::CUT_FLOOR_DEPTH).max(0.0).powi(2)
-                    + 0.01 * (h - s.ground.height - 8.0).max(0.0)
-            };
+            let construction = crate::road_construction::at_height(s.ground, h);
             effort += construction;
         }
         Some(self.length * effort / self.samples.len() as f64 + 0.2 * (a - b).abs())

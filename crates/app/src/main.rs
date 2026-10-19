@@ -26,6 +26,9 @@ mod planet;
 mod probe;
 mod rain;
 mod road;
+mod road_construction;
+mod road_navigation;
+mod road_signs;
 #[cfg(test)]
 mod road_gpu_tests;
 mod road_network;

@@ -28,6 +28,7 @@ struct Shared {
     request: Mutex<Option<Request>>,
     wake: Condvar,
     result: Mutex<Option<(u64, Result<Snapshot, String>)>>,
+    signs: Mutex<Option<(u64, crate::road_signs::Mesh)>>,
     generation: AtomicU64,
     stop: AtomicBool,
 }
@@ -98,6 +99,7 @@ impl Worker {
             request: Mutex::new(None),
             wake: Condvar::new(),
             result: Mutex::new(None),
+            signs: Mutex::new(None),
             generation: AtomicU64::new(0),
             stop: AtomicBool::new(false),
         });
@@ -170,6 +172,7 @@ impl Worker {
                             cache.insert(plan.region.key, (plan, 0));
                         }
                         let mut tick = 0_u64;
+                        let mut navigation = crate::road_navigation::Navigator::default();
                         loop {
                             let request = {
                                 let mut slot = thread_shared.request.lock().unwrap();
@@ -187,6 +190,7 @@ impl Worker {
                                 shared: &thread_shared,
                                 generation: request.generation,
                             };
+                            let mut nav_plans = Vec::new();
                             let result = (|| {
                                 let mut plans = Vec::new();
                                 tick += 1;
@@ -214,11 +218,26 @@ impl Worker {
                                     *age = tick;
                                     plans.push(plan.clone());
                                 }
+                                nav_plans = plans.clone();
                                 road_network_mesh::snapshot(&plans, request.centre, radius, &survey)
                             })();
+                            let frame = result.as_ref().ok().map(|s| s.field.frame);
                             if !survey.cancelled() {
                                 *thread_shared.result.lock().unwrap() =
                                     Some((request.generation, result));
+                            }
+                            // Publish roads first. Navigation can engineer distant regions;
+                            // never hold back a valid resident road set for sign searches.
+                            if let Some(frame) = frame.filter(|_| !survey.cancelled()) {
+                                let result = crate::road_navigation::boards(&mut navigation,
+                                    &nav_plans, request.centre, radius, &backbone, &survey)
+                                    .and_then(|boards| crate::road_signs::bake(&boards, frame));
+                                if !survey.cancelled() {
+                                    match result {
+                                        Ok(mesh) => *thread_shared.signs.lock().unwrap() = Some((request.generation, mesh)),
+                                        Err(error) => tracing::warn!(%error,"road sign planning rejected; roads retained"),
+                                    }
+                                }
                             }
                         }
                     };
@@ -255,6 +274,9 @@ impl Worker {
     pub fn take(&self) -> Option<(u64, Result<Snapshot, String>)> {
         self.shared.result.lock().unwrap().take()
     }
+    pub fn take_signs(&self) -> Option<(u64, crate::road_signs::Mesh)> {
+        self.shared.signs.lock().unwrap().take()
+    }
     pub fn current(&self, generation: u64) -> bool {
         self.shared.generation.load(Ordering::Relaxed) == generation
     }
@@ -272,6 +294,47 @@ impl Drop for Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "asset-backed asynchronous road sign/atlas publication; no GPU"]
+    fn road_network_live_signs_follow_published_field() {
+        let initial = DVec3::new(2574139.618674488, -2554011.900402223, 1699659.6951081678)
+            .normalize()
+            * 4_010_000.0;
+        let (mut worker, start) =
+            Worker::start(crate::find_default_outmap().unwrap(), initial).unwrap();
+        worker.request(start.build_centre, true);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        let mut published = None;
+        loop {
+            if let Some((generation, result)) = worker.take() {
+                let snapshot = result.unwrap();
+                assert!(snapshot.villages >= 39);
+                published = Some(generation);
+            }
+            if let Some((generation, signs)) = worker.take_signs() {
+                assert_eq!(
+                    Some(generation),
+                    published,
+                    "signs must follow the matching road field"
+                );
+                assert!(!signs.vertices.is_empty());
+                assert!(signs.inspection.is_some());
+                eprintln!(
+                    "signs: {} vertices, {}x{} atlas; kinds {:?}",
+                    signs.vertices.len(),
+                    signs.size[0],
+                    signs.size[1],
+                    signs.counts
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sign publication deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
     #[test]
     #[ignore = "asset-backed photographed empty regional branch; no GPU"]
     fn road_network_live_snow_road_has_no_unserved_dead_end() {
@@ -477,6 +540,7 @@ mod tests {
             request: Mutex::new(None),
             wake: Condvar::new(),
             result: Mutex::new(None),
+            signs: Mutex::new(None),
             generation: AtomicU64::new(0),
             stop: AtomicBool::new(false),
         });

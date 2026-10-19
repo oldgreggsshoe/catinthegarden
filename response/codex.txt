@@ -219,3 +219,47 @@ So: **a working alternative/experimental path, plus shared shadow data—not cur
 I’ll do this in stages: finish validating the dead-end fix, then review road-versus-tunnel routing costs, add tunnel-length labels, and add stable village names and directional signs.
 
 I’ll treat **right-hand drive as left-hand traffic**, with roadside signs facing approaching traffic on the left. Distances will follow the road network, not straight-line distances; signs must still find villages beyond the currently loaded regions.
+
+The dead-end fix has passed its replay and worker checks.
+
+For routing, I found an important limitation: the first planner heavily penalises steep terrain without considering a bore, and the height-aware tunnel search is only used when that first route fails. A feasible but very long detour can therefore survive. I’ll make a tunnel estimate compete during the initial route search, while keeping the existing grade, bend and roof-cover checks.
+
+The ridge regression now chooses a short, buried route instead of a detour roughly twice the direct distance, while retaining the 25% grade limit. The real-region checks are running now.
+
+For the signs, I’ll trace engineered routes beyond the loaded area. Tunnel labels will measure to the exit, and junction signs will find the nearest village down each outgoing branch. I won’t substitute straight-line distances or treat an unloaded boundary as a destination.
+
+The real-region routing checks pass too, including the 244-village area and the undersea connection. Shorter tunnel routes now compete with surface detours without relaxing the engineering limits.
+
+The naming and sign code is in place. I’m checking readability, traffic-side placement and route distances. Roads publish first, so a distant-destination search won’t hold up the visible road network.
+
+I’ll check the new capture against its build and road-planning log. Signs should appear near junctions and village entrances, but they’re generated after the roads; I want to distinguish “not ready yet” from a placement bug.
+
+I’ll remove the unused F5/ray-rendering path and its startup resources, while keeping the height data the raster renderer uses for terrain shadows.
+
+The ray pass does **not** run during normal raster rendering, so I don’t expect removing it alone to recover steady-state FPS. It should reduce startup work and GPU-memory use; I’ll verify that rather than claim an FPS gain.
+
+The tunnel label is created in **`crates/app/src/road_navigation.rs:528–540`**:
+
+```rust
+lines: vec![format!(
+    "{} {}",
+    if d.branched { "NEXT EXIT" } else { "TUNNEL" },
+    distance(d.metres + e.length)
+)],
+```
+
+Just above that, `up * 7.5` sets its height above the road; `width: 5.5` sets the board width.
+
+The actual text layout and glyph geometry are generated in **`crates/app/src/road_signs.rs:34`**, in `bake()`. Text sizing is around **lines 121–122**.
+
+The road/tunnel cost changes, village names and signs are implemented. All **7 worker checks and 7 GPU road tests pass**, and I’ve inspected a rendered tunnel-length label.
+
+The missing-sign screenshot is still under investigation. **F5 removal isn’t done yet**—that’s the next change, keeping raster shadow data but removing the unused ray pipelines and buffers. The latest road/sign changes also still need committing and pushing.
+
+Yes. I’ll put a village-name sign at each arrival court, and a **double-sided direction sign at the mouth of the village branch**, showing its name and road distance. That will be visible at the turn itself, rather than only on the approach to the junction.
+
+Agreed—F5 stays untouched for now. I’ll finish the village entrance and branch signs, run the focused checks, then commit and push the road changes.
+
+Implemented and pushed: village entrance nameplates and double-sided branch signs with names, directions and road distances. The photographed-junction regression and rendered branch-sign check pass.
+
+F5 is unchanged, as requested.

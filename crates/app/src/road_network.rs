@@ -396,16 +396,7 @@ fn arc(a: DVec3, b: DVec3, radius: f64) -> f64 {
     a.cross(b).length().atan2(a.dot(b)) * radius
 }
 fn edge_cost(distance: f64, a: Ground, b: Ground) -> f64 {
-    let rise = (b.height - a.height).abs();
-    let excess_grade = (rise / distance.max(0.001) - 0.08).max(0.0);
-    // Positive costs only. Water isn't forbidden: penalise its construction
-    // and depth so a shared tunnel can beat a long detour, but not cheap land.
-    let sea = if a.ocean || b.ocean {
-        7.0 + (-a.height.min(b.height)).max(0.0) / 2000.0
-    } else {
-        0.0
-    };
-    distance * (1.0 + sea + 25.0 * excess_grade * excess_grade) + 2.0 * rise
+    crate::road_construction::survey_edge(distance, a, b)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -827,6 +818,66 @@ mod tests {
         let empty = Backbone::survey(2, 4e6, &Sparse { none: true }).unwrap();
         assert!(empty.links.is_empty());
         assert_eq!(empty.retained_region_count(), 0);
+    }
+
+    #[test]
+    fn road_network_short_ridge_bore_competes_with_a_long_surface_detour() {
+        struct Ridge;
+        impl Survey for Ridge {
+            fn ground(&self, d: DVec3) -> Result<Ground, String> {
+                let k = test_key();
+                let (normal, u, v) = crate::planet::cube_face_basis(k.face.index());
+                let x = (d.dot(u) / d.dot(normal) + 1.0) * 128.0 - k.x as f64;
+                let y = (d.dot(v) / d.dot(normal) + 1.0) * 128.0 - k.y as f64;
+                let ridge = (1.0 - (x - 0.5).abs() / 0.08).max(0.0);
+                let gap = ((0.9 - y) / 0.1).clamp(0.0, 1.0);
+                Ok(Ground {
+                    height: 900.0 + 1400.0 * ridge * gap,
+                    ocean: false,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(Vec::new())
+            }
+        }
+        let r = local_tree(
+            test_key(),
+            4e6,
+            &Ridge,
+            terminals(&[(0.25, 0.5), (0.75, 0.5)]),
+            2,
+        )
+        .unwrap();
+        let direct = arc(
+            direction(test_key(), 0.25, 0.5),
+            direction(test_key(), 0.75, 0.5),
+            4e6,
+        );
+        assert!(
+            r.length_meters < direct * 1.25,
+            "a short viable bore should beat the long detour: {} vs {}",
+            r.length_meters,
+            direct
+        );
+        let p = crate::road_network_profile::Profile::fit(&r, 4e6, &Ridge)
+            .unwrap()
+            .unwrap();
+        assert!(p.maximum_grade <= 0.25);
+        assert!(
+            p.maximum_grade_change_per_meter
+                <= crate::road_vertical::MAX_GRADE_CHANGE_PER_METER + 1e-8
+        );
+        eprintln!(
+            "ridge: direct {direct:.1}m, selected {:.1}m, max grade {:.4}",
+            r.length_meters, p.maximum_grade
+        );
+        assert!(
+            p.directions
+                .iter()
+                .zip(&p.heights_meters)
+                .any(|(d, h)| { Ridge.ground(DVec3::from_array(*d)).unwrap().height - h > 100.0 }),
+            "the alternative must actually pass below the ridge"
+        );
     }
 
     #[test]
