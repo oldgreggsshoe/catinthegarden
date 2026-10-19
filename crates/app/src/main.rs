@@ -29,6 +29,7 @@ mod road;
 #[cfg(test)]
 mod road_gpu_tests;
 mod road_network;
+mod road_network_align;
 mod road_network_field;
 mod road_network_mesh;
 mod road_network_profile;

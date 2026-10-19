@@ -141,3 +141,23 @@ All geometry stays precomputed/cached to protect FPS. I’ll finish validating t
 Yes—continuous bends and one shared, rounded junction mesh, with open chambers underground—not overlapping road strips.
 
 The vertical-smoothing pass is tested and pushed, retaining the 25% maximum. Horizontal curves and proper junctions are next; the current pads remain provisional.
+
+I’ll find and inspect your latest manual captures, trace how the corners and edge walls are generated, then fix them together so the road surface, barriers and collision stay consistent.
+
+I’ve opened all three captures. They show square bends, barriers stopping before the outside corners, and road markings running across junction mouths.
+
+I’m checking three causes separately: unrounded centre-lines, wall suppression that removes too much near junctions, and independently drawn road strips that overlap. I’ll reproduce the photographed sites and add geometry checks for bend smoothness and continuous edge protection before changing them.
+
+Plan: add a replay of your three camera positions, then round the worker-generated alignment before fitting its height. I’ll update the mesh and road field so curved decks, junction edges, walls and collision agree. That should also let walls stop only at real road openings, rather than disappearing from an entire junction-adjacent span. The 25% cap and presentation/jitter fix will stay unchanged.
+
+Understood—the road’s route itself needs broad, progressive bends, not rounded patches covering sharp turns. I’m smoothing the centreline before fitting its height, so the deck and edge walls follow the same curve. Junctions still need proper openings, but ordinary bends shouldn’t look like junctions.
+
+The first replay now shows broad bends replacing the square changes in direction, with continuous walls along them. The mountain, village and undersea connectivity checks also pass. I’m checking the joins and walking surface next; genuine junctions remain distinct from ordinary bends.
+
+I caught a small tunnel-roof gap in the regression replay. I’m checking the joins and end caps before pushing, so the smoother road alignment doesn’t leave a new tunnel defect.
+
+The apparent roof gap was terrain intruding through the lining: its tunnel mask used the original seabed height rather than the drawn fragment height. That’s fixed, and all three replay captures are clear. Final checks are running now.
+
+The actual road routes now have broad bends, with continuous edge walls—not just rounded corner patches. The 25% cap stays; measured frame time was roughly unchanged.
+
+Road checks passed, committed and pushed. Dedicated junction turning geometry remains next.

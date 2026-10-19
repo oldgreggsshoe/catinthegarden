@@ -252,3 +252,13 @@ fn road_network_open_cut_owns(direction: vec3<f32>, height: f32) -> bool {
     }
     return false;
 }
+
+// Actual raster height, including LOD skirts and triangle chord sag. Avoid
+// subtracting two planet-sized f32 radii: rationalize the small curvature term.
+fn road_raster_fragment_height(relative: vec3<f32>, eye_up: vec3<f32>, eye_height: f32, radius: f32) -> f32 {
+    let along=dot(relative,eye_up);
+    let transverse=relative-eye_up*along;
+    let side2=dot(transverse,transverse);
+    let radial=radius+eye_height+along;
+    return eye_height+along+side2/(sqrt(radial*radial+side2)+radial);
+}

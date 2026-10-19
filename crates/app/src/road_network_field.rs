@@ -108,6 +108,8 @@ pub struct Field {
     pub segments: Vec<Segment>,
     cells: BTreeMap<(i32, i32), Vec<usize>>,
     data: Vec<[f32; 4]>,
+    /// Exact shared ribbon cross-sections for walking the rendered triangles.
+    deck_sections: Option<Vec<[DVec3; 2]>>,
 }
 fn hash(x: i32, y: i32) -> usize {
     ((x as u32).wrapping_mul(73856093) ^ (y as u32).wrapping_mul(19349663)) as usize & (BUCKETS - 1)
@@ -147,11 +149,13 @@ impl Field {
                     let list = cells.entry((x, y)).or_default();
                     list.push(i);
                     references += 1;
-                    if list.len() > MAX_PER_CELL
-                        || references > MAX_REFS
-                        || cells.len() > BUCKETS / 2
-                    {
-                        return Err("network excavation cell/reference budget exceeded".into());
+                    let count = list.len();
+                    if count > MAX_PER_CELL || references > MAX_REFS || cells.len() > BUCKETS / 2 {
+                        return Err(format!(
+                            "network excavation cell/reference budget exceeded: local={}, refs={references}, cells={}",
+                            count,
+                            cells.len()
+                        ));
                     }
                 }
             }
@@ -211,6 +215,7 @@ impl Field {
             segments,
             cells,
             data,
+            deck_sections: None,
         })
     }
     pub fn set_geometry_window(&mut self, centre: DVec2, radius: f64) {
@@ -221,12 +226,27 @@ impl Field {
     pub fn gpu_data(&self) -> &[[f32; 4]] {
         &self.data
     }
-    fn candidates(&self, xy: DVec2) -> impl Iterator<Item = Segment> + '_ {
+    fn candidate_indices(&self, xy: DVec2) -> impl Iterator<Item = usize> + '_ {
         self.cells
             .get(&((xy.x / CELL).floor() as i32, (xy.y / CELL).floor() as i32))
             .into_iter()
             .flatten()
-            .map(|&i| self.segments[i])
+            .copied()
+    }
+    pub(crate) fn candidates(&self, xy: DVec2) -> impl Iterator<Item = Segment> + '_ {
+        self.candidate_indices(xy).map(|i| self.segments[i])
+    }
+    pub(crate) fn set_deck_sections(&mut self, sections: Vec<[DVec3; 2]>) -> Result<(), String> {
+        if sections.len() != self.segments.len()
+            || sections
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite() || v.length() > 1.03)
+        {
+            return Err("invalid network deck cross-sections".into());
+        }
+        self.deck_sections = Some(sections);
+        Ok(())
     }
     pub fn height(&self, d: DVec3, uncut: f64) -> f64 {
         let cosine = d.dot(self.frame.up);
@@ -295,8 +315,38 @@ impl Field {
             d.dot(self.frame.forward),
             d.dot(self.frame.up),
         );
-        self.candidates(local.truncate())
-            .filter_map(|s| {
+        self.candidate_indices(local.truncate())
+            .filter_map(|i| {
+                let s = self.segments[i];
+                if let Some(sections) = &self.deck_sections {
+                    let [a, b] = sections[i].map(|v| v * crate::road::HALF_WIDTH);
+                    let q = [s.a - a, s.a + a, s.b + b, s.b - b];
+                    // Same two triangles as road::quad, including sloped miters.
+                    return [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]
+                        .into_iter()
+                        .filter_map(|[a, b, c]| {
+                            let n = (b - a).cross(c - a);
+                            let denominator = n.dot(ray);
+                            if denominator.abs() < 1e-10 {
+                                return None;
+                            }
+                            let radial = (n.dot(a) + n.z * self.frame.radius) / denominator;
+                            let p = (ray * radial - DVec3::Z * self.frame.radius - a).truncate();
+                            let u = (b - a).truncate();
+                            let v = (c - a).truncate();
+                            let cross = |a: DVec2, b: DVec2| a.x * b.y - a.y * b.x;
+                            let determinant = cross(u, v);
+                            if determinant.abs() < 1e-10 {
+                                return None;
+                            }
+                            let x = cross(p, v) / determinant;
+                            let y = cross(u, p) / determinant;
+                            let h = radial - self.frame.radius;
+                            (x >= -1e-7 && y >= -1e-7 && x + y <= 1.0 + 1e-7 && eye >= h - 0.25)
+                                .then_some(h)
+                        })
+                        .reduce(f64::max);
+                }
                 let delta = (s.b - s.a).truncate();
                 let normal =
                     DVec3::Z - delta.extend(0.0) * (s.b.z - s.a.z) / delta.length_squared();

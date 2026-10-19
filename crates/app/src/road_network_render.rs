@@ -18,6 +18,9 @@ pub fn initial_position() -> DVec3 {
             DVec3::new(2574139.618674488, -2554011.900402223, 1699659.6951081678).normalize()
         }
         Ok("undersea") => return undersea_start_position(),
+        Ok("manual_corners") => {
+            DVec3::new(1818372.4030723977, 2163321.697198833, 2842753.1646584594).normalize()
+        }
         _ => crate::road::up(),
     };
     direction * (crate::planet::planet_radius_meters() + 10_000.0)

@@ -4,13 +4,46 @@
 `origin/experiment/ocean-wind-sea-spectrum`. This line used to pin a commit hash and was stale
 almost every time it was read -- a header cannot name the commit that carries it -- so it does not
 any more; `git log -1` is authoritative. The name is historical: the branch was
-opened for the ocean, moved to **a second body**, and the ocean is the active subject again -- its
-surface appearance and crest geometry.
+opened for the ocean and moved through other work; the current subject is the
+road network. Preserve unrelated local ocean/renderer edits.
 
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current follow-up, 18 October: smoother road-gradient transitions.**
+**Current follow-up, 19 October: real horizontal curves, not corner pads.**
+The user's manual captures `manual/1792390010-1078115` showed hard centre-line
+turns and parapets omitted from entire junction-adjacent spans. The network now
+fits tangent-continuous circular alignments BEFORE its vertical profile, cuts,
+bores, forest field and meshes. Target radius100m, locally constrained minimum15m;
+<=8-degree arc stations keep bore miters inside the existing end-air overlap.
+Short/reversing curves reject rather than falling back to hard corners. Search
+now respects terminal approach headings. Fixed village accesses become leaves
+when needed, rather than forcing a kink through a fixed through-road anchor;
+gateways share an inward tangent as well as position/height. The 25% grade and
+0.005/m vertical-rate limits and synchronized presentation are unchanged.
+
+Shared cross-sections join decks, paint, walls, banks, far ribbons and lining.
+Walls stop only at actual openings, not a whole approach; paint is excluded
+from crossing mouths. Supports/paint use chain distance, not arc sample count.
+CPU walking intersects the same two deck triangles, including sloped miters.
+All construction stays on the existing worker, with unchanged field/GPU bounds.
+
+A regression replay exposed blue seabed/LOD-skirt intrusions into a dry bore:
+terrain classified their unskirted height, not their actual raster height.
+The mask now uses stable camera-relative fragment height (including chord sag),
+only when the network contains bores. CPU rays found intact front-facing lining;
+ocean ablation did nothing, terrain ablation removed the intrusions, and the
+actual-height fix changes sky-like pixels170/208/0 to0/0/0 at the SAME poses.
+Tunnel extensions/caps are per true junction end, leaving the other smooth end
+on its shared cross-section.
+
+Final validation/evidence is recorded in the dated section at the end and
+`docs/ROAD_NETWORK.md`. Ordinary bends are implemented; a unified rounded
+junction surface/chamber and vehicle swept-path/parapet collision checks are
+still future work. These are tangent-continuous circles, not clothoid steering
+transitions or a proven design-speed/vehicle envelope. Do not claim otherwise.
+
+**Previous phase, 18 October: smoother road-gradient transitions.**
 The 25% maximum remains unchanged. Both the network and old pilot now use
 generation-time constrained vertical profiles, with maximum station grade
 change 0.005/m (at most 10 percentage points per 20m; 25% to flat needs at least
@@ -43,18 +76,14 @@ rendering still costs ~16.63ms. This is not an FPS-improvement claim, nor a
 matched before/after comparison with the older camera pose. Evidence:
 `test-runs/road-vertical-curves-validation.json`.
 
-**Next user requirement: vehicle-drivable horizontal alignments and proper
-junctions. Not implemented in this vertical pass.** Current joined strips,
-round pads and intersecting bore liners remain provisional. Plan continuous
-signed-curvature-limited bends, starting around a 100m main-road radius with
-slower village approaches; shared gateway headings/cross-sections as well as
-positions; a unified rounded T/Y/junction outline and surface with properly
-terminated markings; a single open chamber for tunnel junctions; swept-path
-and parapet/support clearance checks. Engineer/collision-test the final curved
-alignment BEFORE producing decks, cuts, bores and forest exclusion, and recheck
-all grade/cover constraints. Cache/chunk the geometry; do not add a per-frame
-curve solve or one draw call per junction. Confirm design speeds/reference
-vehicle dimensions during that pass. Preserve presentation/jitter policy.
+**Follow-up after the horizontal pass:** finish one unified T/Y junction
+surface and open tunnel chamber, with proper corner turning paths/markings,
+progressive steering transitions and vehicle swept-path/parapet/support checks.
+The current exterior walls follow the deck union, but junction decks still use
+joined strips; removing cosmetic pads is not a full junction redesign. Confirm
+reference vehicle dimensions/design speeds before claiming vehicle acceptance.
+Keep all derived geometry/physics on the same engineered alignment, retain all
+village/gateway anchors and recheck grades/roof cover and matched performance.
 
 **Previous work: live planet-wide village roads and forest clearance.**
 The user confirmed the default jitter workaround works ("all good"). Preserve
@@ -12754,3 +12783,46 @@ FoveatedRenderer::new builds the six faces on `std::thread::scope` threads. Fove
 ## 18 October: camera-jitter diagnostic
 
 User reports the view jitters back and forth while turning over land (not near the ships; ship contacts were zero over a 70 s run, so the second ship is not the cause). `PLANET_DEBUG_TURN=1` appends one line per frame to `test-runs/turn_debug.txt` (dt, mode, yaw, pitch, altitude, surface height, flight position, LOD splits/merges/drawn/fallback/loaded). Next: read a user run to see whether yaw reverses, the eye bobs with terrain height, or LOD churn coincides.
+
+## 19 October — actual horizontal alignments and protected edges
+
+- `cargo check` and release build pass. Serial app suite: **721 passed, the
+  same six unrelated failures,57 ignored**; failures remain the three optical
+  zoom/FOV checks, scenario FOV range, shallow tint and water-counter assertion.
+  All six production Vulkan road tests pass, including the new drawn-height
+  bore fixture. All four real startup/residency checks pass: all244 villages
+  in the village window,15 mountain,76 undersea. Village resident mesh24,233
+  spans/854,202 vertices; initial39-village mesh432,756 vertices. No budgets
+  were raised. Logs: `/tmp/stuff-road-horizontal-verified-{check,build,full,assets}.log`,
+  `/tmp/stuff-road-horizontal-raster-height-gpu.log`.
+- Original manual captures: `manual/1792390010-1078115`. Replay of their three
+  camera positions: baseline `road_network_manual_corners/1792391361-1084572`,
+  final `1792394427-1096308`. The initial diagnostic's first two poses were
+  interpolated; that earlier artifact is NOT the accepted baseline. Final
+  captures show real broad curves and continuous exterior parapets. True
+  junctions are still distinguishable from ordinary bends; they are not signed
+  off as final vehicle turning geometry.
+- All19 captures across five final replays pass their assertions. Opened final
+  manual002, undersea002, village overview003, mountain walk003 and pilot004:
+  `road_network_walk/1792394458-1096406` (undersea),
+  `road_network_overview/1792394492-1096506`,
+  `road_network_walk/1792394542-1096640` (mountain),
+  `road_surface_trial/1792394584-1096738` (unchanged legacy pilot).
+  Walking clearance is1.7m. A straight walking replay is not a vehicle-route
+  traversal or user confirmation of motion/presentation quality.
+- Bore regression: curved pre-fix walk `1792393444-1092779` contains170/208/0
+  sky-like blue pixels; actual-height-mask fix `1792394133-1094416` and final
+  `1792394458-1096406` both contain0/0/0. RGB criterion: B>1.35R,
+  B>1.12G,B>60 (8-bit). CPU mesh rays found intact front-facing lining at the
+  affected pixels; ocean-off ablation left the defect, terrain-off removed it.
+  Per-end lining extension alone did not fix the defect. Do not misidentify
+  this as an ocean or missing roof-mesh fix. Temporary mesh probe removed.
+- Recorded same-pose X11/Immediate640x360 synchronized manual replay medians:
+  **71.465ms before /72.145ms after**, nine steady samples each (~14.0/~13.9fps).
+  One pair, ~0.68ms/~1% difference: approximately flat, NOT an FPS improvement
+  or a statistically strong benchmark. Network excavation cost remains a
+  separate performance problem. Final village overview56.033ms (23 samples),
+  undersea48.815ms, mountain63.816ms, pilot40.625ms; do not compare these to
+  older runs with different automatically derived inspection poses.
+  Binary hash, paths, assertions and timings:
+  `test-runs/road-horizontal-curves-validation.json`. No GPU timestamps used.

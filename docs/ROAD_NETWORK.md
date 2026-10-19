@@ -14,6 +14,87 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Horizontal alignments and edge protection, 19 October
+
+Ordinary roads now follow actual tangent-continuous curves, not a square route
+hidden by rounded end pads. Worker-side `road_network_align.rs` rounds each
+non-branching chain before height fitting, preferring100m radius, sharing trim
+space between adjacent bends, and rejecting radii below15m or reversals. Smaller
+60/30/15m targets may be tried when the full coupled profile cannot fit; this is
+not a universal100m minimum or a highway design-speed guarantee. Arc samples
+are <=8 degrees/20m. Surveyed heights are resampled and the final curved route
+is verified against the existing25% grade,0.005/m vertical-rate and cover caps.
+Search carries terminal approach headings rather than allowing an initial or
+final step to double back. Village accesses are leaf spurs when a fixed access
+would otherwise force a through-road kink. Gateway inward tangents agree across
+region/cube seams; coincident aliases retain graph connectivity.
+
+Global shared cross-sections join the deck, parapets, paint, cut banks, far-AA
+ribbons and bore lining. Geometric interval subtraction leaves exterior walls
+right up to real mouths; it does not suppress an entire junction-adjacent span
+or infer falls from excavation floor depth. Paint is removed at crossing mouths.
+Dashes retain their chain phase and supports remain roughly40m apart even on
+densely sampled curves. Walking queries intersect the rendered ribbon's two
+triangles, rather than extrapolating a straight centre-line plane at miters.
+The bounded hash index still has32 probes/64 local candidates; overflow still
+rejects atomically. No per-frame routing/curve solve or presentation change.
+
+Actual-height tunnel masking is also required: raster LOD skirts and chord sag
+can put a fragment inside a bore while its interpolated authoring terrain height
+is above it. The terrain bore test now uses stable camera-relative raster height
+when network bores exist. This fixes blue terrain intruding ahead of intact
+lining, not a missing roof mesh. Per-end junction caps/extensions do not pull a
+neighbouring smooth join apart. The shared shader helper has a Vulkan regression.
+
+This is NOT the finished vehicle/junction phase: branch surfaces remain joined
+strips with mouth-aware walls/paint, not one rounded, crossfall-engineered T/Y
+mesh or tunnel chamber. Circular bends are tangent-continuous but do not yet
+ramp steering curvature like clothoids. Vehicle envelopes, turning-lane swept
+paths and parapet/support collision remain to implement and validate.
+
+### Verified horizontal-pass evidence
+
+- `cargo check` and release build pass. Serial app suite: **721 passed, the
+  same six unrelated failures,57 ignored**; failures remain the three optical
+  zoom/FOV checks, scenario FOV range, shallow tint and water-counter assertion.
+  All six production Vulkan road tests pass, including the new drawn-height
+  bore fixture. All four real startup/residency checks pass: all244 villages
+  in the village window,15 mountain,76 undersea. Village resident mesh24,233
+  spans/854,202 vertices; initial39-village mesh432,756 vertices. No budgets
+  were raised. Logs: `/tmp/stuff-road-horizontal-verified-{check,build,full,assets}.log`,
+  `/tmp/stuff-road-horizontal-raster-height-gpu.log`.
+- Original manual captures: `manual/1792390010-1078115`. Replay of their three
+  camera positions: baseline `road_network_manual_corners/1792391361-1084572`,
+  final `1792394427-1096308`. The initial diagnostic's first two poses were
+  interpolated; that earlier artifact is NOT the accepted baseline. Final
+  captures show real broad curves and continuous exterior parapets. True
+  junctions are still distinguishable from ordinary bends; they are not signed
+  off as final vehicle turning geometry.
+- All19 captures across five final replays pass their assertions. Opened final
+  manual002, undersea002, village overview003, mountain walk003 and pilot004:
+  `road_network_walk/1792394458-1096406` (undersea),
+  `road_network_overview/1792394492-1096506`,
+  `road_network_walk/1792394542-1096640` (mountain),
+  `road_surface_trial/1792394584-1096738` (unchanged legacy pilot).
+  Walking clearance is1.7m. A straight walking replay is not a vehicle-route
+  traversal or user confirmation of motion/presentation quality.
+- Bore regression: curved pre-fix walk `1792393444-1092779` contains170/208/0
+  sky-like blue pixels; actual-height-mask fix `1792394133-1094416` and final
+  `1792394458-1096406` both contain0/0/0. RGB criterion: B>1.35R,
+  B>1.12G,B>60 (8-bit). CPU mesh rays found intact front-facing lining at the
+  affected pixels; ocean-off ablation left the defect, terrain-off removed it.
+  Per-end lining extension alone did not fix the defect. Do not misidentify
+  this as an ocean or missing roof-mesh fix. Temporary mesh probe removed.
+- Recorded same-pose X11/Immediate640x360 synchronized manual replay medians:
+  **71.465ms before /72.145ms after**, nine steady samples each (~14.0/~13.9fps).
+  One pair, ~0.68ms/~1% difference: approximately flat, NOT an FPS improvement
+  or a statistically strong benchmark. Network excavation cost remains a
+  separate performance problem. Final village overview56.033ms (23 samples),
+  undersea48.815ms, mountain63.816ms, pilot40.625ms; do not compare these to
+  older runs with different automatically derived inspection poses.
+  Binary hash, paths, assertions and timings:
+  `test-runs/road-horizontal-curves-validation.json`. No GPU timestamps used.
+
 ## Vertical-curve follow-up, 18 October
 
 The user's **25% maximum grade is unchanged**. `road_vertical.rs` additionally

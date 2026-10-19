@@ -212,7 +212,7 @@ impl Profile {
                         .normalize_or_zero();
                     let b = (dirs[neighbours[1]] - up * dirs[neighbours[1]].dot(up))
                         .normalize_or_zero();
-                    a.dot(b) > -0.995
+                    a.dot(b) > -20.0_f64.to_radians().cos()
                 });
             flat_nodes[i] = flat;
             if flat {

@@ -31,6 +31,12 @@ impl Constraint {
         let value = self.value(heights);
         (self.lo - value).max(value - self.hi).max(0.0)
     }
+
+    fn satisfied(&self, heights: &[f64]) -> bool {
+        // Short horizontal-curve stations need proportionally tighter grade
+        // tolerances; an absolute height tolerance could exhaust their margin.
+        self.error(heights) <= TOLERANCE.min((self.hi - self.lo).abs() * 0.0002)
+    }
 }
 
 /// Links carry conservative physical horizontal lengths. A zero grade limit
@@ -190,7 +196,7 @@ pub(crate) fn smooth(
             for (i, &(lo, hi)) in bounds.iter().enumerate() {
                 heights[i] = heights[i].clamp(lo, hi);
             }
-            if constraints.iter().all(|c| c.error(heights) <= TOLERANCE) {
+            if constraints.iter().all(|c| c.satisfied(heights)) {
                 for i in 0..heights.len() {
                     heights[i] = heights[groups[i]];
                 }

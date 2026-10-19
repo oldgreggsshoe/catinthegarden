@@ -2598,7 +2598,13 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let biome_id = sample_biome(outmap, input.source_uv, direction);
     let ice = outmap && biome_id == 2u;
     let lake = outmap && biome_id == 1u;
-    if road_tunnel_void(direction, input.surface_height_and_fog_color.x) > 0.0 { discard; }
+    var bore_height=input.surface_height_and_fog_color.x;
+    if ROAD_CUTS_ENABLED && road_cut_data[0].w>1.5 && road_cut_data[0].z>0.5 {
+        bore_height=road_raster_fragment_height(input.camera_relative_view_position,
+            normalize(camera.camera_planet_direction_view_altitude.xyz),
+            camera.camera_planet_direction_view_altitude.w,PLANET_RADIUS_METERS);
+    }
+    if road_tunnel_void(direction, bore_height) > 0.0 { discard; }
     // Cached network banks author narrow cuts the terrain grid can miss.
     if road_network_open_cut_owns(direction,input.surface_height_and_fog_color.x) { discard; }
     // Render baked bathymetry into the opaque snapshot for surface refraction.

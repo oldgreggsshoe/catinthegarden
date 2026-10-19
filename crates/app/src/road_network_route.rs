@@ -313,6 +313,11 @@ impl Grid {
                     }
                     let cell = cy * side + cx;
                     let span = Span::survey(d, self.dirs[cell], self.radius, terrain)?;
+                    // A near-zero approach cannot accommodate a drivable
+                    // horizontal transition into the next lattice span.
+                    if span.length > 0.001 && span.length < 45.0 {
+                        continue;
+                    }
                     let allowance = SEARCH_GRADE * span.length * (1.0 + height.abs() / self.radius);
                     let lo = ((height - allowance) / HEIGHT_STEP).ceil() as i32;
                     let hi = ((height + allowance).min(self.samples[cell].cap) / HEIGHT_STEP)
@@ -419,7 +424,9 @@ fn heuristic(
 fn search(
     grid: &mut Grid,
     starts: &[(Position, f64)],
+    start_direction: DVec3,
     goals: &HashMap<Position, Goal>,
+    nodes: &[Node],
     terrain: &impl Survey,
     limit: usize,
 ) -> Result<Result<Path, (&'static str, usize)>, String> {
@@ -440,10 +447,24 @@ fn search(
     let mut records = HashMap::<State, Record>::new();
     let mut heap = BinaryHeap::new();
     for &(position, cost) in starts {
-        let state = State {
-            position,
-            heading: 8,
+        // An approach already has a heading: treating it as directionless
+        // allowed a first lattice step to double straight back on itself.
+        let at = grid.dirs[position.cell];
+        let incoming = (at - start_direction).normalize_or_zero();
+        let heading = if incoming.length_squared() > 0.5 {
+            grid.neighbours[position.cell]
+                .iter()
+                .max_by(|a, b| {
+                    (grid.dirs[a.cell] - at)
+                        .normalize()
+                        .dot(incoming)
+                        .total_cmp(&(grid.dirs[b.cell] - at).normalize().dot(incoming))
+                })
+                .map_or(8, |n| n.heading)
+        } else {
+            8
         };
+        let state = State { position, heading };
         if records.get(&state).is_none_or(|r| cost < r.cost) {
             records.insert(state, Record { cost, parent: None });
             heap.push(Reverse(Queue {
@@ -470,7 +491,19 @@ fn search(
             return Ok(Err(("height-state search budget exceeded", expanded)));
         }
         let p = item.state.position;
-        if let Some(&goal) = goals.get(&p) {
+        let drivable_goal = goals.get(&p).copied().filter(|goal| {
+            if goal.tail_cost == 0.0 {
+                return true;
+            }
+            let at = grid.dirs[p.cell];
+            let previous = records[&item.state]
+                .parent
+                .map_or(start_direction, |parent| grid.dirs[parent.position.cell]);
+            let incoming = (at - previous).normalize_or_zero();
+            let outgoing = (DVec3::from_array(nodes[goal.node].direction) - at).normalize_or_zero();
+            incoming.dot(outgoing) >= -1e-6
+        });
+        if let Some(goal) = drivable_goal {
             let cost = item.cost + goal.tail_cost;
             if best.is_none_or(|b| cost < b.0) {
                 best = Some((cost, item.state, goal));
@@ -674,7 +707,15 @@ fn reroute_with_limit(
         }
         let starts = grid.approaches(region, dirs[terminal], samples[terminal].anchor, terrain)?;
         stats.searched_terminals += 1;
-        let path = match search(&mut grid, &starts, &goals, terrain, limit)? {
+        let path = match search(
+            &mut grid,
+            &starts,
+            dirs[terminal],
+            &goals,
+            &nodes,
+            terrain,
+            limit,
+        )? {
             Ok(p) => p,
             Err((reason, expanded)) => {
                 return Ok(Err(Rejected {
@@ -768,7 +809,7 @@ fn reroute_with_limit(
             )
         })
         .sum();
-    let result = Region {
+    let mut result = Region {
         key: region.key,
         village_count: region.village_count,
         terminals: region.terminals.clone(),
@@ -783,16 +824,45 @@ fn reroute_with_limit(
     if result.edges.len() + 1 != result.nodes.len() {
         return Err("height-aware rerouting produced a non-tree".into());
     }
-    let fixed: Vec<_> = heights.into_iter().enumerate().collect();
-    let p = match Profile::fit_seeded(&result, radius, terrain, &fixed)? {
-        Ok(p) => p,
-        Err(verification) => {
+    crate::road_network_align::separate_accesses(&mut result, radius, terrain, Some(&mut heights))?;
+    let mut curved = None;
+    let mut verification = None;
+    for target in [
+        crate::road_network_align::TARGET_RADIUS,
+        60.0,
+        30.0,
+        crate::road_network_align::MIN_RADIUS,
+    ] {
+        let aligned = match crate::road_network_align::align(
+            &result,
+            radius,
+            terrain,
+            Some(&heights),
+            target,
+        ) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::debug!(key=?result.key,target,reason=%e,"network alignment rejected");
+                continue;
+            }
+        };
+        match Profile::fit_seeded(&aligned.region, radius, terrain, &aligned.seeds)? {
+            Ok(p) => {
+                curved = Some((aligned.region, p));
+                break;
+            }
+            Err(rejected) => verification = Some(rejected),
+        }
+    }
+    let (result, p) = match curved {
+        Some(plan) => plan,
+        None => {
             return Ok(Err(Rejected {
                 terminal: root,
                 connected_terminals: connected.len(),
-                reason: "dense verification rejected searched alignment",
+                reason: "curved dense verification rejected searched alignment",
                 expanded_states: stats.expanded_states,
-                verification: Some(verification),
+                verification,
             }));
         }
     };
@@ -1023,6 +1093,17 @@ mod tests {
         let p = reroute(&r, 4e6, &Land::Flat(900.0)).unwrap().unwrap();
         validate(&p, &r, &Land::Flat(900.0));
         assert!(p.region.junction_count > 0);
+        for &node in &p.region.terminal_nodes {
+            assert!(
+                p.region
+                    .edges
+                    .iter()
+                    .filter(|e| e.a == node || e.b == node)
+                    .count()
+                    <= 1,
+                "village access must not force a kink in a through road"
+            );
+        }
         let again = reroute(&r, 4e6, &Land::Flat(900.0)).unwrap().unwrap();
         assert_eq!(
             serde_json::to_string(&p.region).unwrap(),

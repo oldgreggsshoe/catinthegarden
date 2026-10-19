@@ -133,9 +133,30 @@ pub fn prepare(mut region: Region, radius: f64, terrain: &impl Survey) -> Result
             region.nodes[node].ground_meters = terrain.ground(approach)?.height;
         }
     }
-    let profile = match Profile::fit(&region, radius, terrain)? {
-        Ok(profile) => profile,
-        Err(_) => {
+    crate::road_network_align::separate_accesses(&mut region, radius, terrain, None)?;
+    let mut curved = None;
+    for target in [
+        crate::road_network_align::TARGET_RADIUS,
+        60.0,
+        30.0,
+        crate::road_network_align::MIN_RADIUS,
+    ] {
+        let Ok(aligned) = crate::road_network_align::align(&region, radius, terrain, None, target)
+        else {
+            continue;
+        };
+        if let Ok(profile) = Profile::fit(&aligned.region, radius, terrain)? {
+            tracing::debug!(minimum_radius=?aligned.minimum_radius, "network horizontal alignment fitted");
+            curved = Some((aligned.region, profile));
+            break;
+        }
+    }
+    let profile = match curved {
+        Some((aligned, profile)) => {
+            region = aligned;
+            profile
+        }
+        None => {
             let plan = crate::road_network_route::reroute(&region, radius, terrain)?
                 .map_err(|e| format!("region {:?} engineering failed: {e:?}", region.key))?;
             region = plan.region;
@@ -180,9 +201,9 @@ struct Road {
     segment: Segment,
     piers: bool,
     near: bool,
-    clip_liner: bool,
     portal_a: bool,
     portal_b: bool,
+    ribbon: Ribbon,
 }
 
 /// Retain whole regions in the CPU cache; crop only mesh/index residency.
@@ -197,7 +218,7 @@ pub fn snapshot(
     let frame = Frame::new(road_network::direction(key, 0.5, 0.5), radius)?;
     let eye = frame.local(centre);
     let mut roads = Vec::new();
-    let mut field_segments = Vec::new();
+
     let mut inspection = None;
     for plan in plans {
         let p = &plan.profile;
@@ -359,20 +380,28 @@ pub fn snapshot(
                 let q = frame.world(segment.b);
                 inspection = Some((p + p.normalize() * 2.0, q + q.normalize() * 2.0));
             }
-            if distance < FIELD_RADIUS {
-                field_segments.push(segment);
-            }
             roads.push(Road {
                 segment,
                 piers: index % 2 == 0,
                 near: distance < NEAR_RADIUS,
-                clip_liner: joint(a) || joint(b),
                 portal_a: portal_status[a] == (true, true),
                 portal_b: portal_status[b] == (true, true),
+                ribbon: Ribbon::straight(segment),
             });
         }
     }
-    let mut field = Field::build(frame, field_segments)?;
+    join_ribbons(&mut roads)?;
+    let local_roads: Vec<_> = roads
+        .iter()
+        .filter(|r| {
+            ((r.segment.a + r.segment.b) * 0.5 - eye)
+                .truncate()
+                .length()
+                < FIELD_RADIUS
+        })
+        .collect();
+    let mut field = Field::build(frame, local_roads.iter().map(|r| r.segment).collect())?;
+    field.set_deck_sections(local_roads.iter().map(|r| r.ribbon.sides).collect())?;
     field.set_geometry_window(eye.truncate(), NEAR_RADIUS - 500.0);
     let mut chunks = Vec::new();
     let mut vertices = 0;
@@ -387,28 +416,27 @@ pub fn snapshot(
         let mut structures = Vec::new();
         for road in group {
             let s = road.segment;
-            let tangent = (s.b - s.a).normalize();
-            road::far_segment(
-                &mut far,
-                s.a,
-                s.b,
-                tangent * road::HALF_WIDTH,
-                tangent * road::HALF_WIDTH,
-            );
+            let grade = (s.b.z - s.a.z) / (s.b - s.a).truncate().length();
+            let tangents = road
+                .ribbon
+                .sides
+                .map(|side| DVec3::new(-side.y, side.x, grade) * road::HALF_WIDTH);
+            road::far_segment(&mut far, s.a, s.b, tangents[0], tangents[1]);
             if road.near {
-                deck(&mut near, s, &field, terrain, road.piers)?;
+                deck(&mut near, s, road.ribbon, &field, terrain, road.piers)?;
             }
             if s.tunnel {
                 liner(
                     &mut structures,
                     s,
-                    road.clip_liner,
+                    road.ribbon.sides,
+                    road.ribbon.branches,
                     road.portal_a,
                     road.portal_b,
                 );
             }
             if road.near && !s.tunnel {
-                banks(&mut structures, s, &field, terrain)?;
+                banks(&mut structures, s, road.ribbon.sides, &field, terrain)?;
             }
         }
         vertices += near.len() + far.len() + structures.len();
@@ -487,9 +515,177 @@ fn chunk_end(roads: &[Road], first: usize) -> usize {
     end
 }
 
+/// Shared cross-sections close both the deck and parapets at sampled bends.
+/// Resolve across regions as well: gateway endpoints share one physical join.
+fn join_ribbons(roads: &mut [Road]) -> Result<(), String> {
+    use std::collections::BTreeMap;
+    let key = |p: DVec3| p.to_array().map(|v| (v * 100.0).round() as i64);
+    let mut nodes = BTreeMap::<_, Vec<(usize, usize)>>::new();
+    for (i, road) in roads.iter().enumerate() {
+        for (end, p) in [road.segment.a, road.segment.b].into_iter().enumerate() {
+            nodes.entry(key(p)).or_default().push((i, end));
+        }
+    }
+    for ends in nodes.values() {
+        for &(i, end) in ends {
+            roads[i].ribbon.branches[end] = ends.len() > 2;
+            if end == 0 {
+                roads[i].segment.junction_a = ends.len() > 1;
+            } else {
+                roads[i].segment.junction_b = ends.len() > 1;
+            }
+        }
+        if let &[(a, ae), (b, be)] = ends.as_slice() {
+            let sa = roads[a].ribbon.sides[ae];
+            let sb = roads[b].ribbon.sides[be];
+            let sign = if sa.dot(sb) >= 0.0 { 1.0 } else { -1.0 };
+            let middle = (sa + sb * sign).normalize_or_zero();
+            let cosine = middle.dot(sa);
+            if cosine < ((crate::road_network_align::MAX_ANGLE + 0.001) * 0.5).cos() {
+                return Err(format!(
+                    "unrounded network join at {:?}: {:?} {:?}",
+                    if ae == 0 {
+                        roads[a].segment.a
+                    } else {
+                        roads[a].segment.b
+                    },
+                    roads[a].ribbon.sides[ae],
+                    roads[b].ribbon.sides[be]
+                ));
+            }
+            let miter = middle / cosine;
+            roads[a].ribbon.sides[ae] = miter;
+            roads[b].ribbon.sides[be] = miter * sign;
+        }
+    }
+    // Station-based paint and supports, not one restart/pier per arc sample.
+    let mut visited = vec![false; roads.len()];
+    for ends in nodes.values().filter(|ends| ends.len() != 2) {
+        for &(root, end) in ends {
+            let mut next = Some((root, end));
+            let mut station = 0.0;
+            while let Some((i, from)) = next {
+                if visited[i] {
+                    break;
+                }
+                visited[i] = true;
+                let s = roads[i].segment;
+                let length = s.a.distance(s.b);
+                let finish = station + length;
+                roads[i].ribbon.station = if from == 0 {
+                    [station, finish]
+                } else {
+                    [finish, station]
+                };
+                roads[i].piers =
+                    ((finish + 20.0) / 40.0).floor() > ((station + 20.0) / 40.0).floor();
+                station = finish;
+                let p = if from == 0 { s.b } else { s.a };
+                let ends = &nodes[&key(p)];
+                next = if ends.len() == 2 {
+                    ends.iter().copied().find(|&(j, _)| j != i)
+                } else {
+                    None
+                };
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct Ribbon {
+    sides: [DVec3; 2],
+    branches: [bool; 2],
+    station: [f64; 2],
+}
+impl Ribbon {
+    fn straight(s: Segment) -> Self {
+        let delta = s.b - s.a;
+        let side = DVec3::new(delta.y, -delta.x, 0.0).normalize();
+        Self {
+            sides: [side; 2],
+            branches: [s.junction_a, s.junction_b],
+            station: [0.0, delta.length()],
+        }
+    }
+    fn point(&self, s: Segment, t: f64, offset: f64) -> DVec3 {
+        s.a.lerp(s.b, t) + self.sides[0].lerp(self.sides[1], t) * offset
+    }
+}
+
+/// Subtract only actual connected road mouths, never a whole approach span.
+/// All work is cached on the worker; the fragment candidate bound is unchanged.
+fn exposed(ribbon: Ribbon, s: Segment, field: &Field, offset: f64, width: f64) -> Vec<(f64, f64)> {
+    let a = ribbon.point(s, 0.0, offset);
+    let b = ribbon.point(s, 1.0, offset);
+    let mut visible: Vec<(f64, f64)> = vec![(0.0, 1.0)];
+    for other in field.candidates(((s.a + s.b) * 0.5).truncate()) {
+        if (other.a == s.a && other.b == s.b) || (other.a == s.b && other.b == s.a) {
+            continue;
+        }
+        let shared_a = other.a.distance(s.a).min(other.b.distance(s.a)) < 0.02;
+        let shared_b = other.a.distance(s.b).min(other.b.distance(s.b)) < 0.02;
+        if (shared_a || shared_b)
+            && (s.b - s.a)
+                .truncate()
+                .normalize()
+                .dot((other.b - other.a).truncate().normalize())
+                .abs()
+                > 0.999999
+        {
+            continue;
+        }
+        if (shared_a && !ribbon.branches[0]) || (shared_b && !ribbon.branches[1]) {
+            continue;
+        }
+        let delta = (other.b - other.a).truncate();
+        let length = delta.length();
+        let u = delta / length;
+        let v = DVec2::new(u.y, -u.x);
+        let qa = (a - other.a).truncate();
+        let qb = (b - other.a).truncate();
+        let za = a.z - other.a.z - qa.dot(u) * (other.b.z - other.a.z) / length;
+        let zb = b.z - other.a.z - qb.dot(u) * (other.b.z - other.a.z) / length;
+        let mut lo = 0.0_f64;
+        let mut hi = 1.0_f64;
+        for (start, finish, minimum, maximum) in [
+            (qa.dot(u), qb.dot(u), -0.02, length + 0.02),
+            (qa.dot(v), qb.dot(v), -width, width),
+            (za, zb, -0.25, 0.25),
+        ] {
+            let d = finish - start;
+            if d.abs() < 1e-9 {
+                if start < minimum || start > maximum {
+                    hi = -1.0;
+                    break;
+                }
+            } else {
+                let x = (minimum - start) / d;
+                let y = (maximum - start) / d;
+                lo = lo.max(x.min(y));
+                hi = hi.min(x.max(y));
+            }
+        }
+        if hi <= lo {
+            continue;
+        }
+        visible = visible
+            .into_iter()
+            .flat_map(|(start, end)| {
+                [(start, end.min(lo)), (start.max(hi), end)]
+                    .into_iter()
+                    .filter(|&(a, b)| b - a > 1e-6)
+            })
+            .collect();
+    }
+    visible
+}
+
 fn deck(
     mesh: &mut Vec<Vertex>,
     s: Segment,
+    ribbon: Ribbon,
     field: &Field,
     terrain: &impl Survey,
     piers: bool,
@@ -501,81 +697,104 @@ fn deck(
     } else {
         [0.045, 0.048, 0.05]
     };
-    let slab = |mesh: &mut Vec<Vertex>, width: f64, low: f64, high: f64, offset: f64, colour| {
-        let [a, b] = [s.a, s.b].map(|p| p + side * offset + DVec3::Z * low);
-        let l = side * width;
+    let slab = |mesh: &mut Vec<Vertex>,
+                width: f64,
+                low: f64,
+                high: f64,
+                offset: f64,
+                colour,
+                start: f64,
+                end: f64| {
+        let a = ribbon.point(s, start, offset) + DVec3::Z * low;
+        let b = ribbon.point(s, end, offset) + DVec3::Z * low;
+        let la = ribbon.sides[0].lerp(ribbon.sides[1], start) * width;
+        let lb = ribbon.sides[0].lerp(ribbon.sides[1], end) * width;
         let z = DVec3::Z * (high - low);
-        road::quad(mesh, [a - l + z, a + l + z, b + l + z, b - l + z], colour);
-        road::quad(mesh, [a + l, a - l, b - l, b + l], [0.32, 0.31, 0.29]);
         road::quad(
             mesh,
-            [a - l, a - l + z, b - l + z, b - l],
+            [a - la + z, a + la + z, b + lb + z, b - lb + z],
+            colour,
+        );
+        road::quad(mesh, [a + la, a - la, b - lb, b + lb], [0.32, 0.31, 0.29]);
+        road::quad(
+            mesh,
+            [a - la, a - la + z, b - lb + z, b - lb],
             [0.32, 0.31, 0.29],
         );
         road::quad(
             mesh,
-            [a + l + z, a + l, b + l, b + l + z],
+            [a + la + z, a + la, b + lb, b + lb + z],
             [0.32, 0.31, 0.29],
         );
+        if offset != 0.0 {
+            if start > 1e-6 || !s.junction_a {
+                road::quad(
+                    mesh,
+                    [a - la, a + la, a + la + z, a - la + z],
+                    [0.32, 0.31, 0.29],
+                );
+            }
+            if end < 1.0 - 1e-6 || !s.junction_b {
+                road::quad(
+                    mesh,
+                    [b + lb, b - lb, b - lb + z, b + lb + z],
+                    [0.32, 0.31, 0.29],
+                );
+            }
+        }
     };
-    slab(mesh, road::HALF_WIDTH, -1.0, 0.0, 0.0, colour);
+    slab(mesh, road::HALF_WIDTH, -1.0, 0.0, 0.0, colour, 0.0, 1.0);
     // Low flush edge markings, not a parapet across junction mouths.
     let marking = if s.tunnel {
         [0.65, 0.65, -0.61]
     } else {
         [0.65, 0.65, 0.61]
     };
+    let paint =
+        |mesh: &mut Vec<Vertex>, start: f64, end: f64, offset: f64, width: f64, height: f64| {
+            let a = ribbon.point(s, start, offset) + DVec3::Z * height;
+            let b = ribbon.point(s, end, offset) + DVec3::Z * height;
+            let la = ribbon.sides[0].lerp(ribbon.sides[1], start) * width;
+            let lb = ribbon.sides[0].lerp(ribbon.sides[1], end) * width;
+            road::quad(mesh, [a - la, a + la, b + lb, b - lb], marking);
+        };
     for offset in [-4.7, 4.7] {
-        let a = s.a + side * offset + DVec3::Z * 0.025;
-        let b = s.b + side * offset + DVec3::Z * 0.025;
-        road::quad(
-            mesh,
-            [
-                a - side * 0.10,
-                a + side * 0.10,
-                b + side * 0.10,
-                b - side * 0.10,
-            ],
-            marking,
-        );
-    }
-    if s.floor_depth >= 5.99 && !s.junction_a && !s.junction_b {
-        for offset in [-4.82, 4.82] {
-            slab(mesh, 0.18, 0.0, 0.9, offset, [0.32, 0.31, 0.29]);
+        for (start, end) in exposed(ribbon, s, field, offset, 5.1) {
+            paint(mesh, start, end, offset, 0.10, 0.025);
         }
     }
-    let length = delta.length();
-    for start in (0..length.ceil() as usize).step_by(9) {
-        let a = s.a + delta * (start as f64 / length);
-        let b = s.a + delta * ((start as f64 + 3.0).min(length) / length);
-        road::quad(
-            mesh,
-            [
-                a - side * 0.08 + DVec3::Z * 0.035,
-                a + side * 0.08 + DVec3::Z * 0.035,
-                b + side * 0.08 + DVec3::Z * 0.035,
-                b - side * 0.08 + DVec3::Z * 0.035,
-            ],
-            marking,
-        );
+    // Retain edge protection right up to each real opening, also at village
+    // approaches. Excavation floor depth is not a measure of the fall below.
+    if !s.tunnel {
+        for offset in [-4.82, 4.82] {
+            for (start, end) in exposed(ribbon, s, field, offset, 4.82) {
+                slab(mesh, 0.18, 0.0, 0.9, offset, [0.32, 0.31, 0.29], start, end);
+            }
+        }
     }
-    // Rounded end pads close bent and branching deck mouths without barriers.
-    for (p, junction) in [(s.a, s.junction_a), (s.b, s.junction_b)] {
-        if junction {
-            for i in 0..8 {
-                let a = i as f64 * std::f64::consts::TAU / 8.0;
-                let b = (i + 1) as f64 * std::f64::consts::TAU / 8.0;
-                let normal = DVec3::Z;
-                for point in [
-                    p,
-                    p + DVec3::new(a.cos(), a.sin(), 0.0) * 5.0,
-                    p + DVec3::new(b.cos(), b.sin(), 0.0) * 5.0,
-                ] {
-                    mesh.push(Vertex {
-                        position: point.as_vec3().to_array(),
-                        normal: normal.as_vec3().to_array(),
-                        colour,
-                    });
+    let [sa, sb] = ribbon.station;
+    let length = delta.length();
+    let from = if ribbon.branches[0] {
+        (7.0 / length).min(1.0)
+    } else {
+        0.0
+    };
+    let to = if ribbon.branches[1] {
+        (1.0 - 7.0 / length).max(0.0)
+    } else {
+        1.0
+    };
+    for dash in (sa.min(sb) / 9.0).floor() as i64..=(sa.max(sb) / 9.0).ceil() as i64 {
+        let a = (dash as f64 * 9.0 - sa) / (sb - sa);
+        let b = (dash as f64 * 9.0 + 3.0 - sa) / (sb - sa);
+        let start = a.min(b).max(from);
+        let end = a.max(b).min(to);
+        if end > start {
+            for (lo, hi) in exposed(ribbon, s, field, 0.0, 5.1) {
+                let a = start.max(lo);
+                let b = end.min(hi);
+                if b > a {
+                    paint(mesh, a, b, 0.0, 0.08, 0.035);
                 }
             }
         }
@@ -607,25 +826,35 @@ fn deck(
     Ok(())
 }
 
-fn liner(mesh: &mut Vec<Vertex>, mut s: Segment, clip: bool, portal_a: bool, portal_b: bool) {
+fn liner(
+    mesh: &mut Vec<Vertex>,
+    mut s: Segment,
+    sides: [DVec3; 2],
+    junctions: [bool; 2],
+    portal_a: bool,
+    portal_b: bool,
+) {
     let d = s.b - s.a;
+    let clip = junctions.iter().any(|&b| b);
     if clip {
         // Closed convex bore ends are needed at turns: merely intersecting
         // open tubes leaves a triangular sky leak on the outside corner.
         // Extend past our own 0.5m CSG end, so the union shader can remove
         // caps inside the continuation without discarding this bore's cap.
         let extension = d.normalize() * 0.55;
-        if !portal_a {
+        if junctions[0] && !portal_a {
             s.a -= extension;
         }
-        if !portal_b {
+        if junctions[1] && !portal_b {
             s.b += extension;
         }
     }
     let side = DVec3::new(d.y, -d.x, 0.0).normalize();
     let colour = [0.24, if clip { -0.235 } else { 0.235 }, -0.22];
     for arch in crate::road_tunnel::ARCH.windows(2) {
-        let p = |base: DVec3, v: DVec2| base + side * v.x + DVec3::Z * v.y;
+        let p = |base: DVec3, v: DVec2| {
+            base + (if base == s.a { sides[0] } else { sides[1] }) * v.x + DVec3::Z * v.y
+        };
         road::quad(
             mesh,
             [
@@ -666,8 +895,8 @@ fn liner(mesh: &mut Vec<Vertex>, mut s: Segment, clip: bool, portal_a: bool, por
         }
     }
     if clip {
-        for (base, portal) in [(s.a, portal_a), (s.b, portal_b)] {
-            if portal {
+        for (end, (base, portal)) in [(s.a, portal_a), (s.b, portal_b)].into_iter().enumerate() {
+            if portal || !junctions[end] {
                 continue;
             }
             let arch = crate::road_tunnel::ARCH;
@@ -706,11 +935,10 @@ fn liner(mesh: &mut Vec<Vertex>, mut s: Segment, clip: bool, portal_a: bool, por
 fn banks(
     mesh: &mut Vec<Vertex>,
     s: Segment,
+    sides: [DVec3; 2],
     field: &Field,
     terrain: &impl Survey,
 ) -> Result<(), String> {
-    let d = s.b - s.a;
-    let side = DVec3::new(d.y, -d.x, 0.0).normalize();
     let offsets = [
         -s.reach, -48.0, -32.0, -24.0, -16.0, -9.0, 0.0, 9.0, 16.0, 24.0, 32.0, 48.0, s.reach,
     ];
@@ -719,7 +947,7 @@ fn banks(
     for offset in offsets {
         let mut pair = [(DVec3::ZERO, 0.0_f64); 2];
         for (i, base) in [s.a, s.b].into_iter().enumerate() {
-            let p = base + side * offset;
+            let p = base + sides[i] * offset;
             let direction = field.frame.world(p).normalize();
             let h = terrain.ground(direction)?.height;
             let cut = field.height(direction, h);
@@ -782,6 +1010,207 @@ mod tests {
             ])
         }
     }
+    fn test_road(a: DVec3, b: DVec3) -> Road {
+        let segment = Segment {
+            a,
+            b,
+            tunnel: false,
+            reach: 64.0,
+            floor_depth: 6.0,
+            junction_a: false,
+            junction_b: false,
+        };
+        Road {
+            segment,
+            piers: false,
+            near: true,
+            portal_a: false,
+            portal_b: false,
+            ribbon: Ribbon::straight(segment),
+        }
+    }
+    #[test]
+    fn curved_ribbons_share_wall_and_deck_vertices_and_exact_walking_floor() {
+        let a = DVec3::new(0.0, 0.0, 1000.0);
+        let b = DVec3::new(20.0, 0.0, 1004.0);
+        let c = b + DVec3::new(
+            20.0 * 8.0_f64.to_radians().cos(),
+            20.0 * 8.0_f64.to_radians().sin(),
+            4.0,
+        );
+        let mut roads = [test_road(a, b), test_road(b, c)];
+        join_ribbons(&mut roads).unwrap();
+        for offset in [-5.0, -4.82, 4.82, 5.0] {
+            assert!(
+                roads[0]
+                    .ribbon
+                    .point(roads[0].segment, 1.0, offset)
+                    .distance(roads[1].ribbon.point(roads[1].segment, 0.0, offset))
+                    < 1e-9
+            );
+        }
+        let mut field = Field::build(
+            Frame::new(DVec3::Z, 4e6).unwrap(),
+            roads.iter().map(|r| r.segment).collect(),
+        )
+        .unwrap();
+        field
+            .set_deck_sections(roads.iter().map(|r| r.ribbon.sides).collect())
+            .unwrap();
+        for road in roads {
+            assert!(
+                !road.ribbon.branches.iter().any(|&b| b),
+                "ordinary smooth joins need no intersecting bore caps"
+            );
+            let s = road.segment;
+            let q =
+                [-5.0, 5.0].map(|o| [road.ribbon.point(s, 0.0, o), road.ribbon.point(s, 1.0, o)]);
+            for [a, b, c] in [[q[0][0], q[1][0], q[1][1]], [q[0][0], q[1][1], q[0][1]]] {
+                for i in 1..10 {
+                    for j in 1..10 - i {
+                        let p = a + (b - a) * (i as f64 / 10.0) + (c - a) * (j as f64 / 10.0);
+                        let world = field.frame.world(p);
+                        let h = world.length() - field.frame.radius;
+                        assert!(
+                            (field.deck_height(world.normalize(), h + 2.0).unwrap() - h).abs()
+                                < 1e-6
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn junction_walls_stop_at_the_opening_not_at_the_previous_station() {
+        let origin = DVec3::Z * 1000.0;
+        let mut roads = [
+            test_road(origin, origin + DVec3::Y * 20.0),
+            test_road(origin, origin - DVec3::Y * 20.0),
+            test_road(origin, origin + DVec3::X * 20.0),
+        ];
+        join_ribbons(&mut roads).unwrap();
+        let field = Field::build(
+            Frame::new(DVec3::Z, 4e6).unwrap(),
+            roads.iter().map(|r| r.segment).collect(),
+        )
+        .unwrap();
+        let r = &roads[0];
+        let outer = exposed(r.ribbon, r.segment, &field, -4.82, 4.82);
+        assert_eq!(
+            outer,
+            vec![(0.0, 1.0)],
+            "uninterrupted back of T needs a complete wall"
+        );
+        let mouth = exposed(r.ribbon, r.segment, &field, 4.82, 4.82);
+        assert_eq!(mouth.len(), 1);
+        assert!((mouth[0].0 - 4.82 / 20.0).abs() < 1e-8);
+        assert_eq!(mouth[0].1, 1.0);
+    }
+    #[test]
+    fn curve_sampling_does_not_multiply_supports_or_restart_the_dash_phase() {
+        let mut roads: Vec<_> = (0..80)
+            .map(|i| {
+                test_road(
+                    DVec3::new(i as f64 * 2.0, 0.0, 1000.0),
+                    DVec3::new((i + 1) as f64 * 2.0, 0.0, 1000.0),
+                )
+            })
+            .collect();
+        join_ribbons(&mut roads).unwrap();
+        assert_eq!(roads.iter().filter(|r| r.piers).count(), 4);
+        for pair in roads.windows(2) {
+            assert_eq!(pair[0].ribbon.station[1], pair[1].ribbon.station[0]);
+        }
+    }
+    #[test]
+    fn network_junction_does_not_remove_the_entire_approach_parapet() {
+        let s = Segment {
+            a: DVec3::new(0.0, 0.0, 1000.0),
+            b: DVec3::new(0.0, 20.0, 1000.0),
+            tunnel: false,
+            reach: 64.0,
+            floor_depth: 6.0,
+            junction_a: true,
+            junction_b: false,
+        };
+        let field = Field::build(Frame::new(DVec3::X, 4e6).unwrap(), vec![s]).unwrap();
+        let mut mesh = Vec::new();
+        deck(&mut mesh, s, Ribbon::straight(s), &field, &Flat, false).unwrap();
+        assert!(
+            mesh.iter().any(|v| v.position[2] > 1000.5),
+            "a junction at one end must not remove both outside walls for a whole span"
+        );
+    }
+
+    #[test]
+    fn network_preparation_rounds_a_right_angle_before_height_fitting() {
+        use crate::road_network::{Node, RoadEdge, Terminal, TerminalKind};
+        let r = 4e6;
+        let dirs = [
+            DVec3::new(1.0, -500.0 / r, 0.0).normalize(),
+            DVec3::X,
+            DVec3::new(1.0, 0.0, 500.0 / r).normalize(),
+        ];
+        let region = Region {
+            key: TileKey {
+                face: CubeFace::PositiveX,
+                level: 8,
+                x: 128,
+                y: 128,
+            },
+            village_count: 0,
+            terminals: [0, 2]
+                .into_iter()
+                .map(|i| Terminal {
+                    direction: dirs[i].to_array(),
+                    kind: TerminalKind::Gateway { link: i },
+                })
+                .collect(),
+            terminal_nodes: vec![0, 2],
+            nodes: dirs
+                .iter()
+                .map(|d| Node {
+                    direction: d.to_array(),
+                    ground_meters: 1000.0,
+                    ocean: false,
+                })
+                .collect(),
+            edges: [(0, 1), (1, 2)]
+                .into_iter()
+                .map(|(a, b)| RoadEdge {
+                    a,
+                    b,
+                    requires_undersea_tunnel: false,
+                })
+                .collect(),
+            junction_count: 0,
+            length_meters: 1000.0,
+            construction_cost_proxy: 1000.0,
+            lattice_survey_samples: 0,
+        };
+        let plan = prepare(region, r, &Flat).unwrap();
+        let p = &plan.profile;
+        let points: Vec<_> = p
+            .directions
+            .iter()
+            .map(|d| DVec3::from_array(*d) * r)
+            .collect();
+        let mut adjacency = vec![Vec::new(); points.len()];
+        for &[a, b] in &p.segments {
+            adjacency[a].push(b);
+            adjacency[b].push(a);
+        }
+        for (i, adjacent) in adjacency.iter().enumerate() {
+            if let &[a, b] = adjacent.as_slice() {
+                let incoming = (points[i] - points[a]).normalize();
+                let outgoing = (points[b] - points[i]).normalize();
+                assert!(
+                    incoming.dot(outgoing).clamp(-1.0, 1.0).acos() < 0.142,
+                    "a sampled bend must not retain an instantaneous right angle"
+                );
+            }
+        }
+    }
     #[test]
     fn network_batches_stop_at_spatial_jumps_and_near_cache_boundaries() {
         let road = |x: f64, near| Road {
@@ -796,9 +1225,17 @@ mod tests {
             },
             piers: false,
             near,
-            clip_liner: false,
             portal_a: false,
             portal_b: false,
+            ribbon: Ribbon::straight(Segment {
+                a: DVec3::new(x, 0.0, 1000.0),
+                b: DVec3::new(x + 20.0, 0.0, 1000.0),
+                tunnel: false,
+                reach: 64.0,
+                floor_depth: 6.0,
+                junction_a: false,
+                junction_b: false,
+            }),
         };
         let roads = [
             road(0.0, true),
@@ -814,6 +1251,29 @@ mod tests {
     }
 
     #[test]
+    fn a_junction_liner_does_not_pull_its_other_smooth_join_apart() {
+        let mut s = test_road(DVec3::Z * 1000.0, DVec3::Y * 20.0 + DVec3::Z * 1000.0).segment;
+        s.tunnel = true;
+        let sides = [DVec3::X, DVec3::new(1.0, 4.0_f64.to_radians().tan(), 0.0)];
+        let mut mesh = Vec::new();
+        liner(&mut mesh, s, sides, [true, false], false, false);
+        let caps: Vec<_> = mesh.iter().filter(|v| v.normal[1].abs() > 0.99).collect();
+        assert_eq!(caps.len(), 42, "only the real junction needs a cap");
+        assert!(caps.iter().all(|v| v.position[1] < 0.0));
+        let last_y = 20.0 + 7.3 * 4.0_f64.to_radians().tan();
+        assert!(
+            mesh.iter()
+                .all(|v| f64::from(v.position[1]) <= last_y + 1e-5)
+        );
+        for p in crate::road_tunnel::ARCH.map(|v| s.b + sides[1] * v.x + DVec3::Z * v.y) {
+            assert!(
+                mesh.iter()
+                    .any(|v| DVec3::from_array(v.position.map(f64::from)).distance(p) < 1e-4)
+            );
+        }
+    }
+
+    #[test]
     fn network_bore_junction_closes_outer_corners_but_leaves_real_portals_open() {
         let s = Segment {
             a: DVec3::new(0.0, 0.0, 1000.0),
@@ -825,7 +1285,14 @@ mod tests {
             junction_b: true,
         };
         let mut mesh = Vec::new();
-        liner(&mut mesh, s, true, false, false);
+        liner(
+            &mut mesh,
+            s,
+            Ribbon::straight(s).sides,
+            [true, true],
+            false,
+            false,
+        );
         let caps: Vec<_> = mesh.iter().filter(|v| v.normal[1].abs() > 0.99).collect();
         assert_eq!(caps.len(), 84);
         assert!(caps.iter().all(|v| v.colour[1] < 0.0 && v.colour[2] < 0.0));
@@ -834,7 +1301,14 @@ mod tests {
                 .all(|v| v.position[1] < 0.0 || v.position[1] > 20.0)
         );
         mesh.clear();
-        liner(&mut mesh, s, true, true, true);
+        liner(
+            &mut mesh,
+            s,
+            Ribbon::straight(s).sides,
+            [true, true],
+            true,
+            true,
+        );
         assert!(
             mesh.iter()
                 .all(|v| v.position[1] >= 0.0 && v.position[1] <= 20.0)

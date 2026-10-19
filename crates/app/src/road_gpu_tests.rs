@@ -621,3 +621,63 @@ fn gpu_shallow_approaches_remove_terrain_intruding_through_the_deck() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires Vulkan; real raster height for bore clipping, including skirts"]
+fn gpu_bore_clipping_uses_drawn_height_not_the_unskirted_seabed() {
+    use crate::road_network_field::{Field, Frame, Segment};
+    let radius = 4e6;
+    let eye = -18.0;
+    let field = Field::build(
+        Frame::new(DVec3::Z, radius).unwrap(),
+        vec![Segment {
+            a: DVec3::new(-2000.0, 0.0, -20.0),
+            b: DVec3::new(2000.0, 0.0, -20.0),
+            tunnel: true,
+            reach: 64.0,
+            floor_depth: 6.0,
+            junction_a: false,
+            junction_b: false,
+        }],
+    )
+    .unwrap();
+    let fixtures = [
+        ([100.0, 0.0, 3.0], true),
+        ([1000.0, 0.0, 3.0], true),
+        ([100.0, 0.0, 9.0], false),
+        ([100.0, 0.0, -12.0], false),
+        ([100.0, 12.0, 3.0], false),
+    ];
+    let cases: Vec<[f32; 4]> = fixtures
+        .iter()
+        .map(|(v, _)| {
+            let p = DVec3::from_array(*v) + DVec3::Z * (radius + eye);
+            [
+                v[0] as f32,
+                v[1] as f32,
+                v[2] as f32,
+                (p.length() - radius) as f32,
+            ]
+        })
+        .collect();
+    let heights = execute_cut_samples_with_ownership(
+        field.gpu_data(),
+        &cases,
+        "abs(road_raster_fragment_height(c.xyz,vec3<f32>(0.0,0.0,1.0),-18.0,4000000.0)-c.w)<0.005",
+    );
+    assert!(
+        heights.iter().all(|r| r[2] > 0.5),
+        "stable raster heights must match f64 reference"
+    );
+    let result = execute_cut_samples_with_ownership(
+        field.gpu_data(),
+        &cases,
+        "road_tunnel_void(normalize(vec3<f32>(c.xy,3999982.0+c.z)),road_raster_fragment_height(c.xyz,vec3<f32>(0.0,0.0,1.0),-18.0,4000000.0))>0.0",
+    );
+    for ((_, expected), r) in fixtures.iter().zip(result) {
+        assert_eq!(r[2] > 0.5, *expected);
+    }
+    // A skirt can hang inside the bore while its authoring seabed is outside.
+    assert!(field.tunnel_void(DVec3::Z, 4.0) < 0.0);
+    assert!(field.tunnel_void(DVec3::Z, -15.0) > 0.0);
+}
