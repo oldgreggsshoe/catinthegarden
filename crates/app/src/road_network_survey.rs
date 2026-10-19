@@ -67,6 +67,8 @@ impl Surface {
             .copied()
             .chain(include_bytes!("road_network_profile.rs").iter().copied())
             .chain(include_bytes!("road_network_align.rs").iter().copied())
+            .chain(include_bytes!("road_parking.rs").iter().copied())
+            .chain(include_bytes!("road_network_mesh.rs").iter().copied())
             .chain(include_bytes!("road_vertical.rs").iter().copied())
             .chain(include_bytes!("road_network_route.rs").iter().copied())
         {

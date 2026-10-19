@@ -37,6 +37,7 @@ mod road_network_render;
 mod road_network_route;
 mod road_network_stream;
 mod road_network_survey;
+mod road_parking;
 mod road_render;
 mod road_route;
 mod road_tunnel;

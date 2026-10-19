@@ -681,3 +681,59 @@ fn gpu_bore_clipping_uses_drawn_height_not_the_unskirted_seabed() {
     assert!(field.tunnel_void(DVec3::Z, 4.0) < 0.0);
     assert!(field.tunnel_void(DVec3::Z, -15.0) > 0.0);
 }
+
+#[test]
+#[ignore = "requires Vulkan; circular village court cut, ownership and trees"]
+fn gpu_parking_courts_match_cpu_without_zero_length_road_math() {
+    use crate::road_network_field::{Field, Frame};
+    for up in [DVec3::X, DVec3::new(1.0, 2.0, 3.0).normalize()] {
+        let f = Frame::new(up, 4e6).unwrap();
+        let mut field =
+            Field::build(f, vec![crate::road_parking::segment(DVec3::Z * 1000.0)]).unwrap();
+        field.set_geometry_window(glam::DVec2::ZERO, 1000.0);
+        let mut cases = Vec::new();
+        let mut expected = Vec::new();
+        for angle in 0..16 {
+            for radius in [0.0, 5.0, 19.5, 21.0, 25.5, 30.0, 39.5, 49.0] {
+                let theta = angle as f64 * std::f64::consts::TAU / 16.0;
+                let p = DVec3::new(theta.cos() * radius, theta.sin() * radius, 1005.0);
+                let world = f.world(p);
+                let d = world.normalize();
+                let h = world.length() - f.radius;
+                let v = d.as_vec3();
+                cases.push([v.x, v.y, v.z, h as f32]);
+                expected.push((field.height(d, h), field.clears_tree(d, h), radius < 19.8));
+            }
+        }
+        let paved = execute_cut_samples_with_ownership(
+            field.gpu_data(),
+            &cases,
+            "road_terrain_cut(c.xyz,c.w).paved",
+        );
+        for (r, (_, _, owns)) in paved.iter().zip(&expected) {
+            assert_eq!(
+                r[2] > 0.5,
+                *owns,
+                "cached soil banks must yield only to the actual pavement"
+            );
+        }
+        let got = execute_cut_samples_with_ownership(
+            field.gpu_data(),
+            &cases,
+            "road_network_open_cut_owns(c.xyz,c.w)",
+        );
+        for (r, (height, trees, owns)) in got.iter().zip(expected) {
+            assert!(r.iter().all(|v| v.is_finite()), "{r:?}");
+            assert!(
+                // Same sub-metre f32 radius/direction allowance as the network
+                // parity test above; the old point-as-road path misses by 5m.
+                (r[0] as f64 - height).abs() < 0.8,
+                "GPU {r:?}, CPU {height}"
+            );
+            assert_eq!(r[3] > 0.5, trees, "tree clearance");
+            if owns {
+                assert!(r[2] > 0.5, "pavement owns its pixels: {r:?}");
+            }
+        }
+    }
+}

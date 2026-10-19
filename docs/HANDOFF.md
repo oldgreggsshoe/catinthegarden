@@ -10,13 +10,28 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current follow-up, 19 October: real horizontal curves, not corner pads.**
-**Latest user review:** all three `manual/1792407040-1119039` captures are from
-b875db3 and still show unresolved junction/crossing defects. Acute fork corners
-remain exposed; a raised road's piers appear to occupy the road below by a tunnel.
-This review makes no renderer changes. Reproduce/measure these sites next; do
-not treat a grade-separated crossing as a shared flat junction without checking
-its topology and separation. Do not claim continuous safe barriers everywhere.
+**Current phase, 19 October: village entrance courts and resident-road repair.**
+Circular40m paved parking/turning courts now share cached road meshes, cuts,
+walking floors and tree clearance. Their 15m end offset preserves the existing
+flat arrival apron and25% grade/vertical-rate limits. Court siting and its road
+profile are checked together, with bounded alternate setbacks. The cut query
+also prevents cached soil banks from crossing the pavement; no extra fragment
+lookup or larger index is introduced. See ROAD_NETWORK and the newest dated
+entry below for verification and remaining limitations.
+
+Latest manual flight `manual/1792407704-1125404` showed interrupted road strips
+and a village with no visible access.107 rejected neighbour updates left stale
+roads behind as the camera moved. Gateway-alias tangent fitting and complete
+junction classification across residency boundaries are now handled; do not
+claim every planetary region has passed engineering merely from local checks.
+
+**Still unfinished:** the acute fork and tunnel-side supports in the earlier
+`manual/1792407040-1119039` review. Baseline mesh evidence shows overlapping
+branches of a shared split, including four piers in the lower carriageway, not
+a proper overpass. No shared-fork/support fix is claimed. Moving village
+approaches also changes nearby profiles, so the old portal camera coordinates
+are no longer a valid final visual acceptance replay. Re-locate the actual
+portals when continuing that work; do not loosen grade or curvature to hide it.
 
 The user's manual captures `manual/1792390010-1078115` showed hard centre-line
 turns and parapets omitted from entire junction-adjacent spans. The network now
@@ -12853,3 +12868,94 @@ outside the lower road's swept envelope. Both must retain the25% grade and
 vertical-rate limits, tree/cut/collision agreement and bounded cached rendering.
 Do not try to hide these conflicts with corner pads or merely repaint markings.
 No code behaviour changed and no tests rerun in this screenshot review.
+
+
+## 19 October 2026 — village courts and missing-road resident updates
+
+User follow-ups during the junction investigation requested review of the new
+manual flight and circular paved parking/turning space at every village entrance.
+This phase implements the courts and repairs the diagnosed resident-update
+failures; it does NOT finish the earlier fork/support redesign.
+
+### Implementation
+
+- `road_parking.rs`:40m pavement,64 sectors, centre15m beyond the road end. The
+  last5m overlap its existing flat apron, without a new long flat in the global
+  profile. Above-ground terrain is cut; closed retaining skirts meet lower
+  ground. Parking-bay paint, vehicles, kerbs/retaining-wall collision are not
+  implemented. Village siting reserves the court/banks outside protected houses
+  and surveys the footprint for water; two farther layout setbacks may be tried
+  when the first dry choice cannot fit the coupled road profile. Existing25%
+  grade, vertical-rate, cover, pier and solver limits remain unchanged.
+- The CPU/GPU field represents courts as point primitives with a reserved
+  metadata tag, preserving the buffer layout and32-probe/64-candidate bounds.
+  Exact polygon walking floors, circular terrain cuts,40m crown exclusion and
+  raster ownership share that index. Tiny f32-collapsed road spans are not
+  mistaken for courts. Approach paint/parapets open only at the real court mouth.
+- Initial court capture `road_network_parking/1792409638-1151020` had an
+  interpolated soil-bank triangle across its asphalt. The existing cut query
+  now returns court ownership; the cached bank shader yields to that pavement
+  without a second lookup. Opened final village and mountain views are clean:
+  `road_network_parking/1792410429-1155222` and
+  `road_network_parking/1792410481-1155523`.
+- Manual `1792407704-1125404` contains107 rejected updates. Its second screenshot
+  was taken after the camera moved41.30km since the last publish. Exact-pose
+  headless tests reproduced the unrounded-gateway error before the fix. The
+  canonical gateway tangent now looks through zero-length aliases; source fork
+  identity survives residency cropping and missing neighbouring gateway arms.
+  Genuine non-junction sharp bends are still rejected. Both photographed sites
+  now publish their complete nine-region sets (16 and3 villages).
+- `prepare` retries at most three sitings, on the existing cancellable worker.
+  The dense244-village check needed~78s, so construction latency is not solved
+  by keeping it off the frame thread. Existing atomic publication, presentation
+  synchronization and GPU/CPU overlap are untouched. Planner source identity
+  now includes the parking and mesh/siting producer.
+
+### Verification and evidence
+
+`cargo check -p planet-app` and the release build pass. The full standard suite
+has725 passing tests and the same six unrelated failures (three zoom/FOV, scenario
+FOV range, shallow tint, flooded-water counter);59 ignored. All seven production
+Vulkan road tests pass, including the new circular cut/tree/raster/soil-ownership
+probe. No GPU timestamps were used on the Quadro.
+
+Five real worker checks pass: startup39 villages/4157 spans/457452 vertices;
+full village neighbourhood244/23894/956238; mountain15/6777/213486; undersea76
+villages/51 tunnel spans/200484 vertices; and the two exact manual flight poses.
+All resident checks retain nine regions where requested, stay within the mesh
+and field budgets, and preserve accepted accesses. The former first-choice
+parking layout failed a dense engineering check; the bounded alternate siting
+now passes instead of weakening its constraints.
+
+Unpaired settled parking-view medians at640x360, X11/Immediate are59.035ms
+(village) and59.966ms (mountain), four non-capture samples each. These are not
+matched before/after FPS evidence: poses differ from prior benchmarks, and the
+initial diagnostic baseline competed with the user's app. No FPS gain or
+unchanged-FPS claim is made. Summary: `test-runs/road-parking-residency-validation.json`.
+The final `road_network_walk/1792411286-1160904` undersea replay also passes;
+all three captures were opened and retain their road floor and lining.
+Final-binary parking captures were re-run and opened after expanding the crown
+margin to40m: `road_network_parking/1792411441-1161327` (village) and
+`road_network_parking/1792411465-1161392` (mountain), both passing.
+
+### Remaining junction work
+
+The earlier three `manual/1792407040-1119039` captures were inspected, and actual
+baseline mesh/field geometry was exported to `/tmp/stuff-junction-geometry.json`.
+The tunnel-side feature is two branches sharing almost the same horizontal
+alignment before splitting vertically; four actual pier boxes intersect the
+lower carriageway. This is not an adequate grade-separated crossing. The acute
+fork also still needs a curved, protected exterior boundary and shared surface.
+Do not merely hide the supports or add a rounded cosmetic patch.
+
+A fixed-camera draft captured the old portal views, but moving village access
+anchors changes nearby heights: its old portal eye positions are now embedded
+in terrain or beside a different exposed cut. That draft was preserved at
+`/tmp/stuff-road-network-manual-junctions-draft.json`, not registered as a passing
+visual regression. The new-build diagnostic `road_network_manual_junctions/
+1792410506-1155637` is NOT visual sign-off (finite assertions alone passed).
+Re-find the actual current portals before continuing. Preferred next step:
+share the near-parallel branch/trunk geometry and its heights until the lanes
+separate, then build curved junction boundaries and check actual vehicle and
+support envelopes. Whole-planet engineering remains on demand, not exhaustively
+audited.

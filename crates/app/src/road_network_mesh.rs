@@ -77,7 +77,28 @@ impl Prepared {
     }
 }
 
-pub fn prepare(mut region: Region, radius: f64, terrain: &impl Survey) -> Result<Prepared, String> {
+pub fn prepare(region: Region, radius: f64, terrain: &impl Survey) -> Result<Prepared, String> {
+    let mut error = String::new();
+    // Siting a wider court changes the fixed approach height. A dry first
+    // choice is not necessarily grade/curvature-feasible: retry farther out
+    // before rejecting the whole resident network. All engineering caps stay.
+    for setback in [0.0, 32.0, 64.0] {
+        if terrain.cancelled() {
+            return Err("road generation superseded".into());
+        }
+        match prepare_at(region.clone(), radius, terrain, setback) {
+            Ok(plan) => return Ok(plan),
+            Err(e) => error = e,
+        }
+    }
+    Err(error)
+}
+fn prepare_at(
+    mut region: Region,
+    radius: f64,
+    terrain: &impl Survey,
+    setback: f64,
+) -> Result<Prepared, String> {
     let mut centres = Vec::new();
     for (index, terminal) in region.terminals.iter_mut().enumerate() {
         if !matches!(terminal.kind, TerminalKind::Village) {
@@ -112,12 +133,36 @@ pub fn prepare(mut region: Region, radius: f64, terrain: &impl Survey) -> Result
                         glam::DQuat::from_axis_angle(centre, turn * std::f64::consts::TAU / 16.0)
                             * tangent;
                     let d = (centre * radius
-                        + along * (crate::village::VILLAGE_RADIUS_METERS + 24.0 + extra))
+                        + along
+                            * (crate::village::VILLAGE_RADIUS_METERS
+                                + crate::road_parking::REACH
+                                + crate::road_parking::OFFSET
+                                + setback
+                                + 4.0
+                                + extra))
                         .normalize();
                     if planet_coretypes::tile_key_for_direction(d, region.key.level) == region.key
                         && !terrain.ground(d)?.ocean
                         && !terrain.settlement_core_at(d)?
                     {
+                        let mut clear = true;
+                        for q in crate::road_parking::siting_samples(d, radius) {
+                            if terrain.ground(q)?.ocean || terrain.settlement_core_at(q)? {
+                                clear = false;
+                                break;
+                            }
+                        }
+                        if clear {
+                            for q in crate::road_parking::bank_samples(d, radius) {
+                                if terrain.settlement_core_at(q)? {
+                                    clear = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if !clear {
+                            continue;
+                        }
                         approach = Some(d);
                         break;
                     }
@@ -218,6 +263,9 @@ pub fn snapshot(
     let frame = Frame::new(road_network::direction(key, 0.5, 0.5), radius)?;
     let eye = frame.local(centre);
     let mut roads = Vec::new();
+    let mut parking = Vec::new();
+    let mut degrees = std::collections::BTreeMap::<_, usize>::new();
+    let mut gateway_branches = std::collections::BTreeSet::new();
 
     let mut inspection = None;
     for plan in plans {
@@ -232,6 +280,29 @@ pub fn snapshot(
         for &[a, b] in &p.segments {
             adjacent[a].push(b);
             adjacent[b].push(a);
+        }
+        // An internal two-arm gateway also has a third arm in the next
+        // region. It remains a junction even when that neighbour is unloaded.
+        let mut local_degree = std::collections::BTreeMap::<_, usize>::new();
+        for &[a, b] in &p.segments {
+            if (points[b] - points[a]).truncate().length() < 0.001 {
+                continue;
+            }
+            for point in [points[a], points[b]] {
+                *local_degree.entry(node_key(point)).or_default() += 1;
+            }
+        }
+        for (terminal, &i) in plan
+            .region
+            .terminals
+            .iter()
+            .zip(&plan.region.terminal_nodes)
+        {
+            if matches!(terminal.kind, TerminalKind::Gateway { .. })
+                && local_degree.get(&node_key(points[i])).copied().unwrap_or(0) > 1
+            {
+                gateway_branches.insert(node_key(points[i]));
+            }
         }
         let mut covered = Vec::new();
         let mut ocean = Vec::new();
@@ -323,6 +394,30 @@ pub fn snapshot(
             .filter(|(t, _)| matches!(t.kind, TerminalKind::Village))
             .map(|(_, &i)| points[i])
             .collect();
+        for (terminal, &i) in plan
+            .region
+            .terminals
+            .iter()
+            .zip(&plan.region.terminal_nodes)
+        {
+            if !matches!(terminal.kind, TerminalKind::Village) {
+                continue;
+            }
+            let access = points[i];
+            let neighbour = adjacent[i]
+                .iter()
+                .find(|&&j| (points[j] - access).truncate().length() > 0.001)
+                .copied()
+                .ok_or("village court has no physical approach")?;
+            let outward = (access - points[neighbour])
+                .truncate()
+                .normalize()
+                .extend(0.0);
+            let court = access + outward * crate::road_parking::OFFSET;
+            if (court - eye).truncate().length() < FAR_RADIUS {
+                parking.push(crate::road_parking::segment(court));
+            }
+        }
         let joint = |i: usize| {
             let neighbours: Vec<_> = adjacent[i]
                 .iter()
@@ -347,6 +442,10 @@ pub fn snapshot(
             // Preserve that topology, but never make a zero-area mesh/index span.
             if (points[b] - points[a]).truncate().length() < 0.001 {
                 continue;
+            }
+            // Preserve physical topology before cropping resident spans.
+            for point in [points[a], points[b]] {
+                *degrees.entry(node_key(point)).or_default() += 1;
             }
             let middle = (points[a] + points[b]) * 0.5;
             let distance = (middle - eye).truncate().length();
@@ -390,6 +489,10 @@ pub fn snapshot(
             });
         }
     }
+    for r in &mut roads {
+        r.ribbon.branches = [r.segment.a, r.segment.b]
+            .map(|p| degrees[&node_key(p)] > 2 || gateway_branches.contains(&node_key(p)));
+    }
     join_ribbons(&mut roads)?;
     let local_roads: Vec<_> = roads
         .iter()
@@ -400,8 +503,26 @@ pub fn snapshot(
                 < FIELD_RADIUS
         })
         .collect();
-    let mut field = Field::build(frame, local_roads.iter().map(|r| r.segment).collect())?;
-    field.set_deck_sections(local_roads.iter().map(|r| r.ribbon.sides).collect())?;
+    let local_parking: Vec<_> = parking
+        .iter()
+        .copied()
+        .filter(|s| (s.a - eye).truncate().length() < FIELD_RADIUS)
+        .collect();
+    let mut field = Field::build(
+        frame,
+        local_roads
+            .iter()
+            .map(|r| r.segment)
+            .chain(local_parking.iter().copied())
+            .collect(),
+    )?;
+    field.set_deck_sections(
+        local_roads
+            .iter()
+            .map(|r| r.ribbon.sides)
+            .chain(local_parking.iter().map(|_| [DVec3::ZERO; 2]))
+            .collect(),
+    )?;
     field.set_geometry_window(eye.truncate(), NEAR_RADIUS - 500.0);
     let mut chunks = Vec::new();
     let mut vertices = 0;
@@ -458,6 +579,32 @@ pub fn snapshot(
             structures,
             centre: frame.world(centre),
             radius,
+        });
+    }
+    for s in parking {
+        let structures = crate::road_parking::mesh(
+            s,
+            &field,
+            terrain,
+            (s.a - eye).truncate().length() < NEAR_RADIUS,
+        )?;
+        vertices += structures.len();
+        if vertices > MAX_VERTICES {
+            return Err("resident road mesh vertex budget exceeded".into());
+        }
+        let mut low = DVec3::splat(f64::INFINITY);
+        let mut high = -low;
+        for v in &structures {
+            let p = DVec3::from_array(v.position.map(f64::from));
+            low = low.min(p);
+            high = high.max(p);
+        }
+        chunks.push(Chunk {
+            near: Vec::new(),
+            far: Vec::new(),
+            structures,
+            centre: frame.world((low + high) * 0.5),
+            radius: low.distance(high) * 0.5,
         });
     }
     let mut mesh = Vec::new();
@@ -517,23 +664,29 @@ fn chunk_end(roads: &[Road], first: usize) -> usize {
 
 /// Shared cross-sections close both the deck and parapets at sampled bends.
 /// Resolve across regions as well: gateway endpoints share one physical join.
+fn node_key(p: DVec3) -> [i64; 3] {
+    p.to_array().map(|v| (v * 100.0).round() as i64)
+}
 fn join_ribbons(roads: &mut [Road]) -> Result<(), String> {
     use std::collections::BTreeMap;
-    let key = |p: DVec3| p.to_array().map(|v| (v * 100.0).round() as i64);
     let mut nodes = BTreeMap::<_, Vec<(usize, usize)>>::new();
     for (i, road) in roads.iter().enumerate() {
         for (end, p) in [road.segment.a, road.segment.b].into_iter().enumerate() {
-            nodes.entry(key(p)).or_default().push((i, end));
+            nodes.entry(node_key(p)).or_default().push((i, end));
         }
     }
     for ends in nodes.values() {
+        let branch = ends.len() > 2 || ends.iter().any(|&(i, end)| roads[i].ribbon.branches[end]);
         for &(i, end) in ends {
-            roads[i].ribbon.branches[end] = ends.len() > 2;
+            roads[i].ribbon.branches[end] = branch;
             if end == 0 {
                 roads[i].segment.junction_a = ends.len() > 1;
             } else {
                 roads[i].segment.junction_b = ends.len() > 1;
             }
+        }
+        if branch {
+            continue;
         }
         if let &[(a, ae), (b, be)] = ends.as_slice() {
             let sa = roads[a].ribbon.sides[ae];
@@ -560,7 +713,11 @@ fn join_ribbons(roads: &mut [Road]) -> Result<(), String> {
     }
     // Station-based paint and supports, not one restart/pier per arc sample.
     let mut visited = vec![false; roads.len()];
-    for ends in nodes.values().filter(|ends| ends.len() != 2) {
+    let roots: Vec<_> = nodes
+        .values()
+        .filter(|ends| ends.len() != 2 || ends.iter().any(|&(i, e)| roads[i].ribbon.branches[e]))
+        .collect();
+    for ends in roots {
         for &(root, end) in ends {
             let mut next = Some((root, end));
             let mut station = 0.0;
@@ -581,8 +738,8 @@ fn join_ribbons(roads: &mut [Road]) -> Result<(), String> {
                     ((finish + 20.0) / 40.0).floor() > ((station + 20.0) / 40.0).floor();
                 station = finish;
                 let p = if from == 0 { s.b } else { s.a };
-                let ends = &nodes[&key(p)];
-                next = if ends.len() == 2 {
+                let ends = &nodes[&node_key(p)];
+                next = if ends.len() == 2 && !roads[i].ribbon.branches[1 - from] {
                     ends.iter().copied().find(|&(j, _)| j != i)
                 } else {
                     None
@@ -622,6 +779,19 @@ fn exposed(ribbon: Ribbon, s: Segment, field: &Field, offset: f64, width: f64) -
     let mut visible: Vec<(f64, f64)> = vec![(0.0, 1.0)];
     for other in field.candidates(((s.a + s.b) * 0.5).truncate()) {
         if (other.a == s.a && other.b == s.b) || (other.a == s.b && other.b == s.a) {
+            continue;
+        }
+        if other.is_parking() {
+            if let Some((lo, hi)) = crate::road_parking::mouth(a, b, other.a) {
+                visible = visible
+                    .into_iter()
+                    .flat_map(|(start, end)| {
+                        [(start, end.min(lo)), (start.max(hi), end)]
+                            .into_iter()
+                            .filter(|&(a, b)| b - a > 1e-6)
+                    })
+                    .collect();
+            }
             continue;
         }
         let shared_a = other.a.distance(s.a).min(other.b.distance(s.a)) < 0.02;
@@ -1079,6 +1249,23 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn residency_crop_does_not_reclassify_a_fork_as_a_sharp_bend() {
+        let o = DVec3::Z * 1000.0;
+        let mut roads = [
+            test_road(o, o + DVec3::Y * 20.0),
+            test_road(o, o + DVec3::X * 20.0),
+        ];
+        // The third arm exists in the plan but lies beyond the residency crop.
+        roads[0].ribbon.branches[0] = true;
+        join_ribbons(&mut roads).unwrap();
+        assert!(roads.iter().all(|r| r.ribbon.branches[0]));
+        let mut invalid = [
+            test_road(o, o + DVec3::Y * 20.0),
+            test_road(o, o + DVec3::X * 20.0),
+        ];
+        assert!(join_ribbons(&mut invalid).is_err());
     }
     #[test]
     fn junction_walls_stop_at_the_opening_not_at_the_previous_station() {

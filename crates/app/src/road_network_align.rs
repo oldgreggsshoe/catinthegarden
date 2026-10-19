@@ -310,19 +310,32 @@ pub fn align(
             // the surveyed chain. Short connections retain a bounded stub.
             for reverse in [false, true] {
                 let node = if reverse { end } else { a };
-                if let Some(tangent) = (adjacent[node]
-                    .iter()
-                    .filter(|&&(j, _)| {
-                        DVec3::from_array(region.nodes[j].direction)
-                            .distance(DVec3::from_array(region.nodes[node].direction))
-                            * radius
-                            > 0.001
-                    })
-                    .count()
-                    == 1)
-                    .then(|| gateway_inward(region, node))
-                    .flatten()
-                {
+                if let Some(tangent) = gateway_inward(region, node).filter(|_| {
+                    // A terminal may reach its physical road through zero-length
+                    // gateway aliases. Count arms of that whole component, not
+                    // just the terminal's (possibly coincident) first neighbour.
+                    let mut seen = vec![false; region.nodes.len()];
+                    let mut stack = vec![node];
+                    let mut arms = 0;
+                    while let Some(i) = stack.pop() {
+                        if seen[i] {
+                            continue;
+                        }
+                        seen[i] = true;
+                        for &(j, _) in &adjacent[i] {
+                            if DVec3::from_array(region.nodes[j].direction)
+                                .distance(DVec3::from_array(region.nodes[i].direction))
+                                * radius
+                                < 0.001
+                            {
+                                stack.push(j);
+                            } else {
+                                arms += 1;
+                            }
+                        }
+                    }
+                    arms == 1
+                }) {
                     if reverse {
                         path.reverse();
                     }
@@ -460,6 +473,76 @@ mod tests {
         assert!(
             p.windows(2)
                 .all(|w| w[1].x >= w[0].x - 1e-8 && w[1].y >= w[0].y - 1e-8)
+        );
+    }
+    #[test]
+    fn regional_gateway_tangent_survives_a_coincident_terminal_alias() {
+        use crate::road_network::Ground;
+        use planet_coretypes::{CubeFace, TileKey};
+        struct Flat;
+        impl Survey for Flat {
+            fn ground(&self, _: DVec3) -> Result<Ground, String> {
+                Ok(Ground {
+                    height: 1000.0,
+                    ocean: false,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(Vec::new())
+            }
+        }
+        let key = TileKey {
+            face: CubeFace::PositiveZ,
+            level: 8,
+            x: 209,
+            y: 223,
+        };
+        let d = road_network::direction(key, 0.5, 1.0);
+        let inside = road_network::direction(key, 0.8, 0.5);
+        let region = Region {
+            key,
+            village_count: 0,
+            junction_count: 0,
+            length_meters: 0.0,
+            construction_cost_proxy: 0.0,
+            lattice_survey_samples: 0,
+            nodes: [inside, d, d]
+                .into_iter()
+                .map(|v| Node {
+                    direction: v.to_array(),
+                    ground_meters: 1000.0,
+                    ocean: false,
+                })
+                .collect(),
+            edges: [(0, 1), (1, 2)]
+                .into_iter()
+                .map(|(a, b)| RoadEdge {
+                    a,
+                    b,
+                    requires_undersea_tunnel: false,
+                })
+                .collect(),
+            terminals: vec![road_network::Terminal {
+                direction: d.to_array(),
+                kind: TerminalKind::Gateway { link: 0 },
+            }],
+            terminal_nodes: vec![2],
+        };
+        let expected = gateway_inward(&region, 2).unwrap();
+        let aligned = align(&region, 4e6, &Flat, None, 100.0).unwrap();
+        let i = aligned.region.terminal_nodes[0];
+        let e = aligned
+            .region
+            .edges
+            .iter()
+            .find(|e| e.a == i || e.b == i)
+            .unwrap();
+        let j = if e.a == i { e.b } else { e.a };
+        let q = DVec3::from_array(aligned.region.nodes[j].direction);
+        let tangent = (q - d * q.dot(d)).normalize();
+        assert!(
+            tangent.dot(expected) > 0.999999,
+            "{tangent:?}, expected {expected:?}"
         );
     }
     #[test]

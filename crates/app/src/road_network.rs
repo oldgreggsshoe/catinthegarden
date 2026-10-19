@@ -339,7 +339,7 @@ pub struct RoadEdge {
     pub b: usize,
     pub requires_undersea_tunnel: bool,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Region {
     pub key: TileKey,
     pub village_count: usize,

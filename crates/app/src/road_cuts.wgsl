@@ -1,9 +1,9 @@
 // Indexed corridor field: four header vectors followed by uniformly y-spaced
 // centre/profile samples. No loop over the route, and no fragment-stage search.
 @group(2) @binding(21) var<storage, read> road_cut_data: array<vec4<f32>>;
-struct RoadTerrainCut { height: f32, normal: vec3<f32>, lowered: bool }
+struct RoadTerrainCut { height: f32, normal: vec3<f32>, lowered: bool, paved: bool }
 fn road_pilot_terrain_cut(direction: vec3<f32>, uncut_height: f32) -> RoadTerrainCut {
-    var result = RoadTerrainCut(uncut_height, direction, false);
+    var result = RoadTerrainCut(uncut_height,direction,false,false);
     if !ROAD_CUTS_ENABLED { return result; }
     let settings = road_cut_data[0];
     if settings.w < 0.5 { return result; }
@@ -17,10 +17,10 @@ fn road_pilot_terrain_cut(direction: vec3<f32>, uncut_height: f32) -> RoadTerrai
     let end = road_cut_data[4u+last].y;
     for (var iteration=0u; iteration<2u; iteration+=1u) {
         let xy = tangent*(settings.x+result.height);
-        if abs(xy.x)>3600.0 || xy.y < -500.0 || xy.y>end+500.0 { return RoadTerrainCut(uncut_height,direction,false); }
+        if abs(xy.x)>3600.0 || xy.y < -500.0 || xy.y>end+500.0 { return RoadTerrainCut(uncut_height,direction,false,false); }
         let station=clamp(xy.y/settings.y,0.0,f32(last));
         let index=min(u32(floor(station)),last-1u);
-        if road_cut_data[4u+index].w > 0.5 { return RoadTerrainCut(uncut_height,direction,false); }
+        if road_cut_data[4u+index].w > 0.5 { return RoadTerrainCut(uncut_height,direction,false,false); }
         let a=road_cut_data[4u+index].xyz;
         let b=road_cut_data[5u+index].xyz;
         let centre=mix(a,b,station-f32(index));
@@ -87,6 +87,11 @@ fn road_tunnel_lining_owns(direction: vec3<f32>, height: f32) -> bool {
 const NETWORK_BUCKETS: u32 = 32768u;
 const NETWORK_REFS: u32 = 32772u;
 const NETWORK_SEGMENTS: u32 = 98308u;
+// Explicit metadata distinguishes courts from roads whose short endpoints
+// happen to quantize to one f32 position. Courts have coincident endpoints.
+const NETWORK_PARKING_RADIUS: f32 = 20.0;
+const NETWORK_PARKING_CUT_RADIUS: f32 = 22.0;
+const NETWORK_PARKING_TREE_RADIUS: f32 = 40.0;
 fn road_network_cell(xy: vec2<f32>) -> vec3<u32> {
     let cell = vec2<i32>(floor(xy / road_cut_data[0].y));
     let hash = (bitcast<u32>(cell.x)*73856093u) ^ (bitcast<u32>(cell.y)*19349663u);
@@ -111,29 +116,37 @@ fn road_network_local(direction: vec3<f32>, height: f32) -> vec3<f32> {
         (cosine-1.0)*radius+cosine*height);
 }
 fn road_network_terrain_cut(direction: vec3<f32>, uncut: f32) -> RoadTerrainCut {
-    var result=RoadTerrainCut(uncut,direction,false);
+    var result=RoadTerrainCut(uncut,direction,false,false);
     let up=road_cut_data[3].xyz;
     let cosine=dot(direction,up);
     if cosine<0.99 { return result; }
     for (var iteration=0u; iteration<2u; iteration+=1u) {
         let p=road_network_local(direction,result.height);
         let list=road_network_cell(p.xy);
-        result=RoadTerrainCut(uncut,direction,false);
+        result=RoadTerrainCut(uncut,direction,false,false);
         for (var j=0u; j<min(list.y,64u); j+=1u) {
             let index=road_network_segment(list.x+j);
             let a=road_cut_data[index];
             let b=road_cut_data[index+1u];
             if b.w>0.5 { continue; }
             let delta=b.xyz-a.xyz;
-            let along=dot(p.xy-a.xy,delta.xy)/length(delta.xy);
-            if along < -1.0 || along>length(delta.xy)+1.0 { continue; }
-            let t=clamp(dot(p.xy-a.xy,delta.xy)/dot(delta.xy,delta.xy),0.0,1.0);
+            let length2=dot(delta.xy,delta.xy);
+            let parking=b.w < -16.0;
+            if !parking && length2<0.00000001 {continue;}
+            let length_xy=max(sqrt(length2),0.0001);
+            let along=dot(p.xy-a.xy,delta.xy)/length_xy;
+            if !parking && (along < -1.0 || along>length_xy+1.0) { continue; }
+            let t=clamp(dot(p.xy-a.xy,delta.xy)/max(length2,0.00000001),0.0,1.0);
             let centre=mix(a.xyz,b.xyz,t);
             let displacement=p.xy-centre.xy;
             let offset=length(displacement);
+            // Return court ownership with the existing query: cached road
+            // banks must not interpolate a soil triangle through the asphalt.
+            if parking && offset<NETWORK_PARKING_RADIUS*0.99879546 {result.paved=true;}
             if offset>a.w { continue; }
-            let floor=select(-6.0,b.w+1.0,b.w<0.0);
-            let cap=centre.z+floor+max(offset-9.0,0.0);
+            let floor=select(select(-6.0,b.w+1.0,b.w<0.0),b.w+32.0,parking);
+            let flat_radius=select(9.0,NETWORK_PARKING_CUT_RADIUS,parking);
+            let cap=centre.z+floor+max(offset-flat_radius,0.0);
             let raw_height=(cap-(cosine-1.0)*road_cut_data[0].x)/cosine;
             // A finite bank blends out before its index footprint ends. No
             // hard cut at a cell/reach boundary, even with f32 radius rounding.
@@ -145,7 +158,7 @@ fn road_network_terrain_cut(direction: vec3<f32>, uncut: f32) -> RoadTerrainCut 
             result.lowered=true;
             var gradient=vec2<f32>(0.0);
             if t>0.0 && t<1.0 { gradient=delta.xy*delta.z/dot(delta.xy,delta.xy); }
-            if offset>9.0 { gradient+=displacement/max(offset,0.00001); }
+            if offset>flat_radius { gradient+=displacement/max(offset,0.00001); }
             gradient=gradient*weight-(raw_height-uncut)*cosine
                 *6.0*fade*(1.0-fade)/8.0*displacement/max(offset,0.00001);
             result.normal=normalize(up-road_cut_data[1].xyz*gradient.x-road_cut_data[2].xyz*gradient.y);
@@ -179,7 +192,7 @@ fn road_network_void_local(p: vec3<f32>) -> f32 {
     return result;
 }
 fn road_terrain_cut(direction: vec3<f32>, uncut_height: f32) -> RoadTerrainCut {
-    if !ROAD_CUTS_ENABLED { return RoadTerrainCut(uncut_height,direction,false); }
+    if !ROAD_CUTS_ENABLED { return RoadTerrainCut(uncut_height,direction,false,false); }
     if road_cut_data[0].w>1.5 { return road_network_terrain_cut(direction,uncut_height); }
     return road_pilot_terrain_cut(direction,uncut_height);
 }
@@ -202,6 +215,11 @@ fn road_clears_tree(direction: vec3<f32>, uncut: f32) -> bool {
             let a=road_cut_data[index]; let b=road_cut_data[index+1u];
             if b.w>0.5 { continue; }
             let delta=b.xy-a.xy;
+            if b.w < -16.0 {
+                if distance(p.xy,a.xy)<=NETWORK_PARKING_TREE_RADIUS {return true;}
+                continue;
+            }
+            if dot(delta,delta)<0.00000001 {continue;}
             let along=dot(p.xy-a.xy,delta)/length(delta);
             let margin=select(1.0,25.0,b.w>=-2.0 && b.w<0.0);
             if along < -margin || along>length(delta)+margin { continue; }
@@ -239,14 +257,22 @@ fn road_network_open_cut_owns(direction: vec3<f32>, height: f32) -> bool {
         let a=road_cut_data[index]; let b=road_cut_data[index+1u];
         if b.w>0.5 { continue; }
         let delta=b.xy-a.xy;
-        let along=dot(p.xy-a.xy,delta)/length(delta);
-        if along < -0.5 || along > length(delta)+0.5 { continue; }
-        let t=clamp(dot(p.xy-a.xy,delta)/dot(delta,delta),0.0,1.0);
+        let length2=dot(delta,delta);
+        let parking=b.w < -16.0;
+        if !parking && length2<0.00000001 {continue;}
+        let length_xy=max(sqrt(length2),0.0001);
+        let along=dot(p.xy-a.xy,delta)/length_xy;
+        if !parking && (along < -0.5 || along > length_xy+0.5) { continue; }
+        let t=clamp(dot(p.xy-a.xy,delta)/max(length2,0.00000001),0.0,1.0);
         let centre=mix(a.xyz,b.xyz,t);
         let offset=distance(p.xy,centre.xy);
-        if offset<=5.1 && p.z>centre.z-0.75 { return true; }
-        let floor_depth=select(6.0,-b.w-1.0,b.w<0.0);
-        let cap=centre.z-floor_depth+max(offset-9.0,0.0);
+        // Inscribed radius of the 64-sided pavement avoids erasing terrain
+        // beyond the actual mesh at a polygon edge.
+        let deck_radius=select(5.1,NETWORK_PARKING_RADIUS*0.99879546,parking);
+        if offset<=deck_radius && p.z>centre.z-0.75 { return true; }
+        let floor_depth=select(select(6.0,-b.w-1.0,b.w<0.0),-b.w-32.0,parking);
+        let flat_radius=select(9.0,NETWORK_PARKING_CUT_RADIUS,parking);
+        let cap=centre.z-floor_depth+max(offset-flat_radius,0.0);
         let weight=smoothstep(0.0,8.0,a.w-offset);
         if (p.z-cap)*weight>0.75 { return true; }
     }

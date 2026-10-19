@@ -301,7 +301,8 @@ fn create_pipeline_inner(
                 let h = p.z + dot(p.xy,p.xy) / (sqrt(r*r + dot(p.xy,p.xy)) + r);
                 let d = normalize(road_cut_data[3].xyz*r
                     + road_cut_data[1].xyz*p.x + road_cut_data[2].xyz*p.y);
-                if road_terrain_cut(d,h).height < h - 0.75 { discard; }
+                let cut=road_terrain_cut(d,h);
+                if cut.paved || cut.height < h - 0.75 { discard; }
             }
         "#;
         format!(

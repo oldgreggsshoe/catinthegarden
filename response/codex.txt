@@ -169,3 +169,29 @@ The fork still has sharp, exposed corners. In the third image, a raised road’s
 I’ve opened all three. The fork still has sharp, exposed corners; near the tunnel, the raised road’s piers appear to obstruct the lower carriageway.
 
 These junction/crossing cases are still wrong. They need proper shared junctions or clearance-checked overpasses—not more cosmetic rounding.
+
+I’ll reproduce those three views, measure the crossing heights and support positions, then fix the junction surfaces and overpass clearances. I’ll keep the 25% grade limit and cached rendering, and check screenshots and frame times before pushing.
+
+I’ll first add a fixed-camera replay and geometry checks for these sites. The likely causes are independently built junction strips, supports placed without checking nearby lanes, or overlapping routes that were never classified as junctions versus overpasses. The measurements will determine whether routing needs to change too.
+
+The tunnel-side problem is not a proper overpass: two branches follow almost the same path, then split vertically while their carriageways still overlap. Four supports penetrate the lower road.
+
+I’ll make them share a deck until they separate sideways, and add curved, protected junction edges. Your app is still running, so I can check visuals but can’t get an uncontended FPS comparison without stopping it.
+
+I’ve checked both new screenshots. **No—nearby villages permanently lacking roads is not expected.** Distant roads can be unloaded, and village access stops outside the houses, but that doesn’t explain what you’re seeing.
+
+Your log shows repeated “unrounded network join” failures. Each failure keeps the old road set, so as you fly onward, villages appear without their roads. The other screenshot also shows road strips interrupted by terrain. I’ll prioritize the failed road updates alongside the junction work.
+
+Yes. I’ll add a level, circular paved area at each village’s road entrance for parking and turning, with terrain clearance and trees removed across it. I’ll start with a 40 m diameter, keeping it outside the houses and joining it smoothly to the road.
+
+I’m also tracing the failed road updates, since the entrance areas need to load reliably with their roads.
+
+The circular courts are implemented, including excavation, paving, walking support and tree clearance. The first render exposed a soil triangle crossing the pavement; I’ve added court ownership to the existing cut query to address that.
+
+The two locations from your missing-road screenshots now pass the road-loading regression. Broader mountain and undersea checks have found more bad joins, so I’m checking those before calling the change ready.
+
+The village and mountain renders now show clean circular courts with no soil crossing the paving. All five real-network checks pass, including the 244-village area and the undersea connections.
+
+Some sites needed an alternative entrance position to keep the road profile feasible. That planning stays on the background worker, though the dense village-area check took about 78 seconds. I’m finishing the GPU and tunnel checks before pushing; the earlier fork/support redesign is still outstanding.
+
+I’ll inspect the tunnel lining and lighting shader, then add a concrete finish with panel joints, surface variation and damp staining. I’ll try recessed light strips in the material too, so they don’t need extra lamp geometry. I’ll finish and push the parking changes first.

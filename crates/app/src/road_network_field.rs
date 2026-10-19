@@ -68,7 +68,13 @@ pub struct Segment {
     pub junction_b: bool,
 }
 impl Segment {
+    pub(crate) fn is_parking(self) -> bool {
+        self.a == self.b
+    }
     pub(crate) fn nearest(self, p: DVec2) -> (DVec3, f64) {
+        if self.is_parking() {
+            return (self.a, p.distance(self.a.truncate()));
+        }
         let delta = (self.b - self.a).truncate();
         let t = ((p - self.a.truncate()).dot(delta) / delta.length_squared()).clamp(0.0, 1.0);
         let centre = self.a.lerp(self.b, t);
@@ -129,7 +135,11 @@ impl Field {
                 || !(0.0..=6.0).contains(&s.floor_depth)
                 || s.reach < 10.0
                 || s.reach > 512.0
-                || (s.b - s.a).truncate().length_squared() < 1e-6
+                || ((s.b - s.a).truncate().length_squared() < 1e-6
+                    && !(s.is_parking()
+                        && !s.tunnel
+                        && s.reach == crate::road_parking::REACH
+                        && s.floor_depth == crate::road_parking::FLOOR_DEPTH))
                 || s.a.abs().max_element() > 1e6
                 || s.b.abs().max_element() > 1e6
             {
@@ -203,7 +213,9 @@ impl Field {
                 s.b.x as f32,
                 s.b.y as f32,
                 s.b.z as f32,
-                if s.tunnel {
+                if s.is_parking() {
+                    crate::road_parking::GPU_TAG - s.floor_depth as f32
+                } else if s.tunnel {
                     1.0
                 } else {
                     -(s.floor_depth as f32 + 1.0)
@@ -259,16 +271,22 @@ impl Field {
             let mut next = uncut;
             for s in self.candidates(p.truncate()).filter(|s| !s.tunnel) {
                 let delta = (s.b - s.a).truncate();
-                let along = (p - s.a).truncate().dot(delta) / delta.length();
-                if along < -1.0 || along > delta.length() + 1.0 {
+                let along = (p - s.a).truncate().dot(delta) / delta.length().max(1e-6);
+                if !s.is_parking() && (along < -1.0 || along > delta.length() + 1.0) {
                     continue;
                 }
                 let (centre, offset) = s.nearest(p.truncate());
                 if offset > s.reach {
                     continue;
                 }
-                let cap =
-                    centre.z - s.floor_depth + (offset - crate::road::CUT_HALF_WIDTH).max(0.0);
+                let cap = centre.z - s.floor_depth
+                    + (offset
+                        - if s.is_parking() {
+                            crate::road_parking::CUT_RADIUS
+                        } else {
+                            crate::road::CUT_HALF_WIDTH
+                        })
+                    .max(0.0);
                 let t = ((s.reach - offset) / 8.0).clamp(0.0, 1.0);
                 let weight = t * t * (3.0 - 2.0 * t);
                 let cut = (cap - (cosine - 1.0) * self.frame.radius) / cosine;
@@ -286,6 +304,9 @@ impl Field {
         self.candidates(p.truncate())
             .filter(|s| !s.tunnel)
             .any(|s| {
+                if s.is_parking() {
+                    return s.nearest(p.truncate()).1 <= crate::road_parking::TREE_RADIUS;
+                }
                 let delta = (s.b - s.a).truncate();
                 let along = (p - s.a).truncate().dot(delta) / delta.length();
                 along
@@ -318,6 +339,14 @@ impl Field {
         self.candidate_indices(local.truncate())
             .filter_map(|i| {
                 let s = self.segments[i];
+                if s.is_parking() {
+                    let radial = (s.a.z + self.frame.radius) / ray.z;
+                    let p = ray * radial - DVec3::Z * self.frame.radius;
+                    let height = radial - self.frame.radius;
+                    return (crate::road_parking::contains((p - s.a).truncate())
+                        && eye >= height - 0.25)
+                        .then_some(height);
+                }
                 if let Some(sections) = &self.deck_sections {
                     let [a, b] = sections[i].map(|v| v * crate::road::HALF_WIDTH);
                     let q = [s.a - a, s.a + a, s.b + b, s.b - b];

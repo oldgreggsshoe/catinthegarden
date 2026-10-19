@@ -273,6 +273,32 @@ impl Drop for Worker {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "manual flight resident updates, asset-backed without GPU"]
+    fn road_network_live_manual_flight_publishes_roads_at_unserved_villages() {
+        for position in [
+            [1820798.7659331304, 2146703.3691791724, 2857276.798427007],
+            [1826056.4364370368, 2125286.357207378, 2868723.9804182025],
+        ] {
+            let initial = DVec3::from_array(position);
+            let (mut worker, _) =
+                Worker::start(crate::find_default_outmap().unwrap(), initial).unwrap();
+            worker.request(initial, true);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+            let snapshot = loop {
+                if let Some((_, result)) = worker.take() {
+                    break result.unwrap();
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            };
+            assert_eq!(snapshot.keys.len(), nearby_keys(initial).len());
+            eprintln!(
+                "manual flight: {:?}, {} villages, {} spans",
+                initial, snapshot.villages, snapshot.segments
+            );
+        }
+    }
+    #[test]
     #[ignore = "asset-backed network startup, no display/GPU"]
     fn road_network_live_village_startup_mesh_is_complete_and_bounded() {
         let root = crate::find_default_outmap().expect("active bake");
@@ -281,6 +307,10 @@ mod tests {
             * 4_010_000.0;
         let (worker, snapshot) = Worker::start(root, initial).unwrap();
         assert_eq!(snapshot.villages, 39);
+        assert!(
+            snapshot.field.segments.iter().any(|s| s.is_parking()),
+            "village entrance courts must share the road field"
+        );
         assert_eq!(snapshot.keys.len(), 1);
         assert!(!snapshot.vertices.is_empty());
         assert!(snapshot.vertices.len() <= crate::road_network_mesh::MAX_VERTICES);

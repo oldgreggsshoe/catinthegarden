@@ -14,6 +14,49 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Village entrance courts and resident updates, 19 October
+
+Village approaches now end at **40m-diameter circular paved courts** for future
+parking and turning. Their centres are 15m beyond the end of the approach, so
+only the existing flat last5m overlap the pavement: the 25% grade limit and
+vertical-curve cap are unchanged. A 64-sided cached mesh supplies the exact
+walking floor. Terrain above the court is excavated, with finite circular cut
+banks; where the ground falls away, a solid retaining skirt meets it rather
+than leaving a floating sheet or adding parking-area legs. No parking-bay
+markings, vehicle simulation, or retaining-wall collision are claimed yet.
+
+Access siting reserves the court and bank footprint outside protected houses
+and checks for water under the pavement. If the first dry siting cannot fit the
+coupled road profile, the worker can retry two farther setbacks; it never moves
+a fixed gateway, relaxes engineering limits, or publishes a partial network.
+The normal road flag enables courts automatically. `road_network_parking` is a
+fixed overview replay (`PLANET_ROAD_NETWORK_SITE=village` or the default mountain
+site). No new per-frame routing or object search is introduced.
+
+Courts are explicit point shapes in the existing CPU/GPU spatial index, with a
+reserved metadata tag (not inferred from f32-coincident road vertices). They
+share excavation, raster ownership, crown clearance and walking queries, using
+the same buffers and unchanged32-probe/64-candidate limits. The existing cut
+query returns pavement ownership too, so cached soil triangles cannot cross a
+court; this adds no extra fragment lookup. Paved courts remain separate from
+through-road junction engineering.
+
+The latest manual flight `manual/1792407704-1125404` contains107 rejected road
+updates. Both photographed positions were still using the old resident set:
+the second was roughly41km beyond its last published camera neighbourhood.
+Two topology defects are addressed: a gateway's first physical arm can lie
+behind zero-length aliases (the canonical seam tangent must still be fitted),
+and an unloaded/cropped third arm must not turn a genuine fork into a rejected
+degree-two bend. Truly unrounded degree-two bends are still rejected. Exact
+flight-position worker regressions and the existing village/mountain/undersea
+resident checks cover this path; final validation is recorded in HANDOFF.
+
+The earlier acute-fork and tunnel-side support defects are **not fixed by this
+phase**. The measured tunnel site is a shared split with overlapping branches,
+not an engineered overpass; baseline mesh inspection found four supports in the
+lower carriageway. Proper shared horizontal/vertical fork geometry, curved
+exterior junction boundaries and support clearance remain follow-up work.
+
 ## Horizontal alignments and edge protection, 19 October
 
 Ordinary roads now follow actual tangent-continuous curves, not a square route

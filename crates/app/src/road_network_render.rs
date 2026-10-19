@@ -170,6 +170,15 @@ impl NetworkRenderer {
                 Some((eye, eye - (target - eye)))
             }
             "road_network_trial" | "road_network_walk" => Some((eye, target)),
+            "road_network_parking" => {
+                let up = eye.normalize();
+                let forward = (target - eye).normalize();
+                let side = forward.cross(up).normalize();
+                Some((
+                    eye - forward * 50.0 + side * 28.0 + up * 42.0,
+                    eye - forward * 25.0,
+                ))
+            }
             "road_network_overview" => {
                 let up = eye.normalize();
                 let forward = (target - eye).normalize();
