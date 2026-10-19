@@ -14,6 +14,20 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Empty regional destinations, 19 October
+
+Coarse macro occupancy is conservative, not proof that a region contains a
+village. The snowy manual road-to-nowhere was a gateway into an empty leaf.
+Before local routing, gateway components are now checked lazily against actual
+village siting, with memoized, iterative and cancellable worker traversal.
+This is independent of residency and has no distance cutoff: empty branches
+are not built, but empty transit regions linking real settlements remain.
+The coarse backbone is retained for surveying; detailed local roads filter its
+false-positive destinations. Synthetic and exact photographed-position tests
+cover the distinction. `PLANET_ROAD_NETWORK_SITE=manual_snow` with scenario
+`road_network_empty_spur` replays the photographed view (640x400 matches its
+original internal aspect). No frame-loop routing or presentation change.
+
 ## Village entrance courts and resident updates, 19 October
 
 Village approaches now end at **40m-diameter circular paved courts** for future

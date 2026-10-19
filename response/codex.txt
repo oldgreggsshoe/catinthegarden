@@ -195,3 +195,27 @@ The village and mountain renders now show clean circular courts with no soil cro
 Some sites needed an alternative entrance position to keep the road profile feasible. That planning stays on the background worker, though the dense village-area check took about 78 seconds. I’m finishing the GPU and tunnel checks before pushing; the earlier fork/support redesign is still outstanding.
 
 I’ll inspect the tunnel lining and lighting shader, then add a concrete finish with panel joints, surface variation and damp staining. I’ll try recessed light strips in the material too, so they don’t need extra lamp geometry. I’ll finish and push the parking changes first.
+
+I can see the abrupt stop in the snow. I’ll check whether the road really ends there or whether terrain is hiding a tunnel entrance. This run’s road updates are succeeding, so it isn’t obviously the earlier loading failure.
+
+I’ll inspect the resident graph and cut-field handoff in `road_network_stream.rs` and `road_network_mesh.rs`, using a geometry probe at this camera position before changing the road.
+
+I’m checking three possibilities: a hidden tunnel entrance, a missing regional connection, or geometry being culled. The road data really does end at the photographed spot, so I’m tracing that endpoint back to the network graph.
+
+Found it: this is a genuine dead-end, not a tunnel. The planner kept a region as “possibly inhabited”, but the detailed village check found nothing there. The neighbouring region still built a road to its boundary.
+
+I’ll make gateway planning discard branches that serve no actual villages, while retaining empty regions needed to connect inhabited ones. This stays on the road-building worker, not in the frame loop.
+
+I’ve checked the current code. **It still exists, but it’s an alternative terrain renderer—not an optimisation applied to the normal view.**
+
+- **Normal rendering is rasterised terrain meshes.** That’s what your latest screenshots and the recent road/ocean work use. The foveated ray pass isn’t running in that mode.
+- **F5 switches to the foveated ray renderer.** It ray-marches the planet’s height field into a warped image, then reconstructs the screen image and depth. Its intermediate image is 75% of the viewport width and height—about 56% as many pixels—with sampling concentrated around the focus.
+- **The focus follows travel direction**, easing back to the centre when stationary. It isn’t eye-tracked.
+- **It has been maintained:** it supports a streamed, higher-detail terrain window near the camera, alongside its coarse whole-planet data. However, it is not a fully equivalent replacement for the current raster path; recent features and fixes have not all been validated there.
+- **It still costs startup time and GPU memory in raster mode.** We initialise it regardless, partly because its whole-planet height textures also supply the raster terrain’s cast shadows. That does not mean the foveated drawing pass runs every frame.
+
+So: **a working alternative/experimental path, plus shared shadow data—not currently the mechanism keeping the main renderer’s FPS up.** It also doesn’t automatically foveate roads, trees and the rest of the scene.
+
+I’ll do this in stages: finish validating the dead-end fix, then review road-versus-tunnel routing costs, add tunnel-length labels, and add stable village names and directional signs.
+
+I’ll treat **right-hand drive as left-hand traffic**, with roadside signs facing approaching traffic on the left. Distances will follow the road network, not straight-line distances; signs must still find villages beyond the currently loaded regions.

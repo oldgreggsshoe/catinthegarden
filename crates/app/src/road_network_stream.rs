@@ -273,6 +273,40 @@ impl Drop for Worker {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "asset-backed photographed empty regional branch; no GPU"]
+    fn road_network_live_snow_road_has_no_unserved_dead_end() {
+        let eye = DVec3::new(1804537.8505246886, 2191767.3184277415, 2834020.239721973);
+        let (mut worker, _) = Worker::start(crate::find_default_outmap().unwrap(), eye).unwrap();
+        worker.request(eye, true);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let snapshot = loop {
+            if let Some((_, result)) = worker.take() {
+                break result.unwrap();
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(snapshot.keys.len(), nearby_keys(eye).len());
+        assert_eq!(snapshot.villages, 10, "do not remove actual settlements");
+        // Endpoint projected onto the abrupt stop in manual/1792411566-1161582.
+        // It is the gateway into an empty one-gateway region, not a portal.
+        let endpoint = DVec3::new(7056.787246791568, -6034.3787442639, 11264.672527371906);
+        assert!(
+            snapshot
+                .field
+                .segments
+                .iter()
+                .all(|s| { s.nearest(endpoint.truncate()).1 > 30.0 }),
+            "a road must not be built just to an uninhabited regional boundary"
+        );
+        eprintln!(
+            "snow site: {} regions, {} villages, {} field segments",
+            snapshot.keys.len(),
+            snapshot.villages,
+            snapshot.field.segments.len()
+        );
+    }
+    #[test]
     #[ignore = "manual flight resident updates, asset-backed without GPU"]
     fn road_network_live_manual_flight_publishes_roads_at_unserved_villages() {
         for position in [

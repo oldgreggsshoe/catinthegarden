@@ -1,0 +1,53 @@
+{
+  "name": "road_network_empty_spur",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 12,
+  "hide_overlay": true,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    1,
+    6,
+    12
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        1804537.8505246886,
+        2191767.3184277415,
+        2834020.239721973
+      ],
+      "look_at": [
+        1804469.7537294861,
+        2191802.261550295,
+        2833955.8828682955
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.42083410534499366,
+        0.397776994021848,
+        0.8152742598692917
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 3,
+    "min_camera_clearance_m": 1
+  },
+  "solid_color_screen": false
+}

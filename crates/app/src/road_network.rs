@@ -12,8 +12,9 @@ use glam::DVec3;
 use planet_coretypes::{CubeFace, TileKey, face_uv_to_direction};
 use serde::Serialize;
 use std::{
+    cell::RefCell,
     cmp::Reverse,
-    collections::{BTreeMap, BTreeSet, BinaryHeap},
+    collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap},
 };
 
 pub const REGION_LEVEL: u8 = 8;
@@ -68,6 +69,15 @@ pub struct Backbone {
     pub potentially_inhabited_regions: usize,
     pub links: Vec<Link>,
     incident: Vec<Vec<usize>>,
+    occupancy: RefCell<Occupancy>,
+}
+
+#[derive(Default)]
+struct Occupancy {
+    regions: HashMap<usize, bool>,
+    /// Does the component rooted at this region, excluding this link, contain
+    /// an accepted village? Independent of camera residency and cached lazily.
+    branches: HashMap<(usize, usize), bool>,
 }
 
 fn count(level: u8) -> usize {
@@ -221,6 +231,7 @@ impl Backbone {
             potentially_inhabited_regions: occupied.iter().filter(|&&v| v).count(),
             links,
             incident,
+            occupancy: RefCell::new(Occupancy::default()),
         })
     }
 
@@ -245,6 +256,75 @@ impl Backbone {
             .iter()
             .map(|&i| (i, DVec3::from_array(self.links[i].gateway)))
             .collect())
+    }
+
+    fn component_has_villages(
+        &self,
+        root: usize,
+        excluded: usize,
+        terrain: &impl Survey,
+    ) -> Result<bool, String> {
+        let mut occupancy = self.occupancy.borrow_mut();
+        // Iterative DFS: long empty mountain/sea chains must not consume the
+        // call stack. Stop at the first real village; never survey the world
+        // eagerly, run engineering, or depend on which neighbours are loaded.
+        let mut stack = vec![(root, excluded, 0)];
+        while let Some(&(node, parent, next)) = stack.last() {
+            if terrain.cancelled() {
+                return Err("road generation superseded".into());
+            }
+            let known = occupancy.branches.get(&(node, parent)).copied();
+            let inhabited = match known {
+                Some(value) => value,
+                None => match occupancy.regions.get(&node) {
+                    Some(&value) => value,
+                    None => {
+                        let region = key(node, self.level);
+                        let subdivision =
+                            1_u32 << (crate::village::VILLAGE_CELL_LEVEL - self.level);
+                        let mut found = false;
+                        'cells: for y in 0..subdivision {
+                            for x in 0..subdivision {
+                                if terrain.cancelled() {
+                                    return Err("road generation superseded".into());
+                                }
+                                let cell = TileKey {
+                                    level: crate::village::VILLAGE_CELL_LEVEL,
+                                    x: region.x * subdivision + x,
+                                    y: region.y * subdivision + y,
+                                    ..region
+                                };
+                                if !terrain.villages(cell)?.is_empty() {
+                                    found = true;
+                                    break 'cells;
+                                }
+                            }
+                        }
+                        occupancy.regions.insert(node, found);
+                        found
+                    }
+                },
+            };
+            if inhabited {
+                for &(ancestor, incoming, _) in &stack {
+                    occupancy.branches.insert((ancestor, incoming), true);
+                }
+                return Ok(true);
+            }
+            if known == Some(false) || next == self.incident[node].len() {
+                occupancy.branches.insert((node, parent), false);
+                stack.pop();
+            } else {
+                stack.last_mut().unwrap().2 += 1;
+                let edge = self.incident[node][next];
+                if edge != parent {
+                    let link = &self.links[edge];
+                    let other = if link.a == node { link.b } else { link.a };
+                    stack.push((other, edge, 0));
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// All accepted village sites, not the camera's distance-culled house list.
@@ -283,10 +363,22 @@ impl Backbone {
             }
         }
         let village_count = terminals.len();
-        terminals.extend(gateways.into_iter().map(|(link, d)| Terminal {
-            direction: d.to_array(),
-            kind: TerminalKind::Gateway { link },
-        }));
+        self.occupancy
+            .borrow_mut()
+            .regions
+            .insert(id(region), village_count != 0);
+        for (link, d) in gateways {
+            let edge = &self.links[link];
+            let other = if edge.a == id(region) { edge.b } else { edge.a };
+            // Coarse occupancy deliberately retains false positives. A gateway
+            // is a connection, not a destination in an otherwise empty leaf.
+            if self.component_has_villages(other, link, terrain)? {
+                terminals.push(Terminal {
+                    direction: d.to_array(),
+                    kind: TerminalKind::Gateway { link },
+                });
+            }
+        }
         local_tree(region, radius, terrain, terminals, village_count)
     }
 }
@@ -735,6 +827,70 @@ mod tests {
         let empty = Backbone::survey(2, 4e6, &Sparse { none: true }).unwrap();
         assert!(empty.links.is_empty());
         assert_eq!(empty.retained_region_count(), 0);
+    }
+
+    #[test]
+    fn road_network_exact_occupancy_removes_empty_spurs_but_keeps_transit() {
+        struct Sites(Vec<TileKey>);
+        impl Survey for Sites {
+            fn ground(&self, _: DVec3) -> Result<Ground, String> {
+                Flat.ground(DVec3::Z)
+            }
+            fn villages(&self, cell: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(self
+                    .0
+                    .iter()
+                    .filter_map(|&region| {
+                        let site = direction(region, 0.4, 0.4);
+                        (planet_coretypes::tile_key_for_direction(site, cell.level) == cell)
+                            .then_some(site)
+                    })
+                    .collect())
+            }
+        }
+        let keys: Vec<_> = (0..5)
+            .map(|x| TileKey {
+                x: 128 + x,
+                ..test_key()
+            })
+            .collect();
+        let mut backbone = Backbone::survey(REGION_LEVEL, 4e6, &Flat).unwrap();
+        // A--B--C, with a conservatively retained but actually empty B--D--E spur.
+        backbone.links.clear();
+        backbone.incident.iter_mut().for_each(Vec::clear);
+        for (a, b) in [(0, 1), (1, 2), (1, 3), (3, 4)] {
+            let link = backbone.links.len();
+            backbone.links.push(Link {
+                a: id(keys[a]),
+                b: id(keys[b]),
+                gateway: direction(keys[a], 1.0, 0.5).to_array(),
+                length_meters: 1.0,
+                construction_cost_proxy: 1.0,
+                requires_undersea_tunnel: false,
+            });
+            backbone.incident[id(keys[a])].push(link);
+            backbone.incident[id(keys[b])].push(link);
+        }
+        let sites = Sites(vec![keys[0], keys[2]]);
+        let transit = backbone.local(keys[1], 4e6, &sites).unwrap();
+        assert_eq!(transit.village_count, 0);
+        assert_eq!(
+            transit.terminals.len(),
+            2,
+            "empty spur is not a destination"
+        );
+        assert!(
+            !transit.edges.is_empty(),
+            "uninhabited transit must remain connected"
+        );
+        for &k in &[keys[0], keys[2]] {
+            let region = backbone.local(k, 4e6, &sites).unwrap();
+            assert_eq!(region.village_count, 1);
+            assert_eq!(region.terminals.len(), 2);
+            connected(&region);
+        }
+        let empty = backbone.local(keys[3], 4e6, &sites).unwrap();
+        assert!(empty.edges.is_empty(), "do not build down the empty branch");
     }
 
     #[test]

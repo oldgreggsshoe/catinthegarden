@@ -18,6 +18,9 @@ pub fn initial_position() -> DVec3 {
             DVec3::new(2574139.618674488, -2554011.900402223, 1699659.6951081678).normalize()
         }
         Ok("undersea") => return undersea_start_position(),
+        Ok("manual_snow") => {
+            DVec3::new(1804537.8505246886, 2191767.3184277415, 2834020.239721973).normalize()
+        }
         Ok("manual_corners") => {
             DVec3::new(1818372.4030723977, 2163321.697198833, 2842753.1646584594).normalize()
         }

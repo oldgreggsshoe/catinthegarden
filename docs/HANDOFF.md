@@ -10,7 +10,30 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 19 October: village entrance courts and resident-road repair.**
+**Current phase, 19 October: snowy road-to-nowhere fixed; tunnel economics and signage next.**
+The photographed stop in `manual/1792411566-1161582` is a real gateway into an
+empty one-gateway region, not a hidden portal or failed resident publication.
+Coarse conservative occupancy kept an uninhabited branch. `Backbone::local`
+now lazily resolves actual village occupancy on the other side of each link,
+with memoized iterative/cancellable traversal independent of resident regions.
+Actual villages and necessary empty transit regions remain connected. The
+old 619 local spans (~10.75km) served no settlement and are no longer built.
+All nine asset-backed road checks pass. The exact-pose replay
+`road_network_empty_spur/1792412968-1193598` passes with three captures; final
+capture opened. Synthetic dead-branch test failed before the fix and passes.
+`cargo check` and release build pass. Initial full suite had the same six old
+failures plus a missing required scenario JSON field; that field is corrected,
+and the scenario-load recheck passes. No paired FPS claim.
+
+**Next user request:** compare total road/detour and tunnel costs so viable
+shorter bores compete, print tunnel lengths over entrances, assign stable
+village names, and show road-network direction/distances at junctions and
+periodically en route. Right-hand-drive is being interpreted as left-hand
+traffic/signs. Sign search must not be limited to visible/resident villages.
+Older tunnel-material request is also pending. Preserve presentation/jitter
+fixes, road grade/curve/cover constraints and unrelated renderer edits.
+
+**Previous phase: village entrance courts and resident-road repair.**
 Circular40m paved parking/turning courts now share cached road meshes, cuts,
 walking floors and tree clearance. Their 15m end offset preserves the existing
 flat arrival apron and25% grade/vertical-rate limits. Court siting and its road
@@ -12959,3 +12982,23 @@ share the near-parallel branch/trunk geometry and its heights until the lanes
 separate, then build curved junction boundaries and check actual vehicle and
 support envelopes. Whole-planet engineering remains on demand, not exhaustively
 audited.
+
+## 19 October — snowy empty-branch diagnosis and fix
+
+Projection of the real worker's segment data onto the manual photo located the
+last segment at pixel(931,769), matching the visible stop. It is gateway100650,
+PositiveZ L8(209,226) to(209,227); both have zero villages and the latter has
+only that gateway. Resident updates were succeeding. Detailed local planning
+never corrected the backbone's deliberately conservative false-positive leaf.
+Exact component occupancy now excludes such destinations; true transit and all
+accepted villages remain. Iterative DFS uses only the worker's survey, caches
+positive/negative components, and propagates cancellation/errors without
+caching unresolved results. No radius cutoff or per-frame graph search added.
+Source-version hash now includes road_network.rs.
+
+Evidence: /tmp/stuff-road-nowhere-{red,green,worker,workers-all,check}.log;
+/tmp/stuff-road-nowhere-release-final.log; three-frame replay above. The nine
+asset checks include old manual flight positions, mountain/village/undersea,
+681-village coarse-occupancy audit, and mountain survey probes. The initial full
+suite recorded725 pass/7 fail/60ignored; one was the new replay missing
+solid_color_screen, now fixed; six are preexisting FOV/tint/SUNK assertions.

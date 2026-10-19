@@ -65,6 +65,7 @@ impl Surface {
         for b in bytes
             .iter()
             .copied()
+            .chain(include_bytes!("road_network.rs").iter().copied())
             .chain(include_bytes!("road_network_profile.rs").iter().copied())
             .chain(include_bytes!("road_network_align.rs").iter().copied())
             .chain(include_bytes!("road_parking.rs").iter().copied())
