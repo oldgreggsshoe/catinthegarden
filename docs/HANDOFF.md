@@ -11,6 +11,13 @@ road network. Preserve unrelated local ocean/renderer edits.
 documentation, and response-file changes when staging work.
 
 **Current follow-up, 19 October: real horizontal curves, not corner pads.**
+**Latest user review:** all three `manual/1792407040-1119039` captures are from
+b875db3 and still show unresolved junction/crossing defects. Acute fork corners
+remain exposed; a raised road's piers appear to occupy the road below by a tunnel.
+This review makes no renderer changes. Reproduce/measure these sites next; do
+not treat a grade-separated crossing as a shared flat junction without checking
+its topology and separation. Do not claim continuous safe barriers everywhere.
+
 The user's manual captures `manual/1792390010-1078115` showed hard centre-line
 turns and parapets omitted from entire junction-adjacent spans. The network now
 fits tangent-continuous circular alignments BEFORE its vertical profile, cuts,
@@ -12826,3 +12833,23 @@ User reports the view jitters back and forth while turning over land (not near t
   older runs with different automatically derived inspection poses.
   Binary hash, paths, assertions and timings:
   `test-runs/road-horizontal-curves-validation.json`. No GPU timestamps used.
+
+## 19 October — new manual junction and crossing review (no renderer edit)
+
+Opened all three1920x1080 captures in `manual/1792407040-1119039`, manifest
+revision b875db33aec32f61f3ad6efaf3af85bf41786e68. Capture times60.017003,
+143.111527 and166.545886s. First: acute multiway fork with sharp corners and
+exposed edge sections. Second: view through a tunnel exit towards the nearby
+road connection; do not infer a vertical step just from dark/grey lighting.
+Third: raised deck beside/in front of the portal with piers apparently landing
+in or passing through the lower carriageway. These remain unaccepted cases.
+
+Next: reconstruct the logged camera poses and actual mesh/field at these sites;
+measure the crossing deck levels, slab undersides and support footprints.
+Determine graph-connected junction versus geometric/grade-separated crossing.
+Shared junctions need one compatible surface, turning paths and an exterior
+barrier outline. Real overpasses need adequate vehicle clearance and supports
+outside the lower road's swept envelope. Both must retain the25% grade and
+vertical-rate limits, tree/cut/collision agreement and bounded cached rendering.
+Do not try to hide these conflicts with corner pads or merely repaint markings.
+No code behaviour changed and no tests rerun in this screenshot review.

@@ -161,3 +161,11 @@ The apparent roof gap was terrain intruding through the lining: its tunnel mask 
 The actual road routes now have broad bends, with continuous edge walls—not just rounded corner patches. The 25% cap stays; measured frame time was roughly unchanged.
 
 Road checks passed, committed and pushed. Dedicated junction turning geometry remains next.
+
+I’ll open the latest manual screenshots and compare them with the previous road captures.
+
+The fork still has sharp, exposed corners. In the third image, a raised road’s piers appear to obstruct the road below, beside the tunnel. I’ll record these in the handoff as junction and crossing-clearance defects; the screenshots alone don’t establish whether that crossing should be a junction or an overpass.
+
+I’ve opened all three. The fork still has sharp, exposed corners; near the tunnel, the raised road’s piers appear to obstruct the lower carriageway.
+
+These junction/crossing cases are still wrong. They need proper shared junctions or clearance-checked overpasses—not more cosmetic rounding.
