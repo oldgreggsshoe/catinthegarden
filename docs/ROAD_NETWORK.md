@@ -27,6 +27,9 @@ post-fillet prototype, without expanding flat aprons or relaxing engineering.
 The original real-worker duplicate-span regression fails; the corrected worker
 checks28 nearby spans and22 unobstructing piers. All four opened matched captures
 `1792500947-44571` pass: one continuous trunk and an actual side parking access.
+The trunk-only side image does not show the split itself. The extended six-view
+replay `1792525990-99922` adds opened oblique captures5/6 of the actual junction,
+showing both roads from opposite sides; capture6 is the clearest separation view.
 Post-Claude86 focused road /7 road Vulkan checks pass; full724 pass/same6
 unrelated failures. Dense-neighbour validation still times out at600s under the
 active seven-thread precompute load; regional offline files exist for all244

@@ -50,3 +50,17 @@ The photographed fork is fixed and visually verified; Claude’s work is preserv
 Fixed fork: test-runs/road_network_village_fork/1792500947-44571/screenshots/capture-004.png
 
 The fixed fork, viewed from above.
+
+/home/dad/stuff/test-runs/road_network_village_fork/1792500947-44571/screenshots/capture-004.png
+
+Yes—at the photographed site, that under-running ramp is fixed. The overlapping stretches now share one deck before the branch separates sideways.
+
+Side-on after screenshot:
+/home/dad/stuff/test-runs/road_network_village_fork/1792500947-44571/screenshots/capture-002.png
+
+You’re right—that shot shows the formerly overlapping stretch, not where the roads separate. I overstated what it demonstrates. I’ll capture the actual junction from an angle that shows both roads.
+
+Plan: extend only crates/app/scenarios/road_network_village_fork.json with two oblique views centred on the actual split. Keep its existing four views, rebuild, render and inspect the new views, then provide the exact image location. No road-generation changes in this step.
+
+The new oblique view shows both the main road and the branch to the parking area:
+/home/dad/stuff/test-runs/road_network_village_fork/1792525990-99922/screenshots/capture-006.png

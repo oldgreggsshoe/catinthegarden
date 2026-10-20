@@ -33,6 +33,13 @@ piers. All four matched captures in `1792500947-44571` pass and were opened:
 side view2 has one sloping road instead of stacked decks and obstructing piers;
 view4 shows the parking access joining that trunk from the side. These captures
 precede Claude's paint-glow change and validate geometry, not its appearance.
+The user correctly pointed out that side view2 does NOT show the separation.
+The replay now retains those four poses and adds actual-junction oblique views
+at18/20s. Opened `1792525990-99922/screenshots/capture-005.png` and `capture-006.png`
+show the through road and village-parking branch joining sideways from opposite
+angles; no second deck underneath at that junction. Six captures/finite metrics
+pass and release builds. This update is camera JSON only, not a new geometry fix
+or complete vehicle/junction audit. Use capture6 when asked to show the split.
 Post-Claude checks:86 focused road and7 road Vulkan tests pass; full suite724
 pass/same6 unrelated FOV/zoom/water/ship-label failures,63 ignored. The earlier
 broader GPU filter also reported two ocean failures outside this change.
