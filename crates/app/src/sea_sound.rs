@@ -101,10 +101,7 @@ fn sea_enabled() -> bool {
 /// `PLANET_SOUND=0` keeps the game silent.
 fn enabled() -> bool {
     !matches!(
-        std::env::var("PLANET_SOUND")
-            .ok()
-            .as_deref()
-            .map(str::trim),
+        std::env::var("PLANET_SOUND").ok().as_deref().map(str::trim),
         Some("0" | "off" | "false")
     )
 }
@@ -213,7 +210,11 @@ impl SeaSound {
         store(&self.shared.roughness, roughness.clamp(0.0, 1.0));
         store(
             &self.shared.level,
-            if self.sea_on { level.clamp(0.0, 1.0) } else { 0.0 },
+            if self.sea_on {
+                level.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
         );
         store(&self.shared.muffle, muffle.clamp(0.0, 1.0));
         store(&self.shared.wind, wind.clamp(0.0, 1.0));
@@ -446,9 +447,8 @@ impl Impact {
         self.crunch += one_pole(240.0, sample_rate) * (white - self.crunch);
         let crunch = self.crunch * (-self.age / 0.1).exp();
         let knock = white * (-self.age / 0.012).exp() * 0.3;
-        let value = (1.1 * thump + 1.4 * crunch + knock)
-            * self.gain
-            * smoothstep(0.0, 0.004, self.age);
+        let value =
+            (1.1 * thump + 1.4 * crunch + knock) * self.gain * smoothstep(0.0, 0.004, self.age);
         self.age += clock_rate / sample_rate;
         [value * self.pan[0], value * self.pan[1]]
     }
@@ -735,7 +735,11 @@ impl SeaSynth {
     }
 
     pub(crate) fn set_underwater(&mut self, depth: f32, scrape: f32, tumble: f32) {
-        self.underwater_targets = [depth.max(0.0), scrape.clamp(0.0, 1.0), tumble.clamp(0.0, 1.0)];
+        self.underwater_targets = [
+            depth.max(0.0),
+            scrape.clamp(0.0, 1.0),
+            tumble.clamp(0.0, 1.0),
+        ];
     }
 
     pub(crate) fn trigger_impact(&mut self, gain: f32) {
@@ -803,7 +807,8 @@ impl SeaSynth {
             out[1] += heard * (0.5 + voice.pan);
             voice.position += voice.step;
         }
-        self.thunder_voices.retain(|voice| voice.position.is_finite());
+        self.thunder_voices
+            .retain(|voice| voice.position.is_finite());
         out
     }
 
@@ -868,7 +873,8 @@ impl SeaSynth {
                 previous: 0.0,
             });
         }
-        if self.creak_stress > 0.0 && self.creaks.len() < MAX_CREAKS
+        if self.creak_stress > 0.0
+            && self.creaks.len() < MAX_CREAKS
             && self.random() < 0.8 * self.creak_stress * self.clock_rate * dt
         {
             let duration = 0.65 + 1.1 * self.random();
@@ -976,7 +982,8 @@ impl SeaSynth {
         for ear in 0..2 {
             let white = self.white();
             self.deep_brown = 0.998 * self.deep_brown + 0.03 * white;
-            self.deep_low[ear] += one_pole(90.0, sample_rate) * (self.deep_brown - self.deep_low[ear]);
+            self.deep_low[ear] +=
+                one_pole(90.0, sample_rate) * (self.deep_brown - self.deep_low[ear]);
             under[ear] += self.deep_low[ear] * DEEP_RUMBLE_GAIN * (1.0 - surface);
         }
         // The hull on the bottom. Thumps first.
@@ -1016,8 +1023,7 @@ impl SeaSynth {
                 + std::f32::consts::TAU * (55.0 + 25.0 * wander) / sample_rate)
                 .rem_euclid(std::f32::consts::TAU);
             let groan = self.tumble_phase.sin() + 0.3 * (2.0 * self.tumble_phase).sin();
-            let value = self.tumble
-                * (0.7 * self.tumble_low + 0.1 * groan * (0.5 + 0.5 * wander));
+            let value = self.tumble * (0.7 * self.tumble_low + 0.1 * groan * (0.5 + 0.5 * wander));
             under[0] += value;
             under[1] += value;
         }
@@ -1197,7 +1203,9 @@ mod tests {
             let frames: Vec<f32> = (0..(RATE as usize * 4))
                 .map(|_| synth.next_frame()[0])
                 .collect();
-            let peak = frames.iter().fold(0.0_f32, |peak, value| peak.max(value.abs()));
+            let peak = frames
+                .iter()
+                .fold(0.0_f32, |peak, value| peak.max(value.abs()));
             assert!(peak > 0.02, "thunder at {distance} m peaks at {peak}");
             synth.clock_rate = 0.0;
             assert!((0..1000).all(|_| synth.next_frame() == [0.0, 0.0]));
@@ -1256,12 +1264,20 @@ mod tests {
         synth.set_underwater(40.0, 0.0, 0.0);
         let quiet = settled_rms(&mut synth, 1.0);
         synth.trigger_impact(1.0);
-        let burst: Vec<f32> = (0..(RATE * 0.4) as usize).map(|_| synth.next_frame()[0]).collect();
+        let burst: Vec<f32> = (0..(RATE * 0.4) as usize)
+            .map(|_| synth.next_frame()[0])
+            .collect();
         let peak = burst.iter().fold(0.0_f32, |m, v| m.max(v.abs()));
         assert!(peak > 0.05 && peak < 1.0, "thump peak {peak}");
         // Low: few zero crossings per second (a 28-70 Hz thump, not a click).
-        let crossings = burst.windows(2).filter(|w| w[0].signum() != w[1].signum()).count();
-        assert!((crossings as f32 / 0.4) < 400.0, "{crossings} crossings in 0.4s");
+        let crossings = burst
+            .windows(2)
+            .filter(|w| w[0].signum() != w[1].signum())
+            .count();
+        assert!(
+            (crossings as f32 / 0.4) < 400.0,
+            "{crossings} crossings in 0.4s"
+        );
         // And it dies away to the deep's quiet.
         let tail = settled_rms(&mut synth, 1.0);
         assert!(tail < 3.0 * quiet.max(0.005), "tail {tail} quiet {quiet}");
@@ -1451,7 +1467,12 @@ mod tests {
         synth.volume = VOLUME;
         synth.jump_to(1.0, 0.6, 0.0, 0.8);
         synth.thunder_clips = Some(Arc::new(ThunderClips::load().expect("clips")));
-        let strikes = [(1.0, 400.0, 0.3), (10.0, 2_500.0, 0.7), (21.0, 5_000.0, 0.45), (33.0, 8_500.0, 0.2)];
+        let strikes = [
+            (1.0, 400.0, 0.3),
+            (10.0, 2_500.0, 0.7),
+            (21.0, 5_000.0, 0.45),
+            (33.0, 8_500.0, 0.2),
+        ];
         let seconds = 52.0_f32;
         let mut pcm = Vec::new();
         for frame in 0..(rate as f32 * seconds) as usize {

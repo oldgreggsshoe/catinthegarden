@@ -6,7 +6,11 @@ use wgpu::util::DeviceExt;
 /// Atlas side in texels over 512m: 4m texels for the Gerstner trial, 2m for
 /// FFT fold foam, whose folds are a few metres across.
 fn atlas_side() -> u32 {
-    if crate::planet::ocean_fft_enabled() { 256 } else { 128 }
+    if crate::planet::ocean_fft_enabled() {
+        256
+    } else {
+        128
+    }
 }
 
 /// Half float, not 8-bit. The history fades by exp(-dt/decay) a frame, which
@@ -310,8 +314,7 @@ impl OceanFoamHistory {
                 [elapsed, f32::from(valid_previous), wind[0], wind[1]]
             },
             ship: ship.map_or([0.0; 4], |ship| {
-                let offset = ship.waterline_origin
-                    - center * crate::planet::planet_radius_meters();
+                let offset = ship.waterline_origin - center * crate::planet::planet_radius_meters();
                 [
                     offset.dot(east) as f32,
                     offset.dot(north) as f32,

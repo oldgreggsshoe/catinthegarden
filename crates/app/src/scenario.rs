@@ -364,6 +364,8 @@ scenarios! {
     "road_network_walk" => "../scenarios/road_network_walk.json",
     "road_network_parking" => "../scenarios/road_network_parking.json",
     "road_network_join" => "../scenarios/road_network_join.json",
+    "road_network_lines" => "../scenarios/road_network_lines.json",
+    "road_network_village_fork" => "../scenarios/road_network_village_fork.json",
     "road_network_signs" => "../scenarios/road_network_signs.json",
     "road_network_empty_spur" => "../scenarios/road_network_empty_spur.json",
     "road_network_manual_corners" => "../scenarios/road_network_manual_corners.json",
@@ -409,7 +411,6 @@ scenarios! {
     "stand_on_ground" => "../scenarios/stand_on_ground.json",
     "terrain_detail_altitude_ladder" => "../scenarios/terrain_detail_altitude_ladder.json",
     "path_parity_ridge" => "../scenarios/path_parity_ridge.json",
-    "render_path_parity" => "../scenarios/render_path_parity.json",
     "manual_render_faults" => "../scenarios/manual_render_faults.json",
     "mountain_render_faults" => "../scenarios/mountain_render_faults.json",
     "low_pass_bands" => "../scenarios/low_pass_bands.json",
@@ -1161,7 +1162,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 138);
+        assert_eq!(SCENARIO_NAMES.len(), 139);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
@@ -1539,37 +1540,6 @@ mod tests {
         assert!(sun.dot(DVec3::Z) > 0.7);
         assert_eq!(scenario.expected_screenshots(), 2);
         assert!(scenario.assertions().require_unlimited_lod_budget);
-    }
-
-    #[test]
-    fn render_path_parity_replays_the_logged_altitude_ladder() {
-        let mut scenario = ScenarioRunner::load("render_path_parity").expect("scenario parses");
-        let mut capture_altitudes = Vec::new();
-        loop {
-            let frame = scenario.advance();
-            if frame.capture_screenshot {
-                capture_altitudes.push(
-                    DVec3::from_array(frame.camera_world_position).length()
-                        - crate::planet::planet_radius_meters(),
-                );
-            }
-            if frame.complete {
-                break;
-            }
-        }
-
-        assert_eq!(scenario.expected_screenshots(), 4);
-        assert!(scenario.uses_planet_relative_up());
-        assert_eq!(scenario.surface_probe_max_distance_meters(), 200_000.0);
-        for (observed, expected) in capture_altitudes
-            .iter()
-            .zip([70_792.6, 29_873.5, 13_993.6, 737.9])
-        {
-            assert!(
-                (observed - expected).abs() < 0.1,
-                "expected {expected}m, observed {observed}m"
-            );
-        }
     }
 
     #[test]

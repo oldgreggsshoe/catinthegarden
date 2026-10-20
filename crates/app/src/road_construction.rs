@@ -4,7 +4,9 @@
 use crate::road_network::Ground;
 
 const TRAVEL: f64 = 0.35;
-const LAND_BORE: f64 = 2.0;
+// Prefer a covered shortcut over even a moderate mountain detour. Keep a
+// premium over ordinary surface road; feasibility/cover is checked separately.
+const LAND_BORE: f64 = 1.25;
 const SEA_BORE: f64 = 6.0;
 
 pub fn bore(cover: f64, sea: bool) -> f64 {
@@ -42,13 +44,30 @@ pub fn survey_edge(length: f64, a: Ground, b: Ground) -> f64 {
 mod tests {
     use super::*;
     #[test]
+    fn land_bore_beats_a_twenty_five_percent_surface_detour() {
+        let land = Ground {
+            height: 1000.0,
+            ocean: false,
+        };
+        let direct_bore = 1200.0 * at_height(land, 900.0);
+        let detour = 1500.0 * at_height(land, 1008.0);
+        assert!(
+            direct_bore < detour,
+            "bore {direct_bore}, surface detour {detour}"
+        );
+        // An equally short ordinary road remains preferable; sea engineering
+        // is not discounted and deep cover still contributes to construction.
+        assert!(1200.0 * at_height(land, 1008.0) < direct_bore);
+        assert!((bore(100.0, true) - 6.4).abs() < 1e-10);
+    }
+    #[test]
     fn bores_cost_more_per_metre_but_can_beat_a_long_detour() {
         let land = Ground {
             height: 1000.0,
             ocean: false,
         };
         assert!(at_height(land, 1008.0) < at_height(land, 900.0));
-        assert!(1000.0 * at_height(land, 900.0) < 3000.0 * at_height(land, 1008.0));
+        assert!(1200.0 * at_height(land, 900.0) < 3000.0 * at_height(land, 1008.0));
         assert!(bore(100.0, true) > bore(100.0, false));
         assert!(bore(2000.0, false) > bore(100.0, false));
     }

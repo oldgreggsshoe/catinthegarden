@@ -10,7 +10,47 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 19 October: narrow through-road seam at a junction.**
+**Current phase, 20 October: shared forks, court-edge signs, orbital traces and more tunnels.**
+The photographed nameplate now stands outside the parking pavement (post20.75m
+from its20m-radius court), facing arriving traffic. The112m duplicated fork
+prefix is one shared trunk before heights are fitted. Connected physical deck
+quad intersections, not inflated capsules, determine each arm's flat overlap.
+Former branch nodes that become ordinary bends are re-filleted before fitting;
+mesh angle checks are not bypassed. Exact-photo checks find33 spans and25 real
+piers with no duplicate trunk or blocking pier (baseline6 obstructions).
+
+The broader checks exposed two near village accesses only27m apart, with
+incompatible court heights. Siting now keeps accesses75m apart, accounting conservatively for two20m court
+radii, two15m offsets and5m margin, using the existing bounded
+alternate-position search. Original village identities/centres remain intact.
+A real51-village hillside regression now passes with5259 spans. Routing retains the legacy17% search first, with12%/8% alternatives; FINAL roads retain the25%
+physical grade and0.005/m grade-rate limits. The vertical solver can reject a
+provably impossible bounded linear system early using its dual rows; there is
+no increased sweep budget or relaxed engineering tolerance.
+
+R toggles the overlay (off by default; PLANET_ROAD_LINES=1 starts enabled).
+Exact resident road/tunnel traces are green. Above50km, cached whole-planet
+SCHEMATIC centre/gateway trunks are red until their region successfully
+engineers, then green for the session independently of cache eviction. Known
+occupancy-pruned links are omitted. The schematic is NOT an exact engineered
+planet-wide alignment or individual village-access map. Far-side traces are
+horizon-clipped; planned lines are thinner/translucent to avoid blanketing the
+globe. Geometry/colour changes are worker-built and GPU-cached, with no overlay
+draw/upload while off, and no per-frame routing/layout.
+
+Land bore base cost is1.25 (was2.0), retaining travel, depth and unchanged sea
+costs. A1.2km land bore with100m cover now beats a1.5km ordinary-road detour;
+an equally short surface road still wins. Cover, minimum bore extent, shared
+anchors, vehicle grade and vertical-curve constraints remain mandatory.
+
+Opened fork/parking four-view replay1792494885-6132 and orbital red/green
+three-view replay1792494773-5773 pass. These precede only the final court-spacing
+siting guard; the photographed geometry itself is unchanged. Final broader
+validation is running; do not treat this as a global engineering audit or a
+measured FPS improvement. F5/ray removal is DONE (see the final section); other
+junction exterior/support envelopes and tunnel concrete material remain deferred. Preserve unrelated renderer edits.
+
+**Previous phase, 19 October: narrow through-road seam at a junction.**
 Manual `1792415387-1209990/capture-001.png` shows a deck wedge and broken
 outer parapet. Projected live mesh endpoints identify the same three-arm node;
 its through road bends2.14degrees. `join_ribbons` skipped every true branch,
@@ -28,7 +68,7 @@ passed/18ignored, and every-listed-scenario load passes. Release build passes.
 Opened both captures from `road_network_join/1792427441-5584`, matched against
 baseline `1792416377-1222838`: deck/parapet seam gone, side mouth remains open.
 The narrow deck crack ROI goes110 ->0 tan pixels out of320. This is visual/mesh
-validation, not a measured FPS improvement. F5 remains untouched.
+validation, not a measured FPS improvement. (F5 has since been removed.)
 
 **Previous phase, 19 October: cost-aware bores, village names and road signs.**
 `road_construction.rs` shares relative length/travel, excavation, support and
@@ -70,15 +110,12 @@ Opened `road_network_signs/1792414153-1199645` junction,
 `1792415034-1209238` reassurance4.5km; all scenario manifests pass. These are
 visual evidence, not an FPS gain. User app competed during parts of testing.
 
-**Current user priority:** fix the photographed narrow road join, commit/push,
-and conserve usage. Village entrance/branch signs are committed. F5/ray removal is EXPLICITLY DEFERRED until road work is done;
-no F5 removal edits have been made. When resuming that task, preserve raster's
-shadow-height faces but remove unused ray pipelines/warp/history resources.
-The ray pass itself never runs in raster mode; do not promise steady-state FPS.
-`mod foveated` and its startup constructor remain in main.rs as of this phase.
+**Current user priority:** fix parking sign placement and the unusable fork, commit/push,
+and conserve usage. Village entrance/branch signs are committed. F5/ray removal was deferred here and has since been completed (final section).
 
-**Still unfinished:** original shared-fork/support geometry and tunnel concrete
-texture/integrated lighting. Do not claim these are fixed by signage. Preserve
+**Still unfinished:** general junction-outline/support-envelope review and tunnel
+concrete texture/integrated lighting. The newest fork correction is not a
+global crossing audit; signage alone does not fix geometry. Preserve
 unrelated local renderer/ocean edits and the road presentation/jitter fix.
 
 **Previous phase: snowy empty regional road spur.**
@@ -13099,3 +13136,25 @@ Final focused run77 pass/18ignored; release build passes. All7 previous real
 worker and7 GPU checks pass; full suite733 pass/same6 failures before the final
 branch-only addition. No FPS gain is claimed. Road changes committed/pushed as
 one phase; F5 removal remains untouched and explicitly deferred by the user.
+
+## F5 / foveated ray-march path removed (20 October)
+
+Removed: `foveated.rs`, `foveated_debug.wgsl`, `foveated_unwarp.wgsl`, `RenderPath` and
+F5, F11 warp view, keys 1-5 experiments, `PLANET_RENDER_PATH`, `PLANET_RAY_EXPERIMENTS`,
+the `ray_hit` debug mode (`RenderDebugMode::RayHitStatus`), the ray near-field window
+feed (`Terrain::near_field_coverage`, public `request_near_field_tiles`,
+`NearFieldWindow.max_height_meters/sources`), `gpu_raymarch_ms`, `ray_near_field` in
+probe reports, scenario `render_path_parity` and its script
+`scripts/run-render-path-parity.sh`, and `docs/foveated_raytrace_dev_guide.md`.
+Raster behaviour is unchanged: the only part of the old renderer raster used, the
+coarse six-face height array for cast shadows, now lives in `shadow_heights.rs`
+(heights only; biome/moisture/max-height-mip faces and all ray pipelines are gone).
+Kept: raster near-field window machinery in terrain.rs, `path_parity_ridge`
+(raster surface-probe clearance), `render_path: "raster"` string in probe/haze reports.
+
+Validation: release build clean (warnings 7 -> 2); app tests 722 pass / the same 6
+unrelated failures / 64 ignored (`every_listed_scenario_loads` count 140 -> 139).
+Matched before/after benchmark: `/home/dad/raybench/bench.py`, 13 scenarios x 3 runs,
+640x360, Immediate present, X11; steady-state FPS unchanged within noise (see AGENTS.md
+entry for the table). Baseline binary was built from HEAD 5f6710b plus the then-uncommitted
+tree. Note /tmp is a 1.8G partition: use /home for CARGO_TARGET_DIR and TMPDIR.

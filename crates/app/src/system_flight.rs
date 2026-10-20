@@ -121,11 +121,6 @@ impl SystemFlight {
             body::PLANET,
             "planet_to_moon starts on --body planet"
         );
-        assert_eq!(
-            state.render_path,
-            RenderPath::Raster,
-            "planet_to_moon currently requires raster"
-        );
         let planet_height = state
             .terrain
             .prepare_flight_start_surface_height_meters(DVec3::X, 0.0)

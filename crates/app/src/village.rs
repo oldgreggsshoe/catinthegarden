@@ -1257,8 +1257,7 @@ mod tests {
                     for y in (2..stored - 2).step_by(7) {
                         for x in (2..stored - 2).step_by(7) {
                             let i = y * stored + x;
-                            let biome =
-                                planet_coretypes::BiomeId::try_from(tile.biome_ids[i]);
+                            let biome = planet_coretypes::BiomeId::try_from(tile.biome_ids[i]);
                             let Ok(biome) = biome else { continue };
                             if !village_biome_is_habitable(biome) {
                                 continue;

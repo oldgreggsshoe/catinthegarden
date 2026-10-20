@@ -174,7 +174,7 @@ const ABLATE_FRAGMENT_TINT: bool = {};",
 }
 const MAX_PENDING_TILE_LOADS: usize = 32;
 /// Near-field prefetch is opportunistic for raster: visible geometry must keep
-/// the first claim on the pending-load queue, otherwise a ray-oriented window
+/// the first claim on the pending-load queue, otherwise the window
 /// can starve the L18 tiles the raster frontier actually draws.
 const MAX_RASTER_NEAR_FIELD_PREFETCH_PER_FRAME: usize = 4;
 /// Dense near-field geometry is useful while a chunk still spans several
@@ -308,19 +308,14 @@ fn conservative_outmap_height_bounds(height_min_meters: f64, height_max_meters: 
 }
 
 /// Near-field window: a square of baked macro height around the camera, at a
-/// level far finer than the six whole-face arrays the raymarch path holds.
+/// level far finer than the dense L0-L4 pyramid (3068m per texel).
 ///
-/// The raymarch path samples the dense L0-L4 pyramid, which is 3068m per texel.
-/// Measured at the landing site, that reads 815.3m where the finest baked data
-/// reads 919.8m -- a 104m error, and the whole of the raymarch path's
-/// disagreement with the ground the camera stands on. It is not a crater or a
-/// missing feature: it is a coarse level averaging a local high away.
-///
-/// The fix does not need the finest data. The same measurement shows the
-/// pyramid converging fast: L12 gives 919.34m, within half a metre of L18, and
-/// an L12 tile spans 1.5km so eight of them cover 12.3km around the camera in a
-/// single 1025-square texture. Everything below that is the analytic detail
-/// ladder's job, and both paths already share it.
+/// Measured at the landing site, the dense pyramid reads 815.3m where the
+/// finest baked data reads 919.8m -- a 104m error from a coarse level
+/// averaging a local high away. The window does not need the finest data: L12
+/// gives 919.34m, within half a metre of L18, and an L12 tile spans 1.5km so
+/// eight of them cover 12.3km around the camera in a single 1025-square
+/// texture. Everything below that is the analytic detail ladder's job.
 pub const NEAR_FIELD_WINDOW_TILES: u32 = 8;
 pub const NEAR_FIELD_WINDOW_SAMPLES: u32 = NEAR_FIELD_WINDOW_TILES * (TILE_LOGICAL_SIZE - 1) + 1;
 /// Metres of face arc, i.e. a quarter of the great circle.
@@ -355,42 +350,18 @@ pub struct NearFieldSources {
 }
 
 pub struct NearFieldWindow {
-    pub sources: NearFieldSources,
     /// `NEAR_FIELD_WINDOW_SAMPLES` square, row-major.
     pub heights_meters: Vec<f32>,
     /// Categorical owner resampled at the same coordinates as height.
     pub biome_ids: Vec<u8>,
     /// Bilinearly resampled material moisture, in the baked unorm encoding.
     pub moisture: Vec<u8>,
-    /// Conservative bound for the ray marcher's empty-space skipping. Without
-    /// it the marcher keeps the coarse pyramid's maximum and steps straight
-    /// through ground the window has raised.
-    /// A single ceiling for the whole window. Per-block ceilings were built and
-    /// measured: no faster. The marcher's cost here is resolving ground a few
-    /// metres away, not the empty space above it.
-    pub max_height_meters: f32,
-}
-
-/// Residency behind the ray path's requested near-field window. Kept in the
-/// capture manifest so an all-or-nothing window rejection can be distinguished
-/// from a hit-refinement failure after a window was actually active.
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct NearFieldCoverage {
-    pub requested_face: u8,
-    pub requested_level: u8,
-    pub total_blocks: u32,
-    pub resident_blocks: u32,
-    pub finer_than_dense_blocks: u32,
-    pub minimum_source_level: Option<u8>,
-    pub maximum_source_level: Option<u8>,
-    pub window_eligible: bool,
-    pub active_window_level: Option<u8>,
 }
 
 /// Finest window level whose extent still covers what the camera can see.
 ///
-/// Returns `None` when that is no finer than the dense pyramid the raymarch
-/// path already holds, which is the case from orbit -- there the window would
+/// Returns `None` when that is no finer than the dense pyramid already
+/// bound, which is the case from orbit -- there the window would
 /// be a slower copy of data already bound.
 pub fn near_field_window_level(
     clearance_meters: f64,
@@ -2518,7 +2489,7 @@ impl TerrainRenderer {
     /// Each of the tile blocks is resolved once to the finest resident source
     /// covering it, then sampled per texel. Outside the sparse corridor that
     /// source is an L4 ancestor and the window is simply a resampled copy of
-    /// what the raymarch path already had -- no better, but no worse, and the
+    /// what the dense pyramid already had -- no better, but no worse, and the
     /// shader needs no coverage mask because the window is always complete.
     ///
     /// Returns `None` when any block has no resident source at all, in which
@@ -2532,10 +2503,6 @@ impl TerrainRenderer {
     /// coarse ancestor. Left to that, the window at the landing site was filled
     /// from the L0 tile and read 986m where the ground is 920m, which is worse
     /// than the pyramid it was meant to replace.
-    pub fn request_near_field_tiles(&mut self, key: NearFieldKey) {
-        self.request_near_field_tiles_budget(key, usize::MAX);
-    }
-
     fn request_near_field_tiles_budget(&mut self, key: NearFieldKey, request_budget: usize) {
         let TerrainDataSource::Outmap(outmap) = &self.source else {
             return;
@@ -2612,56 +2579,6 @@ impl TerrainRenderer {
         Some(NearFieldSources { key, source_keys })
     }
 
-    pub fn near_field_coverage(&self, key: NearFieldKey) -> Option<NearFieldCoverage> {
-        let TerrainDataSource::Outmap(outmap) = &self.source else {
-            return None;
-        };
-        let dense_level = outmap.manifest().dense_level;
-        let mut resident_blocks = 0;
-        let mut finer_than_dense_blocks = 0;
-        let mut minimum_source_level: Option<u8> = None;
-        let mut maximum_source_level: Option<u8> = None;
-        for block_y in 0..NEAR_FIELD_WINDOW_TILES {
-            for block_x in 0..NEAR_FIELD_WINDOW_TILES {
-                let requested = TileKey {
-                    face: key.face,
-                    level: key.level,
-                    x: key.tile_x + block_x,
-                    y: key.tile_y + block_y,
-                };
-                let Ok(preferred) = outmap.resolve_tile(requested) else {
-                    continue;
-                };
-                let Some(source_key) = cached_tile_ancestor(requested, preferred, &self.tile_cache)
-                else {
-                    continue;
-                };
-                resident_blocks += 1;
-                finer_than_dense_blocks += u32::from(source_key.level > dense_level);
-                minimum_source_level = Some(
-                    minimum_source_level
-                        .map_or(source_key.level, |level| level.min(source_key.level)),
-                );
-                maximum_source_level = Some(
-                    maximum_source_level
-                        .map_or(source_key.level, |level| level.max(source_key.level)),
-                );
-            }
-        }
-        let total_blocks = NEAR_FIELD_WINDOW_TILES * NEAR_FIELD_WINDOW_TILES;
-        Some(NearFieldCoverage {
-            requested_face: key.face.index(),
-            requested_level: key.level,
-            total_blocks,
-            resident_blocks,
-            finer_than_dense_blocks,
-            minimum_source_level,
-            maximum_source_level,
-            window_eligible: resident_blocks == total_blocks,
-            active_window_level: None,
-        })
-    }
-
     pub fn near_field_window(&self, sources: &NearFieldSources) -> Option<NearFieldWindow> {
         let key = sources.key;
         let samples = NEAR_FIELD_WINDOW_SAMPLES as usize;
@@ -2671,7 +2588,6 @@ impl TerrainRenderer {
         let mut heights_meters = vec![0.0_f32; samples * samples];
         let mut biome_ids = vec![0_u8; samples * samples];
         let mut moisture = vec![0_u8; samples * samples];
-        let mut max_height_meters = f32::NEG_INFINITY;
         for block_y in 0..NEAR_FIELD_WINDOW_TILES {
             for block_x in 0..NEAR_FIELD_WINDOW_TILES {
                 let source_key =
@@ -2700,17 +2616,14 @@ impl TerrainRenderer {
                         heights_meters[index] = height;
                         biome_ids[index] = sample_biome_cpu(&tile.biome_ids, uv);
                         moisture[index] = sample_moisture_cpu(&tile.moisture, uv);
-                        max_height_meters = max_height_meters.max(height);
                     }
                 }
             }
         }
         Some(NearFieldWindow {
-            sources: sources.clone(),
             heights_meters,
             biome_ids,
             moisture,
-            max_height_meters: max_height_meters.max(0.0),
         })
     }
 
@@ -3629,7 +3542,7 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
             wgpu::BindGroupLayoutEntry {
                 binding: 5,
                 // Terrain displacement reads these scales in the vertex
-                // stage; raymarching and lake shading use the same values.
+                // stage; lake shading uses the same values.
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
@@ -6136,8 +6049,8 @@ mod tests {
         );
     }
 
-    /// The window has to be finer than the pyramid the raymarch path already
-    /// holds, or it is a slower copy of data that is already bound; and it has
+    /// The window has to be finer than the dense pyramid, or it is a
+    /// slower copy of data that is already bound; and it has
     /// to stay wide enough to cover what the camera can see.
     #[test]
     fn near_field_window_level_tracks_what_the_camera_can_see() {

@@ -1,0 +1,133 @@
+{
+  "name": "road_network_lines",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 8,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2,
+    5,
+    8
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        1859565.5739383292,
+        2211727.49984139,
+        2908655.5902459077
+      ],
+      "look_at": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "time_s": 2,
+      "position": [
+        1859565.5739383292,
+        2211727.49984139,
+        2908655.5902459077
+      ],
+      "look_at": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "time_s": 4,
+      "position": [
+        3855196.921579463,
+        4585288.71918337,
+        6030139.638314686
+      ],
+      "look_at": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "time_s": 5,
+      "position": [
+        3855196.921579463,
+        4585288.71918337,
+        6030139.638314686
+      ],
+      "look_at": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "time_s": 7,
+      "position": [
+        6803288.685140229,
+        8091685.975029476,
+        10641422.891143564
+      ],
+      "look_at": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "time_s": 8,
+      "position": [
+        6803288.685140229,
+        8091685.975029476,
+        10641422.891143564
+      ],
+      "look_at": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.2402998739975359,
+        0.397776994021848,
+        0.8854543656133335
+      ]
+    },
+    {
+      "time_s": 3,
+      "direction": [
+        0.2402998739975359,
+        0.397776994021848,
+        0.8854543656133335
+      ]
+    },
+    {
+      "time_s": 6,
+      "direction": [
+        0.20506599412055015,
+        0.397776994021848,
+        0.8942714359087474
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 3
+  }
+}

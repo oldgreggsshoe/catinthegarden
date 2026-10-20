@@ -68,16 +68,14 @@ impl OceanWind {
 fn ocean_wind() -> Option<OceanWind> {
     static WIND: std::sync::OnceLock<Option<OceanWind>> = std::sync::OnceLock::new();
     *WIND.get_or_init(|| {
-        std::env::var("PLANET_OCEAN_WIND")
-            .ok()
-            .map(|value| {
-                let wind = OceanWind::parse(&value).expect(
-                    "PLANET_OCEAN_WIND must be speed,x,y,z: speed 0..30 m/s and a nonzero finite axis",
-                );
-                tracing::info!(speed_meters_per_second = wind.speed_meters_per_second,
+        std::env::var("PLANET_OCEAN_WIND").ok().map(|value| {
+            let wind = OceanWind::parse(&value).expect(
+                "PLANET_OCEAN_WIND must be speed,x,y,z: speed 0..30 m/s and a nonzero finite axis",
+            );
+            tracing::info!(speed_meters_per_second = wind.speed_meters_per_second,
                     propagation_axis = ?wind.direction, "fixed ocean wind experiment");
-                wind
-            })
+            wind
+        })
     })
 }
 
@@ -379,17 +377,15 @@ fn fixed_sea_override(value: &str) -> Option<f32> {
 /// between 0.1 and 0.3 for weeks on end and never reaches a storm
 /// (`storm_spells_at_the_start_point`).
 fn storm_approach_from_environment() -> Option<SeaStateMode> {
-    std::env::var("PLANET_STORM_APPROACH")
-        .ok()
-        .map(|value| {
-            let seconds = value
-                .trim()
-                .parse::<f64>()
-                .ok()
-                .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
-                .expect("PLANET_STORM_APPROACH must be a positive number of seconds");
-            SeaStateMode::Approach(seconds)
-        })
+    std::env::var("PLANET_STORM_APPROACH").ok().map(|value| {
+        let seconds = value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+            .expect("PLANET_STORM_APPROACH must be a positive number of seconds");
+        SeaStateMode::Approach(seconds)
+    })
 }
 
 /// How far an approaching storm has come by `time` (0 calm, 1 full), when one
@@ -1327,13 +1323,16 @@ fn fft_surface() -> Option<std::sync::Arc<crate::ocean_fft::CpuSurface>> {
 
 /// Replaced whole when the live wind keys change the spectrum
 /// (`replace_fft_surface`); callers hold the one they started with.
-fn fft_surface_slot() -> &'static std::sync::RwLock<Option<std::sync::Arc<crate::ocean_fft::CpuSurface>>> {
+fn fft_surface_slot()
+-> &'static std::sync::RwLock<Option<std::sync::Arc<crate::ocean_fft::CpuSurface>>> {
     static SURFACE: std::sync::OnceLock<
         std::sync::RwLock<Option<std::sync::Arc<crate::ocean_fft::CpuSurface>>>,
     > = std::sync::OnceLock::new();
     SURFACE.get_or_init(|| {
         std::sync::RwLock::new(crate::planet::ocean_fft_enabled().then(|| {
-            std::sync::Arc::new(crate::ocean_fft::CpuSurface::new(&crate::ocean_fft::default_h0()))
+            std::sync::Arc::new(crate::ocean_fft::CpuSurface::new(
+                &crate::ocean_fft::default_h0(),
+            ))
         }))
     })
 }
@@ -1403,7 +1402,11 @@ pub fn global_wave_label_meters(direction: DVec3, sim_time: f64) -> [f64; 2] {
 /// A float held to the sea's water at `label` (see `global_wave_label_meters`):
 /// that water's velocity and the vector from `direction` to where it is drawn.
 /// Zero on the Gerstner sea, which has no horizontal motion.
-pub fn global_wave_follow_label(label: [f64; 2], direction: DVec3, sim_time: f64) -> (DVec3, DVec3) {
+pub fn global_wave_follow_label(
+    label: [f64; 2],
+    direction: DVec3,
+    sim_time: f64,
+) -> (DVec3, DVec3) {
     fft_surface().map_or((DVec3::ZERO, DVec3::ZERO), |surface| {
         let (velocity, gap) = surface.follow_label(
             label,
@@ -1564,7 +1567,11 @@ pub fn local_wave_vertical_velocity_meters_per_second(
     water_depth_meters: f64,
 ) -> f64 {
     if fft_surface().is_some() {
-        return global_wave_vertical_velocity_meters_per_second(direction, sim_time, water_depth_meters);
+        return global_wave_vertical_velocity_meters_per_second(
+            direction,
+            sim_time,
+            water_depth_meters,
+        );
     }
     let state = sea_state_at(sim_time);
     let shore_weight = breaking_weight(

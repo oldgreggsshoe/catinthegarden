@@ -133,6 +133,7 @@ fn prepare_at(
     setback: f64,
 ) -> Result<Prepared, String> {
     let mut centres = Vec::new();
+    let mut accesses: Vec<DVec3> = Vec::new();
     for (index, terminal) in region.terminals.iter_mut().enumerate() {
         if !matches!(terminal.kind, TerminalKind::Village) {
             continue;
@@ -174,6 +175,13 @@ fn prepare_at(
                                 + 4.0
                                 + extra))
                         .normalize();
+                    // Leave room for both 20m courts, their 15m offsets,
+                    // and the approach transitions even when headings differ.
+                    let separation =
+                        2.0 * (crate::road_parking::RADIUS + crate::road_parking::OFFSET) + 5.0;
+                    if accesses.iter().any(|p| p.distance(d) * radius < separation) {
+                        continue;
+                    }
                     if planet_coretypes::tile_key_for_direction(d, region.key.level) == region.key
                         && !terrain.ground(d)?.ocean
                         && !terrain.settlement_core_at(d)?
@@ -206,6 +214,7 @@ fn prepare_at(
             }
             let approach =
                 approach.ok_or("no dry village access apron outside protected houses")?;
+            accesses.push(approach);
             terminal.direction = approach.to_array();
             region.nodes[node].direction = approach.to_array();
             region.nodes[node].ground_meters = terrain.ground(approach)?.height;
@@ -359,6 +368,8 @@ pub struct DrawChunk {
 }
 pub struct Snapshot {
     pub vertices: Vec<Vertex>,
+    pub lines: Vec<crate::road_overlay::Line>,
+    pub overview: Arc<Vec<crate::road_overlay::Line>>,
     pub field: Arc<Field>,
     pub chunks: Vec<DrawChunk>,
     pub keys: Vec<TileKey>,
@@ -696,6 +707,15 @@ pub fn snapshot(
         draw.structures.end += structure_base;
     }
     Ok(Snapshot {
+        overview: Arc::new(Vec::new()),
+        lines: roads
+            .iter()
+            .map(|r| crate::road_overlay::Line {
+                a: r.segment.a.as_vec3().to_array(),
+                b: r.segment.b.as_vec3().to_array(),
+                generated: 1.0,
+            })
+            .collect(),
         vertices: mesh,
         field: Arc::new(field),
         chunks: draws,

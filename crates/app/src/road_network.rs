@@ -87,7 +87,7 @@ fn id(key: TileKey) -> usize {
     let side = 1_usize << key.level;
     key.face.index() as usize * side * side + key.y as usize * side + key.x as usize
 }
-fn key(index: usize, level: u8) -> TileKey {
+pub(crate) fn key(index: usize, level: u8) -> TileKey {
     let side = 1_usize << level;
     TileKey {
         face: CubeFace::ALL[index / (side * side)],

@@ -72,6 +72,7 @@ pub struct NetworkRenderer {
     instance: wgpu::Buffer,
     inspection: Option<(DVec3, DVec3)>,
     signs: crate::road_signs::Renderer,
+    overlay: crate::road_overlay::Renderer,
     active_generation: u64,
     pending_signs: Option<(u64, crate::road_signs::Mesh)>,
     sign_pose: Option<(DVec3, DVec3)>,
@@ -119,9 +120,12 @@ impl NetworkRenderer {
         let instance = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("network camera-relative frame"),
             size: 64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::UNIFORM,
             mapped_at_creation: false,
         });
+        let overlay = crate::road_overlay::Renderer::new(device, format, camera, &instance);
         let mut active = Self::allocate(device, snapshot);
         if !active.snapshot.vertices.is_empty() {
             queue.write_buffer(
@@ -140,6 +144,7 @@ impl NetworkRenderer {
         let signs = crate::road_signs::Renderer::new(device, format, camera);
         let mut renderer = Self {
             signs,
+            overlay,
             active_generation: 0,
             pending_signs: None,
             sign_pose: None,
@@ -223,6 +228,12 @@ impl NetworkRenderer {
         queue: &wgpu::Queue,
         terrain: &mut TerrainRenderer,
     ) {
+        self.overlay.prepare(
+            device,
+            self.active_generation,
+            &self.active.snapshot.lines,
+            &self.active.snapshot.overview,
+        );
         if self
             .pending
             .as_ref()
@@ -289,6 +300,12 @@ impl NetworkRenderer {
             self.active_generation = generation;
             self.signs.clear();
             self.active = complete;
+            self.overlay.prepare(
+                device,
+                self.active_generation,
+                &self.active.snapshot.lines,
+                &self.active.snapshot.overview,
+            );
         }
     }
     pub fn update_camera(
@@ -313,6 +330,7 @@ impl NetworkRenderer {
                 && relative.dot(forward) > -chunk.radius;
             state.1 = far_lod(relative.length(), chunk.radius, chunk.near.is_empty());
         }
+        self.overlay.update_camera(queue, eye, viewport);
         let f = self.active.snapshot.field.frame;
         let v = |p: DVec3| [p.x as f32, p.y as f32, p.z as f32, 0.0];
         let mut frame = Instance {
@@ -324,6 +342,12 @@ impl NetworkRenderer {
         frame.origin[3] = viewport[0] as f32;
         frame.across[3] = viewport[1] as f32;
         queue.write_buffer(&self.instance, 0, bytemuck::bytes_of(&frame));
+    }
+    pub fn toggle_lines(&mut self) -> bool {
+        self.overlay.toggle()
+    }
+    pub fn draw_lines<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, camera: &'a wgpu::BindGroup) {
+        self.overlay.draw(pass, camera);
     }
     pub fn draw<'a>(
         &'a self,

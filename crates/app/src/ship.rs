@@ -264,7 +264,10 @@ pub fn hull_water_contact(t: f64, immersion: f64) -> (f64, f64) {
     let edge = 0.5 * SPLASH_LENGTH_SCALE;
     let (keel, deck) = (keel_depth_meters(t), sheer_height_meters(t));
     let below_deck = 1.0 - ramp(deck - edge, deck + edge, immersion);
-    (ramp(-keel - edge, -keel + edge, immersion) * below_deck, below_deck)
+    (
+        ramp(-keel - edge, -keel + edge, immersion) * below_deck,
+        below_deck,
+    )
 }
 
 /// Keel depth below the design waterline. The forefoot rises toward the stem.
@@ -338,7 +341,11 @@ impl ShipHull {
                     plan_area_square_meters: plan_area,
                     height_meters: keel_depth + sheer,
                     deck_opening_square_meters: deck_fraction * plan_area,
-                    gunport_square_meters: if has_gunport { GUNPORT_AREA_SQUARE_METERS * port_fraction } else { 0.0 },
+                    gunport_square_meters: if has_gunport {
+                        GUNPORT_AREA_SQUARE_METERS * port_fraction
+                    } else {
+                        0.0
+                    },
                     gunport_height_meters: keel_depth + GUNPORT_CENTRE_SHEER_FRACTION * sheer,
                 });
             }
@@ -634,12 +641,11 @@ impl ShipBody {
             let column_direction = keel_world.normalize();
             let keel_altitude = keel_world.length() - planet_radius_meters();
             let mut sample = water(column_direction);
-            let deck_altitude = (keel_world + ship_up * column.height_meters).length()
-                - planet_radius_meters();
-            if let (Some(altitude), Some(head)) = (
-                deck_altitudes.get_mut(index),
-                deck_heads.get_mut(index),
-            ) {
+            let deck_altitude =
+                (keel_world + ship_up * column.height_meters).length() - planet_radius_meters();
+            if let (Some(altitude), Some(head)) =
+                (deck_altitudes.get_mut(index), deck_heads.get_mut(index))
+            {
                 *altitude = deck_altitude;
                 *head = (sample.height_meters - deck_altitude).max(0.0);
             }
@@ -649,8 +655,8 @@ impl ShipBody {
             }
             // Water over the openings this column carries floods the hull.
             let opening_head = |height_above_keel: f64| {
-                let altitude = (keel_world + ship_up * height_above_keel).length()
-                    - planet_radius_meters();
+                let altitude =
+                    (keel_world + ship_up * height_above_keel).length() - planet_radius_meters();
                 (sample.height_meters - altitude).max(0.0)
             };
             for (area, height) in [
@@ -678,7 +684,8 @@ impl ShipBody {
             let immersion = (vertical_depth / axis_tilt_cosine).min(column.height_meters);
             let volume = column.plan_area_square_meters * immersion;
             // The waves' motion fades with depth below the surface.
-            let depth_of_centre = (sample.height_meters - (keel_altitude + 0.5 * immersion)).max(0.0);
+            let depth_of_centre =
+                (sample.height_meters - (keel_altitude + 0.5 * immersion)).max(0.0);
             let decay = (-WAVE_DECAY_PER_METER * depth_of_centre).exp();
             sample.slope *= decay;
             sample.horizontal_velocity *= decay;
@@ -715,7 +722,8 @@ impl ShipBody {
             // linear damping alone allowed, which looked like hovering.
             let submerged_deck = deck_heads[index];
             let wave_making = (-submerged_deck / HULL_DRAFT_METERS).exp();
-            let plunge = (submerged_deck / (SINKING_PLUNGE_DRAFTS * HULL_DRAFT_METERS)).clamp(0.0, 1.0);
+            let plunge =
+                (submerged_deck / (SINKING_PLUNGE_DRAFTS * HULL_DRAFT_METERS)).clamp(0.0, 1.0);
             let plunge = plunge * plunge * (3.0 - 2.0 * plunge);
             plunge_sum += plunge;
             // The plunged share of the drag is the hull-frame plate drag below.
@@ -775,8 +783,8 @@ impl ShipBody {
             self.foundering = true;
         }
         if self.foundering {
-            inflow_kg_per_second = inflow_kg_per_second
-                .max(hull.flood_capacity_kg / FOUNDERING_FILL_SECONDS);
+            inflow_kg_per_second =
+                inflow_kg_per_second.max(hull.flood_capacity_kg / FOUNDERING_FILL_SECONDS);
         }
         // Water in, or drained out while no opening is under the sea.
         if inflow_kg_per_second > 0.0 {
@@ -899,9 +907,8 @@ impl ShipBody {
             return None;
         }
         let normal = self.orientation.inverse() * self.position.normalize();
-        let wanted = self.flood_kg
-            / SEAWATER_DENSITY_KG_PER_CUBIC_METER
-            / FLOODABLE_VOLUME_FRACTION;
+        let wanted =
+            self.flood_kg / SEAWATER_DENSITY_KG_PER_CUBIC_METER / FLOODABLE_VOLUME_FRACTION;
         // Wet volume of the hull's columns below the plane `normal . p = level`.
         let wet = |level: f64| -> f64 {
             hull.columns
@@ -1001,7 +1008,13 @@ pub struct ShipVertex {
     pub alpha: f32,
 }
 
-pub(crate) fn push_triangle(vertices: &mut Vec<ShipVertex>, a: DVec3, b: DVec3, c: DVec3, colour: [f32; 3]) {
+pub(crate) fn push_triangle(
+    vertices: &mut Vec<ShipVertex>,
+    a: DVec3,
+    b: DVec3,
+    c: DVec3,
+    colour: [f32; 3],
+) {
     let normal = (b - a).cross(c - a);
     if normal.length_squared() <= 0.0 {
         return;
@@ -1029,7 +1042,12 @@ pub(crate) fn push_quad(
     push_triangle(vertices, a, c, d, colour);
 }
 
-pub(crate) fn push_box(vertices: &mut Vec<ShipVertex>, centre: DVec3, half_extents: DVec3, colour: [f32; 3]) {
+pub(crate) fn push_box(
+    vertices: &mut Vec<ShipVertex>,
+    centre: DVec3,
+    half_extents: DVec3,
+    colour: [f32; 3],
+) {
     let (x, y, z) = (half_extents.x, half_extents.y, half_extents.z);
     let corner = |sx: f64, sy: f64, sz: f64| centre + DVec3::new(sx * x, sy * y, sz * z);
     // Wound counter-clockwise seen from outside, so the face normals point out.
@@ -1093,24 +1111,6 @@ pub fn build_mesh() -> Vec<ShipVertex> {
     mesh
 }
 
-#[cfg(test)]
-mod tests {
-    use glam::{DQuat, DVec3};
-
-    use crate::ocean;
-
-    use super::{
-        HULL_BEAM_METERS, HULL_DRAFT_METERS, HULL_FREEBOARD_METERS, HULL_LENGTH_METERS, SHIP_SCALE,
-        SHIP_TIME_SCALE, ShipBody, ShipHull, WaterSample, build_mesh, half_beam_meters,
-        keel_depth_meters, sheer_height_meters,
-    };
-    use crate::planet::planet_radius_meters;
-
-    const START_DIRECTION: DVec3 = DVec3::new(0.838, 0.502, 0.2125);
-
-    fn still_water(height_meters: f64) -> impl Fn(DVec3) -> WaterSample {
-        move |_| WaterSample {
-            height_meters,
 /// How much of the closing speed a hull-to-hull hit gives back.
 const HULL_COLLISION_RESTITUTION: f64 = 0.15;
 /// Share of the overlap pushed out per contact per step.
@@ -1262,8 +1262,8 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
     touched
 }
 
-            vertical_velocity_meters_per_second: 0.0,
-            slope: DVec3::ZERO,
+#[cfg(test)]
+mod tests {
     use super::collide_hulls;
     #[test]
     fn two_drifting_hulls_bounce_apart_without_gaining_energy() {
@@ -1307,6 +1307,24 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         assert!(!collide_hulls(&hull, &mut a, &mut b));
     }
 
+    use glam::{DQuat, DVec3};
+
+    use crate::ocean;
+
+    use super::{
+        HULL_BEAM_METERS, HULL_DRAFT_METERS, HULL_FREEBOARD_METERS, HULL_LENGTH_METERS, SHIP_SCALE,
+        SHIP_TIME_SCALE, ShipBody, ShipHull, WaterSample, build_mesh, half_beam_meters,
+        keel_depth_meters, sheer_height_meters,
+    };
+    use crate::planet::planet_radius_meters;
+
+    const START_DIRECTION: DVec3 = DVec3::new(0.838, 0.502, 0.2125);
+
+    fn still_water(height_meters: f64) -> impl Fn(DVec3) -> WaterSample {
+        move |_| WaterSample {
+            height_meters,
+            vertical_velocity_meters_per_second: 0.0,
+            slope: DVec3::ZERO,
             horizontal_velocity: DVec3::ZERO,
         }
     }
@@ -1665,8 +1683,8 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         let (hull, mut body) = afloat();
         // Knocked down 70 degrees about its length: the gunports on the low
         // side and the deck are under water.
-        body.orientation = glam::DQuat::from_axis_angle(body.forward(), 70.0_f64.to_radians())
-            * body.orientation;
+        body.orientation =
+            glam::DQuat::from_axis_angle(body.forward(), 70.0_f64.to_radians()) * body.orientation;
         body.advance(&hull, 5.0, still_water(0.0));
         assert!(
             body.flood_kg > 500.0,
@@ -1709,7 +1727,10 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         body.seabed_altitude_meters = -40.0;
         // Afloat, the keel is a draft under the waterline.
         let clearance = body.seabed_clearance_meters(&hull).unwrap();
-        assert!((clearance - (40.0 - HULL_DRAFT_METERS)).abs() < 0.2, "{clearance}");
+        assert!(
+            (clearance - (40.0 - HULL_DRAFT_METERS)).abs() < 0.2,
+            "{clearance}"
+        );
         // On the bottom it is zero.
         body.flood_kg = 1.05 * (hull.maximum_buoyancy_kg() - hull.mass_kg());
         for _ in 0..240 {
@@ -1735,11 +1756,22 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
             body.advance(&hull, 1.0, still_water(0.0));
             body.flood_kg = 1.05 * limit;
         }
-        assert!(body.on_seabed, "waterline {}m", body.waterline_altitude_meters(&hull));
+        assert!(
+            body.on_seabed,
+            "waterline {}m",
+            body.waterline_altitude_meters(&hull)
+        );
         // It rests on the bottom, not through it, and has stopped.
         let waterline = body.waterline_altitude_meters(&hull);
-        assert!(waterline < -25.0 && waterline > -45.0, "waterline {waterline}m");
-        assert!(body.linear_velocity.length() < 0.2, "{} m/s", body.linear_velocity.length());
+        assert!(
+            waterline < -25.0 && waterline > -45.0,
+            "waterline {waterline}m"
+        );
+        assert!(
+            body.linear_velocity.length() < 0.2,
+            "{} m/s",
+            body.linear_velocity.length()
+        );
         // It landed at a real speed, and the strike is read once.
         let impact = body.take_seabed_impact();
         assert!(impact > 0.3, "landed at {impact} m/s");
@@ -1755,7 +1787,11 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         body.advance(&hull, 0.5, still_water(deck_over));
         let wet = body.deck_water_meters.iter().filter(|d| **d > 0.02).count();
         assert!(wet > 20, "{wet} cells wet after the sea washed over");
-        assert!(body.deck_water_meters.iter().all(|d| f64::from(*d) <= 1.2 * SHIP_SCALE + 1.0e-6));
+        assert!(
+            body.deck_water_meters
+                .iter()
+                .all(|d| f64::from(*d) <= 1.2 * SHIP_SCALE + 1.0e-6)
+        );
         // Back in calm water it runs off over the side and the ends.
         body.advance(&hull, 20.0, still_water(0.0));
         let left: f32 = body.deck_water_meters.iter().sum();
@@ -1765,8 +1801,8 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
     #[test]
     fn a_heeled_deck_runs_its_water_to_the_low_side() {
         let (hull, mut body) = afloat();
-        body.orientation = glam::DQuat::from_axis_angle(body.forward(), 15.0_f64.to_radians())
-            * body.orientation;
+        body.orientation =
+            glam::DQuat::from_axis_angle(body.forward(), 15.0_f64.to_radians()) * body.orientation;
         // Water on every cell, equal; the low lanes must end deeper than the
         // high ones after it has run for a second.
         for cell in &mut body.deck_water_meters {
@@ -1774,10 +1810,15 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         }
         body.advance(&hull, 1.0, still_water(-1.0));
         let lane = |l: usize| -> f32 {
-            (0..16).map(|station| body.deck_water_meters[station * 5 + l]).sum()
+            (0..16)
+                .map(|station| body.deck_water_meters[station * 5 + l])
+                .sum()
         };
         let (a, b) = (lane(0), lane(4));
-        assert!((a - b).abs() > 0.05, "lanes {a} {b}: the water did not choose a side");
+        assert!(
+            (a - b).abs() > 0.05,
+            "lanes {a} {b}: the water did not choose a side"
+        );
     }
 
     #[test]
@@ -1798,18 +1839,21 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         // All the interior is under the deck at the sink limit.
         assert!(c < HULL_FREEBOARD_METERS * 1.45, "{c}");
         // Heeled, the level stays flat in the world: in ship axes its normal tilts.
-        body.orientation = glam::DQuat::from_axis_angle(body.forward(), 30.0_f64.to_radians())
-            * body.orientation;
+        body.orientation =
+            glam::DQuat::from_axis_angle(body.forward(), 30.0_f64.to_radians()) * body.orientation;
         let (normal, _) = body.interior_water_plane(&hull).unwrap();
-        assert!((normal.z - 30.0_f64.to_radians().cos()).abs() < 1.0e-6, "{normal:?}");
+        assert!(
+            (normal.z - 30.0_f64.to_radians().cos()).abs() < 1.0e-6,
+            "{normal:?}"
+        );
     }
 
     #[test]
     fn a_capsized_hull_with_its_deck_under_the_sea_founders_and_does_not_come_back() {
         let (hull, mut body) = afloat();
         // Turned turtle: the deck is under the water by the hull's draft.
-        body.orientation = glam::DQuat::from_axis_angle(body.forward(), std::f64::consts::PI)
-            * body.orientation;
+        body.orientation =
+            glam::DQuat::from_axis_angle(body.forward(), std::f64::consts::PI) * body.orientation;
         body.seabed_altitude_meters = -60.0;
         body.advance(&hull, 2.0, still_water(0.0));
         assert!(!body.foundering, "latched after 2s");
@@ -1821,7 +1865,11 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
             body.flood_kg
         );
         body.advance(&hull, 120.0, still_water(0.0));
-        assert!(body.on_seabed, "waterline {}m", body.waterline_altitude_meters(&hull));
+        assert!(
+            body.on_seabed,
+            "waterline {}m",
+            body.waterline_altitude_meters(&hull)
+        );
     }
 
     /// The drawn ship is its last physics step carried forward by the part of
@@ -1837,7 +1885,11 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         let later = body.carried_forward(0.008);
         assert!((later.position - (body.position + body.linear_velocity * 0.008)).length() < 1e-9);
         let turned = later.orientation * body.orientation.inverse();
-        assert!((turned.to_axis_angle().1 - 0.004).abs() < 1e-5, "{:?}", turned.to_axis_angle());
+        assert!(
+            (turned.to_axis_angle().1 - 0.004).abs() < 1e-5,
+            "{:?}",
+            turned.to_axis_angle()
+        );
     }
 
     #[test]
@@ -1875,7 +1927,10 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
     #[ignore]
     fn sinking_speed_probe() {
         let (hull, mut body) = afloat();
-        let tilt: f64 = std::env::var("PLANET_SINK_TILT_DEGREES").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let tilt: f64 = std::env::var("PLANET_SINK_TILT_DEGREES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
         body.orientation = body.orientation * DQuat::from_axis_angle(DVec3::Y, tilt.to_radians());
         let start = body.position;
         body.flood_kg = hull.flood_capacity_kg();
@@ -1885,7 +1940,18 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
             body.advance(&hull, 1.0, still_water(0.0));
             body.flood_kg = hull.flood_capacity_kg();
             if second % 20 == 0 {
-                println!("t={second:3} altitude {:7.1} m  speed {:5.2} m/s  drift {:6.1} m  tilt {:5.1}  seabed {}", body.waterline_altitude_meters(&hull), body.linear_velocity.dot(body.position.normalize()), { let d = body.position - start; let r = start.normalize(); (d - r * d.dot(r)).length() }, (rotation_up(&body)).acos().to_degrees(), body.on_seabed);
+                println!(
+                    "t={second:3} altitude {:7.1} m  speed {:5.2} m/s  drift {:6.1} m  tilt {:5.1}  seabed {}",
+                    body.waterline_altitude_meters(&hull),
+                    body.linear_velocity.dot(body.position.normalize()),
+                    {
+                        let d = body.position - start;
+                        let r = start.normalize();
+                        (d - r * d.dot(r)).length()
+                    },
+                    (rotation_up(&body)).acos().to_degrees(),
+                    body.on_seabed
+                );
             }
         }
     }
@@ -1918,8 +1984,10 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         for index in 0..(seconds / step) as usize {
             // As `advance_ship`: ride the water at the label the hull started on.
             let direction = body.position.normalize();
-            let label = *held_label.get_or_insert_with(|| ocean::global_wave_label_meters(direction, elapsed));
-            let (mut water_horizontal, mut gap) = ocean::global_wave_follow_label(label, direction, elapsed);
+            let label = *held_label
+                .get_or_insert_with(|| ocean::global_wave_label_meters(direction, elapsed));
+            let (mut water_horizontal, mut gap) =
+                ocean::global_wave_follow_label(label, direction, elapsed);
             if std::env::var("PLANET_SHIP_NO_ANCHOR").is_ok() {
                 water_horizontal = ocean::global_wave_horizontal_velocity(direction, elapsed);
                 gap = DVec3::ZERO;
@@ -2009,16 +2077,30 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
             let mut covered = std::collections::HashSet::new();
             for tri in mesh.chunks_exact(3) {
                 let p: Vec<[f32; 2]> = tri.iter().map(|v| [v.position[a], v.position[b]]).collect();
-                let (min_x, max_x) = (p.iter().map(|q| q[0]).fold(f32::MAX, f32::min), p.iter().map(|q| q[0]).fold(f32::MIN, f32::max));
-                let (min_y, max_y) = (p.iter().map(|q| q[1]).fold(f32::MAX, f32::min), p.iter().map(|q| q[1]).fold(f32::MIN, f32::max));
-                let edge = |u: [f32; 2], v: [f32; 2], w: [f32; 2]| (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0]);
+                let (min_x, max_x) = (
+                    p.iter().map(|q| q[0]).fold(f32::MAX, f32::min),
+                    p.iter().map(|q| q[0]).fold(f32::MIN, f32::max),
+                );
+                let (min_y, max_y) = (
+                    p.iter().map(|q| q[1]).fold(f32::MAX, f32::min),
+                    p.iter().map(|q| q[1]).fold(f32::MIN, f32::max),
+                );
+                let edge = |u: [f32; 2], v: [f32; 2], w: [f32; 2]| {
+                    (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
+                };
                 let mut x = (min_x / cell).floor() * cell;
                 while x <= max_x {
                     let mut y = (min_y / cell).floor() * cell;
                     while y <= max_y {
                         let c = [x + 0.5 * cell, y + 0.5 * cell];
-                        let (e0, e1, e2) = (edge(p[0], p[1], c), edge(p[1], p[2], c), edge(p[2], p[0], c));
-                        if (e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0) || (e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0) {
+                        let (e0, e1, e2) = (
+                            edge(p[0], p[1], c),
+                            edge(p[1], p[2], c),
+                            edge(p[2], p[0], c),
+                        );
+                        if (e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0)
+                            || (e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0)
+                        {
                             covered.insert(((x / cell).round() as i32, (y / cell).round() as i32));
                         }
                         y += cell;
@@ -2028,7 +2110,12 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
             }
             covered.len() as f32 * cell * cell
         };
-        println!("head-on (y-z) silhouette {:.2} m2, broadside (x-z) {:.2} m2, mass {:.0} kg", area(1, 2), area(0, 2), ShipHull::new().mass_kg());
+        println!(
+            "head-on (y-z) silhouette {:.2} m2, broadside (x-z) {:.2} m2, mass {:.0} kg",
+            area(1, 2),
+            area(0, 2),
+            ShipHull::new().mass_kg()
+        );
     }
 
     #[test]
@@ -2066,18 +2153,35 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         let top = mesh.iter().map(|v| v.position[2]).fold(f32::MIN, f32::max);
         let bottom = mesh.iter().map(|v| v.position[2]).fold(f32::MAX, f32::min);
         assert!(top > (30.0 * SHIP_SCALE) as f32, "mast top {top}m");
-        assert!(bottom >= -(HULL_DRAFT_METERS as f32) - 0.01, "keel {bottom}m");
+        assert!(
+            bottom >= -(HULL_DRAFT_METERS as f32) - 0.01,
+            "keel {bottom}m"
+        );
         for vertex in &mesh {
             let normal = glam::Vec3::from(vertex.normal);
             assert!((normal.length() - 1.0).abs() < 1.0e-4);
         }
         // The hull body fills its envelope end to end: the drawn transom and
         // stem are where buoyancy, foam and spray put them.
-        let aft = model.hull.iter().map(|v| v.position[0]).fold(f32::MAX, f32::min);
-        let fore = model.hull.iter().map(|v| v.position[0]).fold(f32::MIN, f32::max);
+        let aft = model
+            .hull
+            .iter()
+            .map(|v| v.position[0])
+            .fold(f32::MAX, f32::min);
+        let fore = model
+            .hull
+            .iter()
+            .map(|v| v.position[0])
+            .fold(f32::MIN, f32::max);
         let half_length = 0.5 * HULL_LENGTH_METERS as f32;
-        assert!((aft + half_length).abs() < 0.01, "transom drawn at {aft}m, not -{half_length}m");
-        assert!((fore - half_length).abs() < 0.01, "stem drawn at {fore}m, not {half_length}m");
+        assert!(
+            (aft + half_length).abs() < 0.01,
+            "transom drawn at {aft}m, not -{half_length}m"
+        );
+        assert!(
+            (fore - half_length).abs() < 0.01,
+            "stem drawn at {fore}m, not {half_length}m"
+        );
         // Flat-shaded: three vertices share a normal.
         for triangle in mesh.chunks_exact(3) {
             assert_eq!(triangle[0].normal, triangle[1].normal);
@@ -2097,9 +2201,13 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
                 + glam::Vec3::from(triangle[1].position)
                 + glam::Vec3::from(triangle[2].position))
                 / 3.0;
-            let below_deck = centre.z < sheer_height_meters(centre.x as f64 / (0.5 * HULL_LENGTH_METERS)) as f32 - 0.01;
+            let below_deck = centre.z
+                < sheer_height_meters(centre.x as f64 / (0.5 * HULL_LENGTH_METERS)) as f32 - 0.01;
             if below_deck && normal.z.abs() < 0.5 && normal.y.abs() > 0.5 && centre.y.abs() > 0.05 {
-                assert!(normal.y * centre.y > 0.0, "side face points inward at {centre:?}");
+                assert!(
+                    normal.y * centre.y > 0.0,
+                    "side face points inward at {centre:?}"
+                );
                 checked += 1;
             }
         }
@@ -2123,7 +2231,10 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
             body.advance(&hull, super::FIXED_STEP_SECONDS, current);
         }
         let along = body.linear_velocity.dot(east);
-        assert!((along - 2.0).abs() < 0.05, "hull moves at {along} m/s in a 2 m/s current");
+        assert!(
+            (along - 2.0).abs() < 0.05,
+            "hull moves at {along} m/s in a 2 m/s current"
+        );
 
         // Clear of the water nothing drags it: horizontal speed is kept.
         let (hull, mut body) = afloat();
@@ -2138,7 +2249,10 @@ pub fn collide_hulls(hull: &ShipHull, a: &mut ShipBody, b: &mut ShipBody) -> boo
         // Floating at its waterline: full contact, below the deck.
         assert_eq!(super::hull_water_contact(0.0, 0.0), (1.0, 1.0));
         // Hull thrown clear of the water: no contact.
-        assert_eq!(super::hull_water_contact(0.0, -2.0 * HULL_DRAFT_METERS).0, 0.0);
+        assert_eq!(
+            super::hull_water_contact(0.0, -2.0 * HULL_DRAFT_METERS).0,
+            0.0
+        );
         // Buried with the sea over the deck: no contact, and above the deck.
         let buried = super::hull_water_contact(0.0, 2.0 * HULL_FREEBOARD_METERS);
         assert_eq!(buried, (0.0, 0.0));

@@ -11,7 +11,7 @@ mod bubbles;
 mod debug;
 mod flock_marker;
 mod forest;
-mod foveated;
+mod shadow_heights;
 mod gust;
 mod haze;
 mod hdr;
@@ -40,6 +40,7 @@ mod road_network_render;
 mod road_network_route;
 mod road_network_stream;
 mod road_network_survey;
+mod road_overlay;
 mod road_parking;
 mod road_render;
 mod road_route;
@@ -765,10 +766,6 @@ fn inspection_start_direction(
 /// integrator, so bounded slowdown is preferable to a performance feedback
 /// loop while boosted across streamed terrain.
 const MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS: f64 = 1.0 / 30.0;
-const FOVEA_MINIMUM_SPEED_METERS_PER_SECOND: f64 = 1.0;
-const FOVEA_MINIMUM_FORWARD_COSINE: f64 = 0.1;
-const FOVEA_MAXIMUM_NDC_OFFSET: f64 = 0.7;
-const CONTENT_ADAPTIVE_WARP_MINIMUM_PLANET_COVERAGE: f64 = 0.65;
 
 fn adapter_preference(info: &wgpu::AdapterInfo) -> (u8, bool, bool) {
     let device_rank = match info.device_type {
@@ -1035,35 +1032,6 @@ fn ship_bridge_camera_planet_pose(
     )
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum RenderPath {
-    #[default]
-    Raster,
-    FoveatedRay,
-}
-
-impl RenderPath {
-    fn toggled(self) -> Self {
-        match self {
-            Self::Raster => Self::FoveatedRay,
-            Self::FoveatedRay => Self::Raster,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Raster => "raster",
-            Self::FoveatedRay => "foveated ray",
-        }
-    }
-
-    /// Whether this path draws the streamed chunk meshes. Terrain *data* is
-    /// updated in every path regardless -- see the call site.
-    fn draws_terrain_meshes(self) -> bool {
-        self == Self::Raster
-    }
-}
-
 /// Scene time intentionally stops under F10, but low-flight navigation remains
 /// responsive so frozen composition diagnostics can be framed in place.
 fn interactive_camera_delta_seconds(
@@ -1127,62 +1095,6 @@ fn retimed_planet_rotation(
     );
     let new_offset = rotation_time - sim_time * new_scale;
     (new_scale, new_offset)
-}
-
-fn focus_of_expansion_ndc(
-    camera_mode: CameraMode,
-    velocity_planet_frame: glam::DVec3,
-    camera: &planet::CameraUniform,
-) -> [f32; 2] {
-    if camera_mode == CameraMode::Orbit
-        || velocity_planet_frame.length() < FOVEA_MINIMUM_SPEED_METERS_PER_SECOND
-    {
-        return [0.0; 2];
-    }
-    let velocity_direction = velocity_planet_frame.normalize();
-    let forward = glam::DVec3::new(
-        f64::from(camera.camera_forward[0]),
-        f64::from(camera.camera_forward[1]),
-        f64::from(camera.camera_forward[2]),
-    );
-    let forward_cosine = velocity_direction.dot(forward);
-    if forward_cosine <= FOVEA_MINIMUM_FORWARD_COSINE {
-        return [0.0; 2];
-    }
-    let right = glam::DVec3::new(
-        f64::from(camera.camera_right[0]),
-        f64::from(camera.camera_right[1]),
-        f64::from(camera.camera_right[2]),
-    );
-    let up = glam::DVec3::new(
-        f64::from(camera.camera_up[0]),
-        f64::from(camera.camera_up[1]),
-        f64::from(camera.camera_up[2]),
-    );
-    let aspect_ratio = f64::from(camera.projection[0]);
-    let vertical_tangent = f64::from(camera.projection[1]);
-    let horizontal =
-        velocity_direction.dot(right) / (forward_cosine * vertical_tangent * aspect_ratio);
-    let vertical = velocity_direction.dot(up) / (forward_cosine * vertical_tangent);
-    [
-        horizontal.clamp(-FOVEA_MAXIMUM_NDC_OFFSET, FOVEA_MAXIMUM_NDC_OFFSET) as f32,
-        vertical.clamp(-FOVEA_MAXIMUM_NDC_OFFSET, FOVEA_MAXIMUM_NDC_OFFSET) as f32,
-    ]
-}
-
-fn projected_planet_coverage(
-    camera_radius_meters: f64,
-    vertical_fov_radians: f64,
-    aspect_ratio: f64,
-) -> f64 {
-    if camera_radius_meters <= planet::planet_radius_meters() {
-        return 1.0;
-    }
-    let sine_radius = (planet::planet_radius_meters() / camera_radius_meters).clamp(0.0, 1.0);
-    let tangent_radius = sine_radius / (1.0 - sine_radius * sine_radius).max(1.0e-12).sqrt();
-    let vertical_radius = tangent_radius / (vertical_fov_radians * 0.5).tan();
-    let horizontal_radius = vertical_radius / aspect_ratio;
-    std::f64::consts::PI * horizontal_radius.clamp(0.0, 1.0) * vertical_radius.clamp(0.0, 1.0) / 4.0
 }
 
 fn advance_flight_position_on_sphere(
@@ -1276,7 +1188,6 @@ fn format_vertical_fov(vertical_fov_degrees: f64) -> String {
 
 struct PendingGpuTimestamp {
     sim_time: f64,
-    render_path: RenderPath,
     luminance_enabled: bool,
     receiver: mpsc::Receiver<bool>,
 }
@@ -1297,7 +1208,6 @@ struct GpuProfiler {
 #[derive(Clone, Copy, Debug)]
 struct GpuStageTimings {
     scene_ms: f64,
-    raymarch_ms: f64,
     luminance_ms: f64,
     sun_ms: f64,
     blur_ms: f64,
@@ -1364,7 +1274,6 @@ impl GpuProfiler {
         &mut self,
         index: usize,
         sim_time: f64,
-        render_path: RenderPath,
         luminance_enabled: bool,
     ) {
         let (sender, receiver) = mpsc::channel();
@@ -1376,7 +1285,6 @@ impl GpuProfiler {
             });
         self.slots[index].pending = Some(PendingGpuTimestamp {
             sim_time,
-            render_path,
             luminance_enabled,
             receiver,
         });
@@ -1393,7 +1301,6 @@ impl GpuProfiler {
                 continue;
             };
             let sim_time = pending.sim_time;
-            let render_path = pending.render_path;
             let luminance_enabled = pending.luminance_enabled;
             slot.pending = None;
             if !mapped_ok {
@@ -1409,11 +1316,6 @@ impl GpuProfiler {
             let scene_ms = elapsed(0, 1);
             let timings = GpuStageTimings {
                 scene_ms,
-                raymarch_ms: if render_path == RenderPath::FoveatedRay {
-                    scene_ms
-                } else {
-                    0.0
-                },
                 // Query 2/3 are intentionally unwritten while fixed
                 // exposure is active; do not interpret stale query memory as
                 // a luminance timing sample.
@@ -1630,7 +1532,6 @@ struct State {
     /// Seconds of this frame past the ship's last physics step.
     ship_presentation_lead_seconds: f64,
     sun: sun::SunRenderer,
-    foveated: foveated::FoveatedRenderer,
     terrain: terrain::TerrainRenderer,
     terrain_stats: terrain::TerrainStats,
     adapter_label: String,
@@ -1690,7 +1591,6 @@ struct State {
     last_frame: Instant,
     fps: f32,
     debug_overlay_visible: bool,
-    render_path: RenderPath,
     render_debug_mode: planet::RenderDebugMode,
     flat_triangle_outline_mode: planet::FlatTriangleOutlineMode,
     animation_frozen: bool,
@@ -1834,8 +1734,8 @@ impl State {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("render device"),
                 required_features: requested_features,
-                // The ray-field pipeline already uses all 16 default sampled
-                // textures; the FFT ocean map is the 17th.
+                // The planet shaders sample more than the 16 default textures;
+                // the FFT ocean map is the 17th.
                 required_limits: wgpu::Limits {
                     max_sampled_textures_per_shader_stage: 20
                         .min(adapter.limits().max_sampled_textures_per_shader_stage),
@@ -2005,19 +1905,11 @@ impl State {
             atmosphere.surface_lighting_resources(),
         );
         startup_profile::mark("local cloud impostors");
-        let foveated = foveated::FoveatedRenderer::new(
-            &device,
-            &queue,
-            hdr::HdrRenderer::SCENE_FORMAT,
-            size,
-            &camera_bind_group_layout,
-            &shared_planet_bind_group_layout,
-            terrain_source.clone(),
-        )
-        .expect("foveated renderer must initialize");
-        startup_profile::mark("foveated renderer");
-        let (shadow_height_view, shadow_face_quads) = foveated.shadow_height_faces();
-        startup_profile::mark("foveated shadow faces");
+        let shadow_heights =
+            shadow_heights::ShadowHeights::new(&device, &queue, terrain_source.clone())
+                .expect("shadow height faces must initialize");
+        let (shadow_height_view, shadow_face_quads) = shadow_heights.faces();
+        startup_profile::mark("shadow height faces");
         let network_root = match &terrain_source {
             terrain::TerrainSource::Outmap(root) => Some(root.clone()),
             terrain::TerrainSource::Placeholder => None,
@@ -2280,7 +2172,6 @@ impl State {
             ship_sim_time_seconds: 0.0,
             ship_presentation_lead_seconds: 0.0,
             sun,
-            foveated,
             terrain,
             terrain_stats: terrain::TerrainStats::default(),
             adapter_label,
@@ -2325,7 +2216,6 @@ impl State {
             last_frame: Instant::now(),
             fps: 0.0,
             debug_overlay_visible: false,
-            render_path: RenderPath::default(),
             render_debug_mode: match std::env::var("PLANET_DEBUG_MODE")
                 .unwrap_or_default()
                 .trim()
@@ -2334,7 +2224,6 @@ impl State {
                 "lighting" => planet::RenderDebugMode::SurfaceLighting,
                 "aerial" => planet::RenderDebugMode::AerialContribution,
                 "sky" => planet::RenderDebugMode::SkyOnly,
-                "ray_hit" => planet::RenderDebugMode::RayHitStatus,
                 "underside_transmission" => planet::RenderDebugMode::UndersideTransmission,
                 "underside_sky" => planet::RenderDebugMode::UndersideRefractedSky,
                 "underside_reflection" => planet::RenderDebugMode::UndersideReflectionHit,
@@ -2413,7 +2302,6 @@ impl State {
             ));
         } else if sky_moon::enabled(state.scenario.is_some())
             && body::active() == body::PLANET
-            && state.render_path == RenderPath::Raster
         {
             state.sky_moon_pending_layout = Some(camera_bind_group_layout.clone());
         }
@@ -2540,31 +2428,12 @@ impl State {
         true
     }
 
-    /// Applies the render path and ray-experiment toggles requested through the
-    /// environment, so an automated benchmark can reach the same state a human
-    /// gets by pressing F5 and a number key. These call the identical toggle
-    /// helpers the key handlers use, and the resulting state is logged so every
-    /// run records which configuration produced its samples.
+    /// Logs the render configuration so every run records which configuration
+    /// produced its samples.
     fn apply_startup_experiment_overrides(&mut self) {
-        if std::env::var("PLANET_RENDER_PATH").as_deref() == Ok("ray") {
-            self.toggle_render_path();
-        }
-        if let Ok(experiments) = std::env::var("PLANET_RAY_EXPERIMENTS") {
-            for index in experiments
-                .split(',')
-                .filter_map(|value| value.trim().parse::<u8>().ok())
-            {
-                self.toggle_ray_experiment(index);
-            }
-        }
-        let enabled: Vec<u8> = (1..=5)
-            .filter(|index| self.foveated.experiment_enabled(*index))
-            .collect();
         tracing::info!(
             target: "planet::experiment",
-            render_path = self.render_path.label(),
             render_debug_mode = self.render_debug_mode.label(),
-            enabled_experiments = ?enabled,
             "render configuration"
         );
     }
@@ -2635,7 +2504,6 @@ impl State {
         self.depth_view = depth_view;
         self.sun.resize_depth(&self.device, &self.depth_view);
         self.hdr.resize(&self.device, size);
-        self.foveated.resize(&self.device, size);
     }
 
     fn toggle_fullscreen(&mut self, window: &Window) {
@@ -2744,11 +2612,6 @@ impl State {
         self.mark_hud_dirty();
     }
 
-    fn toggle_render_path(&mut self) {
-        self.render_path = self.render_path.toggled();
-        self.mark_hud_dirty();
-    }
-
     fn cycle_render_debug_mode(&mut self) {
         self.render_debug_mode = self.render_debug_mode.next();
         self.mark_hud_dirty();
@@ -2756,16 +2619,6 @@ impl State {
 
     fn cycle_flat_triangle_outline_mode(&mut self) {
         self.flat_triangle_outline_mode = self.flat_triangle_outline_mode.next();
-        self.mark_hud_dirty();
-    }
-
-    fn toggle_warp_debug(&mut self) {
-        self.foveated.toggle_warp_debug(&self.queue);
-        self.mark_hud_dirty();
-    }
-
-    fn toggle_ray_experiment(&mut self, index: u8) {
-        self.foveated.toggle_experiment(&self.queue, index);
         self.mark_hud_dirty();
     }
 
@@ -3040,14 +2893,9 @@ impl State {
         camera_altitude_meters: f64,
         ocean_time_seconds: f64,
     ) -> Option<SurfaceEnvironment> {
-        let sampled_terrain_height_meters = match self.render_path {
-            RenderPath::Raster => self
-                .terrain
-                .raster_surface_height_meters_at(local_radial, camera_altitude_meters),
-            RenderPath::FoveatedRay => self
-                .terrain
-                .surface_height_meters_at(local_radial, camera_altitude_meters),
-        }?;
+        let sampled_terrain_height_meters = self
+            .terrain
+            .raster_surface_height_meters_at(local_radial, camera_altitude_meters)?;
         let sampled_terrain_height_meters = self.road_camera_surface_height(
             local_radial,
             camera_altitude_meters,
@@ -3932,8 +3780,7 @@ impl State {
             self.flight_local_position =
                 self.road_constrain_motion(start, self.flight_local_position);
         }
-        if self.render_path == RenderPath::Raster
-            && let Some(start) = movement_start_position
+        if let Some(start) = movement_start_position
             && start.distance_squared(self.flight_local_position) > f64::EPSILON
         {
             let lift_meters = swept_flight_clearance_lift(
@@ -3987,14 +3834,9 @@ impl State {
         } else {
             camera_altitude_meters.max(0.0)
         };
-        let surface_height_meters = match self.render_path {
-            RenderPath::Raster => self
-                .terrain
-                .raster_surface_height_meters_at(local_radial, camera_altitude_meters),
-            RenderPath::FoveatedRay => self
-                .terrain
-                .surface_height_meters_at(local_radial, camera_altitude_meters),
-        };
+        let surface_height_meters = self
+            .terrain
+            .raster_surface_height_meters_at(local_radial, camera_altitude_meters);
         let surface_height_meters = surface_height_meters.map(|height| {
             self.road_camera_surface_height(local_radial, camera_altitude_meters, height)
         });
@@ -4123,6 +3965,14 @@ impl State {
     fn toggle_clear_water(&mut self) {
         self.clear_water = !self.clear_water;
         tracing::info!(clear_water = self.clear_water, "clear water mode");
+    }
+
+    fn toggle_road_lines(&mut self) {
+        if let Some(roads) = &mut self.road_network {
+            let enabled = roads.toggle_lines();
+            tracing::info!(enabled, "road network overlay (red planned, green generated)");
+            self.mark_hud_dirty();
+        }
     }
 
     fn toggle_village_beams(&mut self) {
@@ -4717,14 +4567,8 @@ impl State {
         let blur_enabled = self.hdr.blur_enabled();
         let bloom_enabled = self.hdr.bloom_enabled();
         let hdr_effect_enabled = self.hdr.hdr_effect_enabled();
-        let render_path = self.render_path;
         let render_debug_mode = self.render_debug_mode;
         let flat_triangle_outline_mode = self.flat_triangle_outline_mode;
-        let warp_size = self.foveated.warp_size();
-        let warp_debug_visible = self.foveated.warp_debug_visible();
-        let fovea_ndc = self.foveated.fovea_ndc();
-        let experiment_states =
-            [1_u8, 2, 3, 4, 5].map(|index| self.foveated.experiment_enabled(index));
         let animation_frozen = self.animation_frozen;
         let camera_mode = self.camera_mode;
         let surface_height_meters = self.flight_surface_height_meters;
@@ -5013,23 +4857,6 @@ impl State {
                             "Flat triangle outlines: {} (O)",
                             flat_triangle_outline_mode.label(),
                         ));
-                        ui.label(format!("Render path: {} (F5)", render_path.label()));
-                        ui.label(format!(
-                            "Ray warp: {}x{}  |  fovea {:+.2}, {:+.2} NDC  |  debug {} (F11)",
-                            warp_size.width,
-                            warp_size.height,
-                            fovea_ndc[0],
-                            fovea_ndc[1],
-                            if warp_debug_visible { "on" } else { "off" },
-                        ));
-                        ui.label(format!(
-                            "M8: 1 horizon {} | 2 temporal {} | 3 adaptive {} | 4 shading {} | 5 blur {}",
-                            if experiment_states[0] { "on" } else { "off" },
-                            if experiment_states[1] { "on" } else { "off" },
-                            if experiment_states[2] { "on" } else { "off" },
-                            if experiment_states[3] { "on" } else { "off" },
-                            if experiment_states[4] { "on" } else { "off" },
-                        ));
                         ui.label(format!(
                             "Animation: {}",
                             if animation_frozen { "frozen" } else { "running" },
@@ -5045,7 +4872,7 @@ impl State {
                         ui.label(format!("Bird watch: {bird_watch}"));
                         ui.label(format!("Villages: {village_beams}"));
                         ui.label(
-                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Q/E: turn  |  Z/X: look up/down  |  Space: jump/swim thrust  |  [ / ]: speed  |  F5: render path  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  V: village beams  |  F6: anti-aliasing  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F11: warp view  |  F12: capture PNG",
+                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Q/E: turn  |  Z/X: look up/down  |  Space: jump/swim thrust  |  [ / ]: speed  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  V: village beams  |  R: road lines  |  F6: anti-aliasing  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
                         );
                         ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc twice: quit");
                     });
@@ -5529,21 +5356,6 @@ impl State {
             .camera
             .planet_frame_direction_dvec3(planet_rotation_radians);
         let mut camera_planet_frame_up = self.camera.planet_frame_view_up(planet_rotation_radians);
-        // Terrain streaming runs in every render path, not just the one that
-        // draws the meshes.
-        //
-        // The raymarch path used to skip this to save the quadtree's cost, and
-        // the saving was real, but it also froze the CPU's tile cache: the
-        // camera's collision height, the near plane and the LOD reference all
-        // came from whatever tiles happened to be resident at startup. At the
-        // landing site that put the CPU's ground at 989.9m instead of 923.1m,
-        // so a camera placed 2m above the ground reported itself 64m *inside*
-        // it. Terrain truth cannot depend on which path is drawing.
-        //
-        // It is also cheaper than it looks: measured at 22.4ms for eye level
-        // and 17.9ms at orbit in ray mode, unchanged from suspending it,
-        // because the expensive part of a raster frame is drawing the chunks
-        // rather than selecting them.
         self.terrain_stats = if solid_color_screen {
             terrain::TerrainStats::default()
         } else {
@@ -5564,7 +5376,7 @@ impl State {
         // patches actually drawn at the destination. Clamp once more against
         // those patches before presenting the frame, then rebuild their
         // camera-relative anchors if the correction moved the camera.
-        if !solid_color_screen && self.render_path == RenderPath::Raster {
+        if !solid_color_screen {
             let camera_corrected = match self.camera_mode {
                 CameraMode::LowFlight => {
                     let minimum_clearance_meters =
@@ -5663,16 +5475,6 @@ impl State {
             self.terrain_stats.lod_thrash_events,
             self.terrain_stats.budget_limited,
         );
-        // The chunk mesh statistics describe drawing, so a path that streams
-        // terrain without drawing it reports none.
-        let draws_terrain_meshes = !solid_color_screen && self.render_path.draws_terrain_meshes();
-        if !draws_terrain_meshes {
-            self.terrain_stats.drawn_chunks = 0;
-            self.terrain_stats.terrain_triangles = 0;
-            self.terrain_stats.ocean_chunks = 0;
-            self.terrain_stats.ocean_triangles = 0;
-            self.terrain_stats.draw_calls = 0;
-        }
         let draw_calls = self.terrain_stats.draw_calls;
         let local_storm_intensity = ocean::sea_state_at(ocean_time_seconds).intensity;
         if write_log {
@@ -5796,7 +5598,7 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("render encoder"),
             });
-        if !solid_color_screen && self.render_path == RenderPath::Raster {
+        if !solid_color_screen {
             self.forest
                 .encode_gpu_generation(&mut encoder, &self.camera_bind_group, &self.terrain);
         }
@@ -5833,16 +5635,10 @@ impl State {
         let camera_sea_level_altitude_meters =
             camera_planet_frame_position.length() - planet::planet_radius_meters();
         let camera_direction = camera_planet_frame_position.normalize();
-        let mut camera_surface_height_meters = match self.render_path {
-            RenderPath::Raster => self.terrain.raster_surface_height_meters_at(
-                camera_direction,
-                camera_sea_level_altitude_meters,
-            ),
-            RenderPath::FoveatedRay => self
-                .terrain
-                .surface_height_meters_at(camera_direction, camera_sea_level_altitude_meters),
-        }
-        .unwrap_or(0.0);
+        let mut camera_surface_height_meters = self
+            .terrain
+            .raster_surface_height_meters_at(camera_direction, camera_sea_level_altitude_meters)
+            .unwrap_or(0.0);
         camera_surface_height_meters = self.road_camera_surface_height(
             camera_direction,
             camera_sea_level_altitude_meters,
@@ -5874,7 +5670,7 @@ impl State {
             self.flat_triangle_outline_mode,
             camera_surface_height_meters,
         );
-        // Spare presentation channel shared by raster and ray paths. Ocean
+        // Spare presentation channel. Ocean
         // displacement uses the same temporally interpolated local storm field
         // as the cloud system, without adding a bind group or texture lookup.
         camera_uniform.flat_triangle_options[1] = local_storm_intensity;
@@ -5905,9 +5701,7 @@ impl State {
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         if let Some(mut moon) = self.sky_moon.take() {
-            let active = !solid_color_screen
-                && self.render_path == RenderPath::Raster
-                && subsystem_enabled("moon");
+            let active = !solid_color_screen && subsystem_enabled("moon");
             moon.prepare(
                 self,
                 &camera_uniform,
@@ -6104,118 +5898,15 @@ impl State {
                 camera_planet_frame_up,
             )
         });
-        let mut ray_near_field_coverage = None;
-        if self.render_path == RenderPath::FoveatedRay {
-            // Keep the raymarch path's near-field window under the camera. The
-            // dense pyramid it otherwise samples is 3068m per texel, which at
-            // the landing site reads 104m below the ground the camera stands
-            // on; the window is the only thing that closes that.
-            //
-            // Rebuilt only when the camera leaves the square it was built for,
-            // which at ground level is kilometres of travel. Assembly reads
-            // resident tiles only, so a window that cannot be completed yet
-            // leaves the previous one in place rather than uploading a hole.
-            let clearance_meters =
-                (camera_sea_level_altitude_meters - camera_surface_height_meters).max(0.0);
-            match self
-                .terrain
-                .near_field_key(camera_planet_frame_position.normalize(), clearance_meters)
-            {
-                // Rebuild against the tiles actually backing the window, not
-                // just its position. A stationary camera keeps the same key
-                // while streaming replaces coarse ancestors underneath it, and
-                // the first assembly of a run is always the coarse one -- at
-                // the parity ridge that reads 290m below the settled surface.
-                Some(key) => {
-                    self.terrain.request_near_field_tiles(key);
-                    if let Some(sources) = self.terrain.near_field_sources(key)
-                        && self.foveated.near_field_sources() != Some(&sources)
-                        && let Some(window) = self.terrain.near_field_window(&sources)
-                    {
-                        tracing::info!(
-                            level = key.level,
-                            face = key.face.index(),
-                            max_height_m = window.max_height_meters,
-                            "near-field window built"
-                        );
-                        self.foveated.set_near_field(&self.queue, &window);
-                    }
-                    if probe_requested {
-                        ray_near_field_coverage =
-                            self.terrain.near_field_coverage(key).map(|mut coverage| {
-                                coverage.active_window_level = self
-                                    .foveated
-                                    .near_field_sources()
-                                    .map(|sources| sources.key.level);
-                                tracing::info!(
-                                    requested_level = coverage.requested_level,
-                                    resident_blocks = coverage.resident_blocks,
-                                    fine_blocks = coverage.finer_than_dense_blocks,
-                                    minimum_source_level = coverage.minimum_source_level,
-                                    maximum_source_level = coverage.maximum_source_level,
-                                    window_eligible = coverage.window_eligible,
-                                    active_window_level = coverage.active_window_level,
-                                    "ray near-field coverage"
-                                );
-                                coverage
-                            });
-                    }
-                }
-                // Only a camera high enough to stop needing the window turns it
-                // off. A momentary gap in residency keeps whatever is loaded.
-                None => self.foveated.clear_near_field(),
-            }
-            let flight_velocity_planet_frame = if self.scenario.is_none()
-                && matches!(
-                    self.camera_mode,
-                    CameraMode::LowFlight | CameraMode::Surface
-                ) {
-                self.flight_travel_direction * self.flight_speed.speed_meters_per_second
-            } else {
-                glam::DVec3::ZERO
-            };
-            let target_fovea_ndc = focus_of_expansion_ndc(
-                self.camera_mode,
-                flight_velocity_planet_frame,
-                &camera_uniform,
-            );
-            self.foveated.update(
-                &self.queue,
-                camera_radius - planet::planet_radius_meters(),
-                target_fovea_ndc,
-                frame_time,
-                camera_uniform.camera_forward[..3]
-                    .try_into()
-                    .expect("camera forward has three components"),
-                camera_uniform.camera_right[..3]
-                    .try_into()
-                    .expect("camera right has three components"),
-                camera_uniform.camera_up[..3]
-                    .try_into()
-                    .expect("camera up has three components"),
-                camera_planet_frame_position.to_array(),
-            );
-        }
-        let planet_coverage = projected_planet_coverage(
-            camera_radius,
-            self.camera.vertical_fov_radians(),
-            self.size.width as f64 / self.size.height as f64,
-        );
-        let use_foveated_warp = self.render_path == RenderPath::FoveatedRay
-            && self.render_debug_mode == planet::RenderDebugMode::Final
-            && (!self.foveated.experiment_enabled(3)
-                || planet_coverage >= CONTENT_ADAPTIVE_WARP_MINIMUM_PLANET_COVERAGE
-                || self.foveated.warp_debug_visible());
         let vertex_rebase_ms = 0.0;
         let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
         let transmit_ocean = !solid_color_screen
-            && self.render_path == RenderPath::Raster
             && self.terrain.has_ocean_draws()
             && self.render_debug_mode != planet::RenderDebugMode::FlatTriangles
             && self.render_debug_mode != planet::RenderDebugMode::SkyOnly;
         let encode_started = Instant::now();
         // The FFT field must be current before the foam atlas reads it.
-        if !solid_color_screen && self.render_path == RenderPath::Raster {
+        if !solid_color_screen {
             self.terrain.update_ocean_fft(
                 &mut encoder,
                 camera_planet_frame_position,
@@ -6224,7 +5915,6 @@ impl State {
             );
         }
         if !solid_color_screen
-            && self.render_path == RenderPath::Raster
             && self.terrain.has_ocean_draws()
             && self.render_debug_mode != planet::RenderDebugMode::SkyOnly
         {
@@ -6284,24 +5974,17 @@ impl State {
                     stencil_ops: None,
                 }),
                 occlusion_query_set: None,
-                timestamp_writes: gpu_slot_index
-                    .filter(|_| {
-                        self.render_path == RenderPath::Raster
-                            || self.render_debug_mode != planet::RenderDebugMode::Final
-                            || !use_foveated_warp
-                            || solid_color_screen
-                    })
-                    .map(|slot_index| {
-                        let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
-                        wgpu::RenderPassTimestampWrites {
-                            query_set: &profiler.slots[slot_index].query_set,
-                            beginning_of_pass_write_index: Some(0),
-                            end_of_pass_write_index: if transmit_ocean { None } else { Some(1) },
-                        }
-                    }),
+                timestamp_writes: gpu_slot_index.map(|slot_index| {
+                    let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
+                    wgpu::RenderPassTimestampWrites {
+                        query_set: &profiler.slots[slot_index].query_set,
+                        beginning_of_pass_write_index: Some(0),
+                        end_of_pass_write_index: if transmit_ocean { None } else { Some(1) },
+                    }
+                }),
                 multiview_mask: None,
             });
-            if !solid_color_screen && self.render_path == RenderPath::Raster {
+            if !solid_color_screen {
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
                     if self.render_debug_mode == planet::RenderDebugMode::FlatTriangles {
                         if subsystem_enabled("terrain") {
@@ -6336,15 +6019,6 @@ impl State {
                     self.atmosphere
                         .draw(&mut render_pass, &self.camera_bind_group);
                 }
-            } else if !solid_color_screen
-                && self.render_path == RenderPath::FoveatedRay
-                && (self.render_debug_mode != planet::RenderDebugMode::Final || !use_foveated_warp)
-            {
-                self.foveated.draw_direct(
-                    &mut render_pass,
-                    &self.camera_bind_group,
-                    self.terrain.shared_bind_group(),
-                );
             }
         }
         if transmit_ocean {
@@ -6397,91 +6071,6 @@ impl State {
                     .draw_ocean_spray(&mut pass, &self.camera_bind_group);
             }
         }
-        if !solid_color_screen && use_foveated_warp {
-            {
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("warped raymarch pass"),
-                    color_attachments: &[
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: self.foveated.warp_color_view(),
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        }),
-                        Some(wgpu::RenderPassColorAttachment {
-                            view: self.foveated.warp_distance_view(),
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: -1.0,
-                                    g: 0.0,
-                                    b: 0.0,
-                                    a: 0.0,
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        }),
-                    ],
-                    depth_stencil_attachment: None,
-                    occlusion_query_set: None,
-                    timestamp_writes: gpu_slot_index.map(|slot_index| {
-                        let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
-                        wgpu::RenderPassTimestampWrites {
-                            query_set: &profiler.slots[slot_index].query_set,
-                            beginning_of_pass_write_index: Some(0),
-                            end_of_pass_write_index: None,
-                        }
-                    }),
-                    multiview_mask: None,
-                });
-                self.foveated.draw_warped(
-                    &mut render_pass,
-                    &self.camera_bind_group,
-                    self.terrain.shared_bind_group(),
-                );
-            }
-            {
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("foveated unwarp pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: self.hdr.scene_view(),
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    occlusion_query_set: None,
-                    timestamp_writes: gpu_slot_index.map(|slot_index| {
-                        let profiler = self.gpu_profiler.as_ref().expect("GPU profiler exists");
-                        wgpu::RenderPassTimestampWrites {
-                            query_set: &profiler.slots[slot_index].query_set,
-                            beginning_of_pass_write_index: None,
-                            end_of_pass_write_index: Some(1),
-                        }
-                    }),
-                    multiview_mask: None,
-                });
-                self.foveated
-                    .draw_unwarp(&mut render_pass, &self.camera_bind_group);
-            }
-            if self.foveated.experiment_enabled(2) {
-                self.foveated.copy_to_history(&mut encoder);
-            }
-        }
         // Snapshot the depth before the pass that draws ships, trees, clouds
         // and rain. The surface probe's question is where the *ground* is:
         // whether what the camera would stand on is what the renderer drew.
@@ -6508,9 +6097,6 @@ impl State {
                 self.render_debug_mode,
                 planet::RenderDebugMode::Final | planet::RenderDebugMode::FlatTriangles
             )
-            && !(self.render_path == RenderPath::FoveatedRay
-                && self.render_debug_mode == planet::RenderDebugMode::Final
-                && self.foveated.warp_debug_visible())
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("weather cloud shell pass"),
@@ -6637,6 +6223,9 @@ impl State {
                     self.terrain.shared_bind_group(),
                 );
             }
+            if let Some(roads) = &self.road_network {
+                roads.draw_lines(&mut render_pass, &self.camera_bind_group);
+            }
             // Last in the pass, so the reticle sits over the finished scene.
             // It is not depth-tested, but it can still be painted over by
             // anything that draws after it.
@@ -6684,10 +6273,7 @@ impl State {
         // keep its whole camera-response shape only while some disc is visible.
         // Both remain HDR input for bloom and tone mapping below.
         let draw_visual_sun = !solid_color_screen
-            && self.render_debug_mode != planet::RenderDebugMode::SkyOnly
-            && !(self.render_path == RenderPath::FoveatedRay
-                && self.render_debug_mode == planet::RenderDebugMode::Final
-                && self.foveated.warp_debug_visible());
+            && self.render_debug_mode != planet::RenderDebugMode::SkyOnly;
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("visual sun disc pass"),
@@ -6850,7 +6436,6 @@ impl State {
                 .begin_readback(
                     slot_index,
                     sim_time,
-                    self.render_path,
                     auto_exposure_enabled,
                 );
         }
@@ -6893,62 +6478,51 @@ impl State {
             match probe::finish_depth_readback(&self.device, pending) {
                 Ok(depth) => {
                     let terrain = &self.terrain;
-                    let render_path = self.render_path;
                     let mut report = probe::compare_surface_with_limit(
                         sim_time,
-                        self.render_path.label(),
+                        "raster",
                         &geometry,
                         &depth,
                         camera_sea_level_altitude_meters,
                         camera_surface_height_meters,
                         surface_probe_max_distance_meters,
-                        |direction, _camera_distance_meters| match render_path {
+                        |direction, _camera_distance_meters| {
                             // Two passes, because the distance the raster
                             // vertex filters detail by is the distance to the
                             // macro-displaced ground, and that height is only
                             // known from the query itself. Macro height does
                             // not depend on the distance, so the first pass'
                             // answer is exact and the second is the real one.
-                            RenderPath::Raster => {
-                                let macro_height_meters = terrain
-                                    .raster_surface_height_breakdown_at_distance(
-                                        direction,
-                                        camera_sea_level_altitude_meters,
-                                        geometry.raster_detail_distance_meters(direction, 0.0),
-                                    )
-                                    .map_or(0.0, |breakdown| breakdown.macro_height_meters);
-                                terrain.raster_surface_height_breakdown_at_distance(
+                            let macro_height_meters = terrain
+                                .raster_surface_height_breakdown_at_distance(
                                     direction,
                                     camera_sea_level_altitude_meters,
-                                    geometry.raster_detail_distance_meters(
-                                        direction,
-                                        macro_height_meters,
-                                    ),
+                                    geometry.raster_detail_distance_meters(direction, 0.0),
                                 )
-                            }
-                            RenderPath::FoveatedRay => terrain.surface_height_breakdown_at(
+                                .map_or(0.0, |breakdown| breakdown.macro_height_meters);
+                            terrain.raster_surface_height_breakdown_at_distance(
                                 direction,
                                 camera_sea_level_altitude_meters,
-                            ),
+                                geometry.raster_detail_distance_meters(
+                                    direction,
+                                    macro_height_meters,
+                                ),
+                            )
                         },
-                        |direction, camera_distance_meters| probe::ProbeContext {
+                        |direction, _camera_distance_meters| probe::ProbeContext {
                             filter_sweep: terrain.detail_filter_sweep_at(
                                 direction,
                                 camera_sea_level_altitude_meters,
-                                match render_path {
-                                    RenderPath::Raster => geometry.raster_detail_distance_meters(
-                                        direction,
-                                        terrain
-                                            .raster_surface_height_breakdown_at_distance(
-                                                direction,
-                                                camera_sea_level_altitude_meters,
-                                                geometry
-                                                    .raster_detail_distance_meters(direction, 0.0),
-                                            )
-                                            .map_or(0.0, |b| b.macro_height_meters),
-                                    ),
-                                    RenderPath::FoveatedRay => camera_distance_meters,
-                                },
+                                geometry.raster_detail_distance_meters(
+                                    direction,
+                                    terrain
+                                        .raster_surface_height_breakdown_at_distance(
+                                            direction,
+                                            camera_sea_level_altitude_meters,
+                                            geometry.raster_detail_distance_meters(direction, 0.0),
+                                        )
+                                        .map_or(0.0, |b| b.macro_height_meters),
+                                ),
                             ),
                             near_field: terrain.near_field_window_sample_at(direction).map(
                                 |(source_level, baked_height_meters)| probe::NearFieldSample {
@@ -6967,7 +6541,6 @@ impl State {
                         },
                     );
                     report.render_debug_mode = self.render_debug_mode.label().to_owned();
-                    report.ray_near_field = ray_near_field_coverage;
                     // A different question needs a different depth: the surface
                     // probe asks where the ground is and reads the depth before
                     // trees and clouds; this asks whether distance reads on the
@@ -6982,7 +6555,7 @@ impl State {
                     ) {
                         let haze = haze::measure(
                             sim_time,
-                            self.render_path.label(),
+                            "raster",
                             &geometry,
                             scene_depth,
                             &frame.pixels,
@@ -7398,13 +6971,6 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
-                        && event.physical_key == PhysicalKey::Code(KeyCode::F5) =>
-                {
-                    state.toggle_render_path();
-                    window.request_redraw();
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::F12) =>
                 {
                     state.manual_screenshot_requested = true;
@@ -7464,6 +7030,14 @@ impl ApplicationHandler for App {
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
                         && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyR) =>
+                {
+                    state.toggle_road_lines();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && !event.repeat
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyV) =>
                 {
                     state.toggle_village_beams();
@@ -7511,13 +7085,6 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
-                        && event.physical_key == PhysicalKey::Code(KeyCode::F11) =>
-                {
-                    state.toggle_warp_debug();
-                    window.request_redraw();
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::Digit7) =>
                 {
                     state.weather.toggle_overlay();
@@ -7530,32 +7097,6 @@ impl ApplicationHandler for App {
                 {
                     state.step_weather_once();
                     window.request_redraw();
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if event.state.is_pressed()
-                        && matches!(
-                            event.physical_key,
-                            PhysicalKey::Code(
-                                KeyCode::Digit1
-                                    | KeyCode::Digit2
-                                    | KeyCode::Digit3
-                                    | KeyCode::Digit4
-                                    | KeyCode::Digit5
-                            )
-                        ) =>
-                {
-                    let experiment = match event.physical_key {
-                        PhysicalKey::Code(KeyCode::Digit1) => Some(1),
-                        PhysicalKey::Code(KeyCode::Digit2) => Some(2),
-                        PhysicalKey::Code(KeyCode::Digit3) => Some(3),
-                        PhysicalKey::Code(KeyCode::Digit4) => Some(4),
-                        PhysicalKey::Code(KeyCode::Digit5) => Some(5),
-                        _ => None,
-                    };
-                    if let Some(experiment) = experiment {
-                        state.toggle_ray_experiment(experiment);
-                        window.request_redraw();
-                    }
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state.is_pressed()
@@ -7923,21 +7464,18 @@ mod tests {
         LOW_FLIGHT_MAX_SPEED_METERS_PER_SECOND, LOW_FLIGHT_MINIMUM_CLEARANCE_METERS,
         MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS, MAXIMUM_FLIGHT_SPEED_SCALE,
         MAXIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE, MINIMUM_FLIGHT_SPEED_SCALE,
-        MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE, PLANET_ROTATION_SCALE_STEP, RenderPath,
+        MINIMUM_INTERACTIVE_PLANET_ROTATION_TIME_SCALE, PLANET_ROTATION_SCALE_STEP,
         STORM_OCEAN_START_DIRECTION, STORM_OCEAN_START_PITCH_RADIANS, adjusted_flight_speed_scale,
         advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
         find_default_outmap, flight_look_angles_toward, flight_movement_direction,
-        flight_view_direction, focus_of_expansion_ndc, initial_flight_tangent,
+        flight_view_direction, initial_flight_tangent,
         interactive_camera_delta_seconds, key_look_delta, low_flight_clearance_radius,
-        movement_key_latch_expired, projected_planet_coverage, render_size_for_surface_resize,
+        movement_key_latch_expired, render_size_for_surface_resize,
         retimed_planet_rotation, ship_bridge_camera_planet_pose, ship_bridge_look_direction,
         should_enter_fullscreen, should_start_interactive_fullscreen, surface_movement_direction,
         swept_flight_clearance_lift, transport_flight_tangent, waterline_scenario_pose,
     };
-    use crate::planet::{
-        CameraUniform, FlatTriangleOutlineMode, OrbitCamera, PLANET_ROTATION_PERIOD_SECONDS,
-        RenderDebugMode, default_sun_direction, geographic_longitude_degrees,
-    };
+    use crate::planet::{PLANET_ROTATION_PERIOD_SECONDS, geographic_longitude_degrees};
 
     #[test]
     fn a_swimmer_is_carried_by_the_waters_horizontal_velocity_and_nothing_else() {
@@ -8637,67 +8175,6 @@ mod tests {
     }
 
     #[test]
-    fn flight_focus_projects_forward_motion_and_rejects_orbit_or_backward_motion() {
-        let camera = OrbitCamera::default();
-        let uniform = CameraUniform::from_camera(
-            &camera,
-            16.0 / 9.0,
-            default_sun_direction(),
-            0.0,
-            0.0,
-            RenderDebugMode::Final,
-            FlatTriangleOutlineMode::Dark,
-            0.0,
-        );
-        let axis = |values: [f32; 4]| {
-            DVec3::new(
-                f64::from(values[0]),
-                f64::from(values[1]),
-                f64::from(values[2]),
-            )
-        };
-        let forward = axis(uniform.camera_forward);
-        let right = axis(uniform.camera_right);
-        let up = axis(uniform.camera_up);
-
-        assert_eq!(
-            focus_of_expansion_ndc(CameraMode::Orbit, forward * 1_000.0, &uniform),
-            [0.0; 2]
-        );
-        assert_eq!(
-            focus_of_expansion_ndc(CameraMode::LowFlight, -forward * 1_000.0, &uniform),
-            [0.0; 2]
-        );
-        assert_eq!(
-            focus_of_expansion_ndc(CameraMode::LowFlight, forward * 0.5, &uniform),
-            [0.0; 2]
-        );
-        let projected = focus_of_expansion_ndc(
-            CameraMode::LowFlight,
-            (forward + right * 0.2 + up * 0.1).normalize() * 1_000.0,
-            &uniform,
-        );
-        assert!(projected[0] > 0.0);
-        assert!(projected[1] > 0.0);
-        let clamped = focus_of_expansion_ndc(
-            CameraMode::LowFlight,
-            (forward * 0.11 + right).normalize() * 1_000.0,
-            &uniform,
-        );
-        assert_eq!(clamped[0], 0.7);
-    }
-
-    #[test]
-    fn projected_planet_coverage_distinguishes_orbit_from_low_flight() {
-        let aspect = 16.0 / 9.0;
-        let fov = 45.0_f64.to_radians();
-        let orbit = projected_planet_coverage(10_000_000.0, fov, aspect);
-        let low_flight = projected_planet_coverage(4_002_000.0, fov, aspect);
-        assert!(orbit < super::CONTENT_ADAPTIVE_WARP_MINIMUM_PLANET_COVERAGE);
-        assert!(low_flight >= super::CONTENT_ADAPTIVE_WARP_MINIMUM_PLANET_COVERAGE);
-    }
-
-    #[test]
     fn fullscreen_resize_preserves_the_prior_internal_render_resolution() {
         let windowed = winit::dpi::PhysicalSize::new(320, 200);
         let fullscreen = winit::dpi::PhysicalSize::new(1920, 1080);
@@ -8706,16 +8183,6 @@ mod tests {
             windowed
         );
         assert_eq!(render_size_for_surface_resize(windowed, None), windowed);
-    }
-
-    #[test]
-    fn render_path_defaults_to_raster_and_toggles_both_ways() {
-        let path = RenderPath::default();
-        assert_eq!(path, RenderPath::Raster);
-        assert_eq!(path.toggled(), RenderPath::FoveatedRay);
-        assert_eq!(path.toggled().toggled(), RenderPath::Raster);
-        assert!(RenderPath::Raster.draws_terrain_meshes());
-        assert!(!RenderPath::FoveatedRay.draws_terrain_meshes());
     }
 
     #[test]

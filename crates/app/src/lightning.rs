@@ -66,8 +66,12 @@ impl Lightning {
             let distance = offset.length();
             let pan = (0.5 + 0.45 * offset.normalize_or_zero().dot(right)).clamp(0.05, 0.95) as f32;
             let gain = (1.0 / (1.0 + distance / THUNDER_HALF_GAIN_METERS)) as f32;
-            self.thunder
-                .push((time + thunder_delay_seconds(distance), gain, pan, distance as f32));
+            self.thunder.push((
+                time + thunder_delay_seconds(distance),
+                gain,
+                pan,
+                distance as f32,
+            ));
             self.active = Some(strike);
             self.sequence = self.sequence.wrapping_add(1);
             self.next_time = time + 7.0 + 7.0 * random01(self.sequence);
@@ -137,7 +141,8 @@ fn strike_position(centre: DVec3, index: u32) -> DVec3 {
     let north = up.cross(east);
     let angle = std::f64::consts::TAU * random01(index);
     let (inner, outer) = (STRIKE_MIN_RADIUS_METERS, STRIKE_MAX_RADIUS_METERS);
-    let radius = (inner * inner + (outer * outer - inner * inner) * random01(index.wrapping_add(17))).sqrt();
+    let radius =
+        (inner * inner + (outer * outer - inner * inner) * random01(index.wrapping_add(17))).sqrt();
     up * (crate::planet::planet_radius_meters() + CLOUD_ALTITUDE_METERS)
         + radius * (east * angle.cos() + north * angle.sin())
 }

@@ -847,7 +847,7 @@ const OCEAN_WHITECAP_SLOPE_FULL: f32 = 0.80;
 // metres into the trough, which is what the negative low end is bounded by.
 const OCEAN_WHITECAP_CREST_LOW_FRACTION: f32 = -0.08;
 const OCEAN_WHITECAP_CREST_HIGH_FRACTION: f32 = 0.18;
-// Still used by the ripple layer and the raymarch path for how far a shore
+// Still used by the ripple layer for how far a shore
 // effect reaches; it no longer gates the swell, which is depth-limited instead.
 const OCEAN_SHORE_FULL_DEPTH_METERS: f32 = 30.0;
 const OCEAN_RIPPLE_FULL_DISTANCE_METERS: f32 = 2000.0;
@@ -999,8 +999,8 @@ fn moon_raw_height(direction: vec3<f32>) -> f32 {
 // Two multiplies per corner rather than a long shift/add chain. Maxwell runs
 // 32-bit integer multiply at quarter rate, which is why the multiply-free form
 // was tried first -- but it needed so many full-rate operations to diffuse
-// properly that it measured 2ms slower in the raster path and up to 13ms slower
-// in the raymarch path, which put the ground-level scenarios over budget. One
+// properly that it measured 2ms slower in the raster path, which put the
+// ground-level scenarios over budget. One
 // wide multiply diffuses further than a dozen shifts.
 fn detail_mix(value: u32) -> u32 {
     var h = value * 0x9e3779b1u;
@@ -4512,7 +4512,7 @@ const OCEAN_UNDERSIDE_LAMP_GAIN: f32 = 0.25;
 // throughout, and down one wave face the top is ~25% brighter than the base.
 // Translucency brightens; it does not tint. Linear albedo in that hue, the
 // overall level calibrated against the deck-height replay.
-const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.0, 0.025, 0.0125);
+const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.03, 0.18, 0.5);
 //const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.005, 0.025, 0.05);
 //const OCEAN_SOT_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.0018, 0.24, 0.30);
 // Body brightness gain for thin water (high on a wave).

@@ -2,8 +2,7 @@
 
 A planet renderer in Rust and WGSL: a 4,000 km-radius cube-sphere with baked
 macro terrain, quadtree LOD, analytic atmospheric scattering, Gerstner-wave
-ocean, and two interchangeable render paths (raster and foveated raymarch)
-that resolve to the same surface.
+ocean, and a raster renderer.
 
 Not a game engine. It is a rendering testbed built around a scenario harness,
 so every visual claim is reproducible from a command rather than a screenshot.
@@ -105,6 +104,13 @@ Omit `--scenario` for ordinary walking/free flight. Mouse/WASD and **G** work as
 below. The default start is mountainous; `PLANET_ROAD_NETWORK_SITE=village` or
 `undersea` selects the other inspection starts. `road_network_trial`,
 `road_network_overview` and `road_network_walk` are automated replays.
+**R** toggles constant-pixel-width road traces (including tunnels): **green**
+for generated roads, **red** for ungenerated planned trunks. Above 50 km altitude,
+the whole-planet view uses schematic region-centre/gateway connections, not
+final engineered bends or individual village accesses. Generated regions stay
+green for the session even after leaving the resident cache; close-up green
+traces follow the exact resident roads.
+`PLANET_ROAD_LINES=1` starts the overlay on; it is off by default.
 `PLANET_ROAD_NETWORK=1` also enables the network directly. Set
 `PLANET_ROAD_NETWORK=0` to retain the old single-road interactive experiment;
 its existing replay names select the pilot automatically.
@@ -141,8 +147,6 @@ walks through the entrance. `PLANET_ROAD_TUNNELS=0` keeps the same route but
 uses the previous open-cut treatment, for comparisons. `PLANET_ROAD_HEADING`
 rotates the local survey corridor in degrees (default 270, westbound); other alignments
 are experimental and may not produce a tunnel.
-Use the default **raster** renderer for exploration: the alternate ray path
-still has exterior terrain issues at this mountain site, even with tunnels off.
 Ordinary runs build none of this. For **free exploration**, omit `--scenario`:
 this starts on the deck in free flight instead of on the ship.
 
@@ -194,16 +198,13 @@ The pilot has no approach ramps, connected network, or pier/parapet collision.
 |---|---|
 | `F3` | Debug overlay |
 | `F4` | Orbit ⇄ low flight (2 m above the surface) |
-| `F5` | Raster ⇄ raymarch render path |
 | `F6` / `F7` / `F8` | Blur / bloom / HDR effect |
 | `F9` | Cycle debug mode (final, albedo, lighting, aerial, …) |
 | `F10` | Freeze animation |
-| `F11` | Foveation warp debug |
 | `F12` | Screenshot |
 | `F` | Fullscreen |
 | `O` | Flat-triangle outlines |
 | `N` | Go and watch the nearest birds down on the ground or water, from just outside the range that would put them up |
-| `1`–`5` | Raymarch experiment toggles (3 is reserved but unimplemented) |
 | `6` | Auto exposure |
 
 ## Baking terrain
@@ -233,23 +234,14 @@ Rust and WGSL, expect one of them to tell you:
 
 - `every_shader_places_the_surface_on_the_coretypes_sphere` — the planet radius
 - `shader_detail_ladder_matches_the_cpu_clearance_ladder` — the microrelief ladder
-- `shader_experiment_bits_match_the_host_bits` — raymarch experiment bitflags
-
-Render-path parity across raster and ray needs a display:
-
-```sh
-./scripts/run-render-path-parity.sh
-```
 
 ## Environment variables
 
 | Variable | Effect |
 |---|---|
-| `PLANET_RENDER_PATH` | `raster` or `ray` |
-| `PLANET_DEBUG_MODE` | `final`, `albedo`, `lighting`, `aerial`, `ray_hit` |
+| `PLANET_DEBUG_MODE` | `final`, `albedo`, `lighting`, `aerial` |
 | `PLANET_MAX_ACTIVE_CHUNKS` | Lift or lower the quadtree leaf budget |
 | `PLANET_FLAT_TRIANGLES` | Flat-triangle experiment (`0`/`false`/`off` disables) |
-| `PLANET_RAY_EXPERIMENTS` | Raymarch experiment bitmask |
 | `PLANET_PRESENT_MODE` | `immediate` to bypass vsync when measuring |
 | `PLANET_FRAME_LATENCY` | Desired frame latency |
 | `PLANET_SYNC_PRESENT` | GPU-completion fence before presenting; automatic for road experiments, otherwise off; `0`/`1` override |

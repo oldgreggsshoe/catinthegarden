@@ -209,43 +209,52 @@ impl OceanSpray {
         });
         // One per foam-history ping-pong texture: the update reads whichever
         // the sea is drawing this frame.
-        let update_bind_groups = std::array::from_fn(|atlas| device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ocean spray update"),
-            layout: &update_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: particles.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&ocean_fft.field_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&ocean_fft.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: ocean_fft.view_params.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(foam_history.view(atlas)),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Sampler(&foam_sampler),
-                },
-            ],
-        }));
+        let update_bind_groups = std::array::from_fn(|atlas| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ocean spray update"),
+                layout: &update_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: particles.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&ocean_fft.field_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&ocean_fft.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: ocean_fft.view_params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(foam_history.view(atlas)),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Sampler(&foam_sampler),
+                    },
+                ],
+            })
+        });
         let update_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ocean spray update"),
             source: wgpu::ShaderSource::Wgsl(update_shader_source().into()),
         });
-        let update_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("ocean spray update pipeline layout"),
-            bind_group_layouts: &[Some(&update_layout)],
-            immediate_size: 0,
-        });
+        let update_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("ocean spray update pipeline layout"),
+                bind_group_layouts: &[Some(&update_layout)],
+                immediate_size: 0,
+            });
         let update_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("ocean spray update"),
             layout: Some(&update_pipeline_layout),
@@ -258,14 +267,23 @@ impl OceanSpray {
         let vertex_fragment = wgpu::ShaderStages::VERTEX_FRAGMENT;
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("ocean spray draw layout"),
-            entries: &[storage_entry(0, vertex_fragment, true), uniform_entry(1, vertex_fragment)],
+            entries: &[
+                storage_entry(0, vertex_fragment, true),
+                uniform_entry(1, vertex_fragment),
+            ],
         });
         let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ocean spray draw"),
             layout: &draw_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: particles.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: particles.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: uniform.as_entire_binding(),
+                },
             ],
         });
         let draw_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -345,18 +363,18 @@ impl OceanSpray {
         let direction = camera_direction.normalize().to_array();
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let camera_uv = [radius * dot(u, direction), radius * dot(v, direction)];
-        let shift = self
-            .previous_camera_uv
-            .map_or([0.0, 0.0], |previous| [camera_uv[0] - previous[0], camera_uv[1] - previous[1]]);
+        let shift = self.previous_camera_uv.map_or([0.0, 0.0], |previous| {
+            [camera_uv[0] - previous[0], camera_uv[1] - previous[1]]
+        });
         // A jump (teleport, first frame) moves the camera past the whole pool.
         let shift = if (shift[0] * shift[0] + shift[1] * shift[1]).sqrt() > 500.0 {
             [0.0, 0.0]
         } else {
             shift
         };
-        let dt = self
-            .previous_time
-            .map_or(0.0, |previous| (ocean_time_seconds - previous).clamp(0.0, MAX_STEP_SECONDS));
+        let dt = self.previous_time.map_or(0.0, |previous| {
+            (ocean_time_seconds - previous).clamp(0.0, MAX_STEP_SECONDS)
+        });
         self.previous_camera_uv = Some(camera_uv);
         self.previous_time = Some(ocean_time_seconds);
         self.frame = self.frame.wrapping_add(1);
@@ -364,10 +382,12 @@ impl OceanSpray {
         let xyz = |a: [f64; 3]| [a[0] as f32, a[1] as f32, a[2] as f32, 0.0];
         let (ship_port, ship_starboard) =
             ship.map_or(([0.0; 4], [0.0; 4]), |ship| (ship.port, ship.starboard));
-        let (ship_port_water, ship_starboard_water) =
-            ship.map_or(([0.0; 4], [0.0; 4]), |ship| (ship.port_water, ship.starboard_water));
-        let (ship_port_impact, ship_starboard_impact) = ship
-            .map_or(([0.0; 4], [0.0; 4]), |ship| (ship.port_impact, ship.starboard_impact));
+        let (ship_port_water, ship_starboard_water) = ship.map_or(([0.0; 4], [0.0; 4]), |ship| {
+            (ship.port_water, ship.starboard_water)
+        });
+        let (ship_port_impact, ship_starboard_impact) = ship.map_or(([0.0; 4], [0.0; 4]), |ship| {
+            (ship.port_impact, ship.starboard_impact)
+        });
         let (ship_origin, ship_axes, ship_velocity) = match ship {
             Some(ship) => {
                 let at = |p: glam::DVec3| {
@@ -406,8 +426,18 @@ impl OceanSpray {
         let frame = SprayFrame {
             axis_u: xyz(u),
             axis_v: xyz(v),
-            shift_dt: [shift[0] as f32, shift[1] as f32, dt, (self.frame % (1 << 24)) as f32],
-            wind: [wind[0], wind[1], crate::ocean_fft::wind_speed_from_environment(), 0.0],
+            shift_dt: [
+                shift[0] as f32,
+                shift[1] as f32,
+                dt,
+                (self.frame % (1 << 24)) as f32,
+            ],
+            wind: [
+                wind[0],
+                wind[1],
+                crate::ocean_fft::wind_speed_from_environment(),
+                0.0,
+            ],
             params: [
                 SPAWN_RADIUS_METERS,
                 SPAWN_RATE * spray_strength(),
@@ -424,9 +454,16 @@ impl OceanSpray {
             ship_port_water,
             ship_starboard_water,
             gust: gust.uniform(),
-            foam_east: foam.map_or([0.0; 4], |(_, [_, east, _])| [east[0], east[1], east[2], 1.0]),
+            foam_east: foam.map_or([0.0; 4], |(_, [_, east, _])| {
+                [east[0], east[1], east[2], 1.0]
+            }),
             foam_north: foam.map_or([0.0; 4], |(_, [_, _, north])| {
-                [north[0], north[1], north[2], super::ocean_foam::OceanFoamHistory::WIDTH_METERS]
+                [
+                    north[0],
+                    north[1],
+                    north[2],
+                    super::ocean_foam::OceanFoamHistory::WIDTH_METERS,
+                ]
             }),
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
@@ -435,7 +472,11 @@ impl OceanSpray {
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.update_pipeline);
-        pass.set_bind_group(0, &self.update_bind_groups[foam.map_or(0, |(atlas, _)| atlas)], &[]);
+        pass.set_bind_group(
+            0,
+            &self.update_bind_groups[foam.map_or(0, |(atlas, _)| atlas)],
+            &[],
+        );
         pass.dispatch_workgroups(SPRAY_PARTICLES.div_ceil(64), 1, 1);
     }
 
@@ -493,7 +534,9 @@ mod tests {
     #[test]
     fn the_shader_reserves_the_same_ship_slots() {
         let source = include_str!("ocean_spray_update.wgsl");
-        assert!(source.contains(&format!("const SHIP_SPRAY_SLOTS: u32 = {SHIP_SPRAY_SLOTS}u;")));
+        assert!(source.contains(&format!(
+            "const SHIP_SPRAY_SLOTS: u32 = {SHIP_SPRAY_SLOTS}u;"
+        )));
         let draw = include_str!("ocean_spray_draw.wgsl");
         assert!(draw.contains(&format!("instance_index < {SHIP_SPRAY_SLOTS}u")));
         // Station positions are baked into both interpolators.
@@ -510,19 +553,26 @@ mod tests {
         // they are sent, over the tuned hull's; all three must name the hull
         // ship.rs tuned against.
         let tuned = crate::ship::SPLASH_TUNED_HALF_LENGTH_METERS;
-        assert!(include_str!("ocean_spray_update.wgsl")
-            .contains(&format!("const SHIP_SPRAY_TUNED_HALF_LENGTH: f32 = {tuned:.1};")));
-        assert!(include_str!("ocean_spray_draw.wgsl")
-            .contains(&format!("spray_frame.ship_axes.z / {tuned:.1};")));
-        assert!(include_str!("ocean_foam.wgsl")
-            .contains(&format!("const SHIP_FOAM_TUNED_HALF_LENGTH: f32 = {tuned:.1};")));
+        assert!(include_str!("ocean_spray_update.wgsl").contains(&format!(
+            "const SHIP_SPRAY_TUNED_HALF_LENGTH: f32 = {tuned:.1};"
+        )));
+        assert!(
+            include_str!("ocean_spray_draw.wgsl")
+                .contains(&format!("spray_frame.ship_axes.z / {tuned:.1};"))
+        );
+        assert!(include_str!("ocean_foam.wgsl").contains(&format!(
+            "const SHIP_FOAM_TUNED_HALF_LENGTH: f32 = {tuned:.1};"
+        )));
     }
 
     #[test]
     fn particle_layout_matches_the_shader() {
         // Three vec4<f32> per particle, in both shaders.
         assert_eq!(std::mem::size_of::<[[f32; 4]; 3]>(), PARTICLE_BYTES);
-        for source in [include_str!("ocean_spray_update.wgsl"), include_str!("ocean_spray_draw.wgsl")] {
+        for source in [
+            include_str!("ocean_spray_update.wgsl"),
+            include_str!("ocean_spray_draw.wgsl"),
+        ] {
             assert!(source.contains("    extra: vec4<f32>,\n}"));
         }
         assert_eq!(std::mem::size_of::<SprayFrame>(), 272);

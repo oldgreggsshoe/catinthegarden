@@ -72,6 +72,160 @@ fn distance(a: DVec3, b: DVec3, r: f64) -> f64 {
     a.cross(b).length().atan2(a.dot(b)) * r
 }
 
+/// Intersection of two complete carriageway quads, including curved-station
+/// miters. A centreline capsule overestimates acute mouths and can make dense
+/// village profiles infeasible by flattening road that is already clear.
+fn overlap_polygon(mut points: Vec<glam::DVec2>, clip: &[glam::DVec2; 4]) -> Vec<glam::DVec2> {
+    let cross = |a: glam::DVec2, b: glam::DVec2| a.x * b.y - a.y * b.x;
+    for i in 0..4 {
+        if points.is_empty() {
+            break;
+        }
+        let origin = clip[i];
+        let edge = clip[(i + 1) % 4] - origin;
+        let input = std::mem::take(&mut points);
+        let mut previous = *input.last().unwrap();
+        let mut before = cross(edge, previous - origin);
+        for p in input {
+            let after = cross(edge, p - origin);
+            if (before >= 0.0) != (after >= 0.0) {
+                points.push(previous.lerp(p, (before / (before - after)).clamp(0.0, 1.0)));
+            }
+            if after >= 0.0 {
+                points.push(p);
+            }
+            previous = p;
+            before = after;
+        }
+    }
+    points
+}
+
+/// Trace only connected overlap at the mouth, not later unrelated crossings.
+/// Each arm gets its own extent; the incoming approach need not be as flat as
+/// a long outgoing fork. All of this runs on the existing engineering worker.
+fn fork_aprons(
+    i: usize,
+    dirs: &[DVec3],
+    adjacent: &[Vec<usize>],
+    terminals: &[usize],
+    radius: f64,
+    terrain: &impl Survey,
+) -> Result<Vec<f64>, String> {
+    use std::collections::{HashSet, VecDeque};
+    let up = dirs[i];
+    let reference = if up.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
+    let x = up.cross(reference).normalize();
+    let y = up.cross(x);
+    let point =
+        |j: usize| glam::DVec2::new(dirs[j].dot(x), dirs[j].dot(y)) * (radius / dirs[j].dot(up));
+    let arms: Vec<Vec<_>> = adjacent[i]
+        .iter()
+        .map(|&j| {
+            let mut path = vec![(glam::DVec2::ZERO, 0.0)];
+            let (mut previous, mut current) = (i, j);
+            loop {
+                let station =
+                    path.last().unwrap().1 + distance(dirs[previous], dirs[current], radius);
+                path.push((point(current), station));
+                if current == i
+                    || adjacent[current].len() != 2
+                    || terminals.contains(&current)
+                    || path.len() > dirs.len()
+                {
+                    break;
+                }
+                let Some(&next) = adjacent[current].iter().find(|&&n| n != previous) else {
+                    break;
+                };
+                previous = current;
+                current = next;
+            }
+            path
+        })
+        .collect();
+    let quads: Vec<Vec<_>> = arms
+        .iter()
+        .map(|path| {
+            let sides: Vec<_> = path
+                .windows(2)
+                .map(|p| {
+                    let d = (p[1].0 - p[0].0).normalize_or_zero();
+                    glam::DVec2::new(d.y, -d.x)
+                })
+                .collect();
+            let mut sections = vec![sides[0]];
+            for pair in sides.windows(2) {
+                let middle = (pair[0] + pair[1]).normalize_or_zero();
+                sections.push(middle / middle.dot(pair[0]).max(0.1));
+            }
+            sections.push(*sides.last().unwrap());
+            path.windows(2)
+                .enumerate()
+                .map(|(j, p)| {
+                    let a = sections[j] * crate::road::HALF_WIDTH;
+                    let b = sections[j + 1] * crate::road::HALF_WIDTH;
+                    [p[0].0 - a, p[0].0 + a, p[1].0 + b, p[1].0 - b]
+                })
+                .collect()
+        })
+        .collect();
+    let mut extents: Vec<_> = arms.iter().map(|p| APRON_LENGTH.min(p[1].1)).collect();
+    for (arm, first) in arms.iter().enumerate() {
+        for (other, second) in arms.iter().enumerate().skip(arm + 1) {
+            if first[1].0.dot(second[1].0) <= 0.0 {
+                continue;
+            }
+            let cosine = first[1]
+                .0
+                .normalize()
+                .dot(second[1].0.normalize())
+                .clamp(-1.0, 1.0 - 1e-9);
+            if cosine < crate::road_network_align::MAX_ANGLE.cos() {
+                // Independent surveyed junctions retain their established
+                // bounded apron. Full overlap tracing is for the shallow
+                // mouths produced by merging tangent fillet prefixes; forcing
+                // every acute survey fork flat can make unrelated hillsides
+                // infeasible. General shared junction surfaces remain separate.
+                let legacy = (APRON_LENGTH * ((1.0 + cosine) / (1.0 - cosine)).sqrt()).min(STEP);
+                for (length, path) in extents.iter_mut().zip(&arms) {
+                    *length = length.max(legacy.min(path[1].1));
+                }
+                continue;
+            }
+            let mut queue = VecDeque::from([(0, 0)]);
+            let mut seen = HashSet::new();
+            while let Some((a, b)) = queue.pop_front() {
+                if terrain.cancelled() {
+                    return Err("road generation superseded".into());
+                }
+                if a + 1 >= first.len() || b + 1 >= second.len() || !seen.insert((a, b)) {
+                    continue;
+                }
+                let overlap = overlap_polygon(quads[arm][a].to_vec(), &quads[other][b]);
+                if overlap.is_empty() {
+                    continue;
+                }
+                for p in overlap {
+                    for (index, path, k) in [(arm, first, a), (other, second, b)] {
+                        let d = path[k + 1].0 - path[k].0;
+                        let t = if d.length_squared() > 1e-12 {
+                            ((p - path[k].0).dot(d) / d.length_squared()).clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
+                        extents[index] =
+                            extents[index].max(path[k].1 + t * (path[k + 1].1 - path[k].1));
+                    }
+                }
+                queue.push_back((a + 1, b));
+                queue.push_back((a, b + 1));
+            }
+        }
+    }
+    Ok(extents)
+}
+
 /// Minimum of source heights plus grade * network distance. Negative source
 /// heights are fine: all graph edge lengths are non-negative. Running this on
 /// negated anchors also constructs their required lower envelope.
@@ -193,7 +347,6 @@ impl Profile {
             original_adj[e.b].push(e.a);
         }
         let mut flat_nodes = vec![false; region.nodes.len()];
-        let mut apron_lengths = vec![APRON_LENGTH; region.nodes.len()];
         for i in 0..region.nodes.len() {
             let neighbours: Vec<_> = original_adj[i]
                 .iter()
@@ -215,39 +368,47 @@ impl Profile {
                     a.dot(b) > -20.0_f64.to_radians().cos()
                 });
             flat_nodes[i] = flat;
-            if flat {
-                // At an acute fork, the two road rectangles overlap farther
-                // than the round pad. Keep that entire mouth on one plane;
-                // otherwise the curved ramps would intersect with a lip.
-                let up = dirs[i];
-                let tangents: Vec<_> = neighbours
-                    .iter()
-                    .map(|&j| (dirs[j] - up * dirs[j].dot(up)).normalize_or_zero())
-                    .collect();
-                for (j, a) in tangents.iter().enumerate() {
-                    for b in &tangents[j + 1..] {
-                        let cosine = a.dot(*b).clamp(-1.0, 1.0 - 1e-9);
-                        let overlap = APRON_LENGTH * ((1.0 + cosine) / (1.0 - cosine)).sqrt();
-                        apron_lengths[i] = apron_lengths[i].max(overlap.min(STEP));
+        }
+        let mut apron_spans = std::collections::HashMap::<(usize, usize), f64>::new();
+        for (i, &flat) in flat_nodes.iter().enumerate() {
+            if !flat {
+                continue;
+            }
+            let lengths = fork_aprons(
+                i,
+                &dirs,
+                &original_adj,
+                &region.terminal_nodes,
+                radius,
+                terrain,
+            )?;
+            for (&next, mut remaining) in original_adj[i].iter().zip(lengths) {
+                let (mut previous, mut current) = (i, next);
+                loop {
+                    let length = distance(dirs[previous], dirs[current], radius);
+                    let span = apron_spans.entry((previous, current)).or_default();
+                    *span = span.max(remaining.min(length));
+                    remaining -= length;
+                    if remaining <= 1e-6 || flat_nodes[current] || original_adj[current].len() != 2
+                    {
+                        break;
                     }
+                    let Some(&next) = original_adj[current].iter().find(|&&j| j != previous) else {
+                        break;
+                    };
+                    previous = current;
+                    current = next;
                 }
             }
         }
         let mut segments = Vec::new();
+        let mut flat_segments = Vec::new();
         for edge in &region.edges {
             let a = dirs[edge.a];
             let b = dirs[edge.b];
             let length = distance(a, b, radius);
-            let start = if flat_nodes[edge.a] {
-                apron_lengths[edge.a]
-            } else {
-                0.0
-            };
-            let end = if flat_nodes[edge.b] {
-                apron_lengths[edge.b]
-            } else {
-                0.0
-            };
+            let start = apron_spans.get(&(edge.a, edge.b)).copied().unwrap_or(0.0);
+            let end = apron_spans.get(&(edge.b, edge.a)).copied().unwrap_or(0.0);
             let mut stations = Vec::new();
             if length > start + end {
                 let run = length - start - end;
@@ -264,6 +425,7 @@ impl Profile {
             }
             stations.push(1.0);
             let mut last = edge.a;
+            let mut last_t = 0.0;
             for t in stations {
                 let next = if t == 1.0 {
                     edge.b
@@ -273,7 +435,13 @@ impl Profile {
                     j
                 };
                 segments.push([last, next]);
+                flat_segments.push(
+                    length <= start + end + 1e-6
+                        || t * length <= start + 1e-6
+                        || last_t * length >= length - end - 1e-6,
+                );
                 last = next;
+                last_t = t;
             }
         }
         let mut ground = Vec::with_capacity(dirs.len());
@@ -303,19 +471,16 @@ impl Profile {
         // Flat junction/turn aprons stop intersecting deck planes producing
         // steps across a mouth. Mouth-length first stations share the hub height;
         // the global envelope still enforces grade and all terminal anchors.
-        for (i, &flat) in flat_nodes.iter().enumerate() {
+        for (&[a, b], &flat) in segments.iter().zip(&flat_segments) {
             if flat {
-                let adjacent: Vec<_> = adjacency[i].iter().map(|(j, _)| *j).collect();
-                for j in adjacent {
-                    for (other, length) in &mut adjacency[i] {
-                        if *other == j {
-                            *length = 0.0;
-                        }
+                for (other, length) in &mut adjacency[a] {
+                    if *other == b {
+                        *length = 0.0;
                     }
-                    for (other, length) in &mut adjacency[j] {
-                        if *other == i {
-                            *length = 0.0;
-                        }
+                }
+                for (other, length) in &mut adjacency[b] {
+                    if *other == a {
+                        *length = 0.0;
                     }
                 }
             }
@@ -475,6 +640,56 @@ mod tests {
     use planet_coretypes::{CubeFace, TileKey};
 
     #[test]
+    fn road_network_fork_aprons_follow_curves_but_not_the_incoming_approach() {
+        let dirs: Vec<_> = [
+            (0.0, 0.0),
+            (-100.0, 0.0),
+            (20.0, 0.0),
+            (100.0, 0.0),
+            (300.0, 0.0),
+            (20.0, 1.4),
+            (39.0, 5.5),
+            (57.0, 12.4),
+            (200.0, 100.0),
+        ]
+        .into_iter()
+        .map(|(x, y)| direction(x, y))
+        .collect();
+        let mut adjacent = vec![Vec::new(); dirs.len()];
+        for (a, b) in [
+            (0, 1),
+            (0, 2),
+            (2, 3),
+            (3, 4),
+            (0, 5),
+            (5, 6),
+            (6, 7),
+            (7, 8),
+        ] {
+            adjacent[a].push(b);
+            adjacent[b].push(a);
+        }
+        let extents = fork_aprons(
+            0,
+            &dirs,
+            &adjacent,
+            &[1, 4, 8],
+            4e6,
+            &Surface {
+                steep: false,
+                water: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(extents[0], APRON_LENGTH);
+        for &length in &extents[1..] {
+            assert!(
+                (40.0..80.0).contains(&length),
+                "curved overlap: {extents:?}"
+            );
+        }
+    }
+    #[test]
     fn road_network_vertical_curves_keep_acute_junction_overlaps_flat() {
         let mut region = tree();
         let branch = direction(853.553390593, 353.553390593).to_array();
@@ -496,7 +711,10 @@ mod tests {
             if a == 1 || b == 1 {
                 let other = if a == 1 { b } else { a };
                 let length = distance(hub, DVec3::from_array(profile.directions[other]), 4e6);
-                assert!((length - expected).abs() < 0.001);
+                assert!(
+                    (length - expected).abs() < 0.01,
+                    "apron {length} expected {expected}"
+                );
                 assert_eq!(profile.heights_meters[1], profile.heights_meters[other]);
             }
         }

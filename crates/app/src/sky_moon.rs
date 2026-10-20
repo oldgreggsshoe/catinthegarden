@@ -179,15 +179,24 @@ impl SkyMoon {
         let viewport = [state.size.width, state.size.height];
         let offset = origin - camera_local;
         let distance = offset.length();
-        let angular_radius = (body::MOON.radius_meters / distance.max(body::MOON.radius_meters)).asin();
+        let angular_radius =
+            (body::MOON.radius_meters / distance.max(body::MOON.radius_meters)).asin();
         let aspect = f64::from(viewport[0]) / f64::from(viewport[1].max(1));
         let half_diagonal = ((fov * 0.5).tan() * (1.0 + aspect * aspect).sqrt()).atan();
-        let off_axis = forward_local.normalize().dot(offset / distance).clamp(-1.0, 1.0).acos();
+        let off_axis = forward_local
+            .normalize()
+            .dot(offset / distance)
+            .clamp(-1.0, 1.0)
+            .acos();
         let in_frustum = off_axis < half_diagonal + angular_radius;
         // Below the planet's geometric horizon, whole disc included.
         let camera_radius = camera_local.length();
-        let horizon = (body::PLANET.radius_meters / camera_radius.max(body::PLANET.radius_meters)).asin();
-        let from_nadir = (-camera_local / camera_radius).dot(offset / distance).clamp(-1.0, 1.0).acos();
+        let horizon =
+            (body::PLANET.radius_meters / camera_radius.max(body::PLANET.radius_meters)).asin();
+        let from_nadir = (-camera_local / camera_radius)
+            .dot(offset / distance)
+            .clamp(-1.0, 1.0)
+            .acos();
         let below_horizon = from_nadir + angular_radius < horizon;
         let visible = in_frustum && !below_horizon;
         if visible != self.was_visible {
@@ -202,15 +211,22 @@ impl SkyMoon {
         }
         self.visible = visible;
 
-        self.terrain.set_distant_level_limit(system_flight::distant_level(
-            body::MOON.radius_meters,
-            moon_camera.length(),
-            viewport[1],
-            fov,
-        ));
+        self.terrain
+            .set_distant_level_limit(system_flight::distant_level(
+                body::MOON.radius_meters,
+                moon_camera.length(),
+                viewport[1],
+                fov,
+            ));
         let updated = body::with_body(body::MOON, || {
-            self.terrain
-                .update(moon_camera, moon_forward, moon_up, presentation_time, viewport, fov)
+            self.terrain.update(
+                moon_camera,
+                moon_forward,
+                moon_up,
+                presentation_time,
+                viewport,
+                fov,
+            )
         });
         if let Err(error) = updated {
             tracing::warn!(%error, "sky moon terrain update failed");
@@ -230,7 +246,11 @@ impl SkyMoon {
         uniform.camera_right = xyzw(right_body, 0.0);
         uniform.camera_up = xyzw(up_body, 0.0);
         uniform.camera_planet_direction_view_altitude = xyzw(
-            DVec3::new(radial.dot(right_body), radial.dot(up_body), -radial.dot(forward_body)),
+            DVec3::new(
+                radial.dot(right_body),
+                radial.dot(up_body),
+                -radial.dot(forward_body),
+            ),
             (moon_camera.length() - body::MOON.radius_meters) as f32,
         );
         uniform.sun_direction = xyzw(to_body(sun_local).normalize(), 0.0);
@@ -257,12 +277,8 @@ impl SkyMoon {
             self.atmosphere.update(encoder, &self.camera_group);
             self.sky_lut_ready = true;
         }
-        let mut pass = system_flight::scene_pass(
-            encoder,
-            &self.composite.colour,
-            &self.composite.depth,
-            true,
-        );
+        let mut pass =
+            system_flight::scene_pass(encoder, &self.composite.colour, &self.composite.depth, true);
         self.terrain
             .draw(&mut pass, &self.camera_group, weather_field_bind_group);
     }
@@ -300,7 +316,12 @@ impl Orbit {
         } else {
             radial.any_orthonormal_vector()
         };
-        Self { start_position, start_rotation, normal, start_angle }
+        Self {
+            start_position,
+            start_rotation,
+            normal,
+            start_angle,
+        }
     }
 
     fn at(self, angle: f64) -> (DVec3, DQuat) {
@@ -340,11 +361,7 @@ fn lit_fraction(moon: DVec3, camera: DVec3, sun: DVec3) -> f64 {
 /// horizon near the view direction, preferring the best-lit of a few
 /// azimuths that stay in view, and turns the moon so the planet stands where
 /// its shader expects it (`MOON_PLANET_SKY_DIRECTION`).
-fn place(
-    camera: DVec3,
-    forward: DVec3,
-    sun: DVec3,
-) -> (DVec3, DQuat) {
+fn place(camera: DVec3, forward: DVec3, sun: DVec3) -> (DVec3, DQuat) {
     let up = camera.normalize();
     let mut horizontal = forward - up * forward.dot(up);
     if horizontal.length_squared() < 1.0e-12 {
@@ -398,7 +415,8 @@ mod tests {
     #[test]
     fn the_orbit_is_prograde_keeps_distance_and_stays_tidally_locked() {
         let start = DVec3::new(2.0e7, 1.5e7, -3.0e7).normalize() * MOON_DISTANCE_METERS;
-        let facing = DVec3::from_array(planet_coretypes::moon::MOON_PLANET_SKY_DIRECTION).normalize();
+        let facing =
+            DVec3::from_array(planet_coretypes::moon::MOON_PLANET_SKY_DIRECTION).normalize();
         let rotation = DQuat::from_rotation_arc(facing, -start.normalize());
         let orbit = Orbit::new(start, rotation, 1.0);
         for angle in [1.3, 2.7, 4.0, 6.5] {

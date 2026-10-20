@@ -910,18 +910,17 @@ impl ForestRenderer {
             let centre_direction = forest_cell_centre_direction(key);
             let centre_distance =
                 (centre_direction * planet_radius_meters() - camera_planet_position).length();
-            let tier =
-                if (nearest_resident_cell
-                    && force_nearest_full
-                    && centre_distance <= FOREST_GPU_FORCED_FULL_DISTANCE_METERS)
-                    || centre_distance <= FOREST_GPU_FULL_DISTANCE_METERS
-                {
-                    GpuForestTier::Full
-                } else if centre_distance <= FOREST_GPU_MEDIUM_DISTANCE_METERS {
-                    GpuForestTier::Medium
-                } else {
-                    GpuForestTier::Sparse
-                };
+            let tier = if (nearest_resident_cell
+                && force_nearest_full
+                && centre_distance <= FOREST_GPU_FORCED_FULL_DISTANCE_METERS)
+                || centre_distance <= FOREST_GPU_FULL_DISTANCE_METERS
+            {
+                GpuForestTier::Full
+            } else if centre_distance <= FOREST_GPU_MEDIUM_DISTANCE_METERS {
+                GpuForestTier::Medium
+            } else {
+                GpuForestTier::Sparse
+            };
             nearest_resident_cell = false;
             let cells_per_axis = f64::from(1_u32 << key.level);
             let cell_span = 2.0 / cells_per_axis;
@@ -986,7 +985,12 @@ impl ForestRenderer {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             bytemuck::cast_slice::<_, u8>(&cells).hash(&mut hasher);
             for batch in &batches {
-                (batch.tier as u8, batch.source_key, batch.dynamic_offset, batch.cell_count)
+                (
+                    batch.tier as u8,
+                    batch.source_key,
+                    batch.dynamic_offset,
+                    batch.cell_count,
+                )
                     .hash(&mut hasher);
             }
             hasher.finish()
@@ -1374,7 +1378,8 @@ fn append_tree_crown_indices(indices: &mut Vec<u16>, side_step: u16, ring_step: 
                 let next_lower = lower_ring + next_side;
                 let upper = upper_ring + side;
                 let next_upper = upper_ring + next_side;
-                indices.extend_from_slice(&[lower, next_lower, next_upper, lower, next_upper, upper]);
+                indices
+                    .extend_from_slice(&[lower, next_lower, next_upper, lower, next_upper, upper]);
             }
             let last_ring = first_ring + 2 * 12;
             indices.extend_from_slice(&[crown_bottom, last_ring + next_side, last_ring + side]);
@@ -2577,7 +2582,11 @@ mod tests {
         // The full mesh draws every second crown sector (hexagonal crowns), so
         // the odd-sector vertices are left unreferenced and never shaded.
         assert!(referenced.len() < TREE_MESH_VERTEX_COUNT as usize);
-        assert!(referenced.iter().all(|index| u32::from(*index) < TREE_MESH_VERTEX_COUNT));
+        assert!(
+            referenced
+                .iter()
+                .all(|index| u32::from(*index) < TREE_MESH_VERTEX_COUNT)
+        );
         assert!(referenced.contains(&0));
     }
 

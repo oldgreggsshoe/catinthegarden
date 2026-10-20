@@ -120,7 +120,12 @@ fn spread(theta: f32) -> f32 {
 
 /// Builds h0 texels as (h0(k).re, h0(k).im, h0(-k).re, h0(-k).im) for every
 /// cascade, k indices centred (texel x <-> n = x - GRID/2).
-pub fn generate_h0(seed: u32, wind_speed: f32, wind_dir: [f32; 2], fetch_meters: f32) -> Vec<[f32; 4]> {
+pub fn generate_h0(
+    seed: u32,
+    wind_speed: f32,
+    wind_dir: [f32; 2],
+    fetch_meters: f32,
+) -> Vec<[f32; 4]> {
     let mut out = vec![[0.0f32; 4]; CASCADES * GRID * GRID];
     let wind_angle = wind_dir[1].atan2(wind_dir[0]);
     for c in 0..CASCADES {
@@ -144,8 +149,10 @@ pub fn generate_h0(seed: u32, wind_speed: f32, wind_dir: [f32; 2], fetch_meters:
                 let theta = kz.atan2(kx) - wind_angle;
                 // Waves travelling against the wind are heavily damped.
                 let directional = spread(theta) + 0.05 * spread(theta + std::f32::consts::PI);
-                let power = 2.0 * jonswap(omega, wind_speed, fetch_meters) * directional
-                    * d_omega_dk / k * dk * dk;
+                let power =
+                    2.0 * jonswap(omega, wind_speed, fetch_meters) * directional * d_omega_dk / k
+                        * dk
+                        * dk;
                 let (gr, gi) = gaussian_pair(seed ^ hash((c * GRID * GRID + y * GRID + x) as u32));
                 let a = (0.5 * power).sqrt();
                 table[y * GRID + x] = [gr * a, gi * a];
@@ -188,8 +195,13 @@ fn swell_h0(seed: u32, dk: f32, swell_angle: f32) -> Vec<[f32; 4]> {
             if cosine <= 0.0 {
                 continue;
             }
-            let power = (-0.5 * offset * offset).exp() * cosine.powi(SWELL_SPREAD_POWER)
-                * 0.5 * (GRAVITY / k).sqrt() / k * dk * dk;
+            let power = (-0.5 * offset * offset).exp()
+                * cosine.powi(SWELL_SPREAD_POWER)
+                * 0.5
+                * (GRAVITY / k).sqrt()
+                / k
+                * dk
+                * dk;
             let (gr, gi) = gaussian_pair(seed ^ 0x5eed_5e11 ^ hash((y * GRID + x) as u32));
             let a = (0.5 * power).sqrt();
             table[y * GRID + x] = [gr * a, gi * a];
@@ -200,7 +212,11 @@ fn swell_h0(seed: u32, dk: f32, swell_angle: f32) -> Vec<[f32; 4]> {
     for y in 0..GRID {
         for x in 0..GRID {
             let h = table[y * GRID + x];
-            let m = if x >= 1 && y >= 1 { table[(GRID - y) * GRID + (GRID - x)] } else { [0.0, 0.0] };
+            let m = if x >= 1 && y >= 1 {
+                table[(GRID - y) * GRID + (GRID - x)]
+            } else {
+                [0.0, 0.0]
+            };
             layer[y * GRID + x] = [h[0], h[1], m[0], m[1]];
             // Parseval on the unnormalised inverse transform: the spatial
             // variance at t = 0 is the sum of |h0(k) + conj(h0(-k))|^2.
@@ -208,7 +224,11 @@ fn swell_h0(seed: u32, dk: f32, swell_angle: f32) -> Vec<[f32; 4]> {
             variance += re * re + im * im;
         }
     }
-    let scale = if variance > 0.0 { (0.25 / variance.sqrt()) as f32 } else { 0.0 };
+    let scale = if variance > 0.0 {
+        (0.25 / variance.sqrt()) as f32
+    } else {
+        0.0
+    };
     for texel in &mut layer {
         for value in texel.iter_mut() {
             *value *= scale;
@@ -229,9 +249,9 @@ pub fn wind_speed_from_environment() -> f32 {
 }
 
 /// Strongest wind the live keys or the environment can set (m/s).
-pub const MAX_WIND_METERS_PER_SECOND: f32 = 40.0;
+pub const MAX_WIND_METERS_PER_SECOND: f32 = 400.0;
 /// Tallest swell the live keys or the environment can set (m).
-pub const MAX_SWELL_METERS: f32 = 30.0;
+pub const MAX_SWELL_METERS: f32 = 300.0;
 /// The swell eases to a new height over about this long (its e-fold), so a
 /// key press grows or calms the sea rather than jumping it.
 const SWELL_EASE_SECONDS: f32 = 2.0;
@@ -275,24 +295,31 @@ pub fn set_wind_speed(speed: f32, time_seconds: f64) {
     let live = live_sea();
     let old = wind_speed_from_environment();
     *live.travel_offset.lock().unwrap() += f64::from(old - speed) * time_seconds;
-    live.wind.store(speed.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    live.wind
+        .store(speed.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// How far the gust field has slid downwind by sea time `time_seconds`: wind
 /// x time, kept continuous across live wind changes.
 pub fn wind_travel_meters(time_seconds: f64) -> f64 {
-    f64::from(wind_speed_from_environment()) * time_seconds + *live_sea().travel_offset.lock().unwrap()
+    f64::from(wind_speed_from_environment()) * time_seconds
+        + *live_sea().travel_offset.lock().unwrap()
 }
 
 /// The swell height the keys are easing toward (m).
 pub fn swell_target_meters() -> f32 {
-    f32::from_bits(live_sea().swell_target.load(std::sync::atomic::Ordering::Relaxed))
+    f32::from_bits(
+        live_sea()
+            .swell_target
+            .load(std::sync::atomic::Ordering::Relaxed),
+    )
 }
 
 pub fn set_swell_target_meters(height: f32) {
-    live_sea()
-        .swell_target
-        .store(height.clamp(0.0, MAX_SWELL_METERS).to_bits(), std::sync::atomic::Ordering::Relaxed);
+    live_sea().swell_target.store(
+        height.clamp(0.0, MAX_SWELL_METERS).to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// Moves the swell `seconds` of real time toward its target.
@@ -301,8 +328,13 @@ pub fn ease_swell(seconds: f32) {
     let now = swell_base_height_meters();
     let target = swell_target_meters();
     let next = now + (target - now) * (1.0 - (-seconds.max(0.0) / SWELL_EASE_SECONDS).exp());
-    let next = if (next - target).abs() < 0.005 { target } else { next };
-    live.swell.store(next.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    let next = if (next - target).abs() < 0.005 {
+        target
+    } else {
+        next
+    };
+    live.swell
+        .store(next.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Wind direction of the FFT spectrum in the tangent-plane (u, v) axes.
@@ -319,9 +351,17 @@ static ANCHOR: std::sync::OnceLock<([f64; 3], [f64; 3])> = std::sync::OnceLock::
 pub fn anchor_axes(camera_direction: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     *ANCHOR.get_or_init(|| {
         let d = camera_direction;
-        let helper = if d[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+        let helper = if d[1].abs() < 0.9 {
+            [0.0, 1.0, 0.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
         let cross = |a: [f64; 3], b: [f64; 3]| {
-            [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
         };
         let c = cross(helper, d);
         let l = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
@@ -423,7 +463,9 @@ pub fn giant_wave_envelope(position: [f64; 2], seconds: f64) -> f64 {
         .iter()
         .map(|&(wavelength, angle, speed, phase)| {
             let k = std::f64::consts::TAU / wavelength;
-            (k * (position[0] * angle.cos() + position[1] * angle.sin()) - k * speed * seconds + phase).cos()
+            (k * (position[0] * angle.cos() + position[1] * angle.sin()) - k * speed * seconds
+                + phase)
+                .cos()
         })
         .sum();
     1.0 + (GIANT_WAVE_GAIN - 1.0) * smoothstep(GIANT_RAMP_LOW, GIANT_RAMP_HIGH, n)
@@ -431,7 +473,8 @@ pub fn giant_wave_envelope(position: [f64; 2], seconds: f64) -> f64 {
 
 fn giant_waves_enabled() -> bool {
     static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| std::env::var("PLANET_OCEAN_GIANT_WAVES").map_or(true, |v| v.trim() != "0"))
+    *VALUE
+        .get_or_init(|| std::env::var("PLANET_OCEAN_GIANT_WAVES").map_or(true, |v| v.trim() != "0"))
 }
 
 /// Swell height with the local storm's boost: up to 80% more, capped at
@@ -458,7 +501,9 @@ fn startup_swell_base_height_meters() -> f32 {
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
             .filter(|v| v.is_finite())
-            .map_or(DEFAULT_SWELL_HEIGHT_METERS, |v| v.clamp(0.0, MAX_SWELL_METERS))
+            .map_or(DEFAULT_SWELL_HEIGHT_METERS, |v| {
+                v.clamp(0.0, MAX_SWELL_METERS)
+            })
     })
 }
 
@@ -536,7 +581,11 @@ fn second_order(bands: &[(f64, FieldSample)]) -> (f64, [f64; 2], f64) {
         gradient[1] += k * (f.height * f.slope[1] - du * j[2] - dv * j[1]);
         rate += 2.0 * k * f.height * f.velocity;
     }
-    (strength * height, gradient.map(|g| strength * g), strength * rate)
+    (
+        strength * height,
+        gradient.map(|g| strength * g),
+        strength * rate,
+    )
 }
 
 /// A change of the sea's spectrum (a live wind change), blended in over
@@ -729,7 +778,11 @@ impl CpuCascade {
                     h0_to: [u[0] as f64, u[1] as f64],
                     h0m_to: [u[2] as f64, u[3] as f64],
                     omega: (GRAVITY as f64 * k).sqrt(),
-                    unit: if length > 0.0 { [n / length, m / length] } else { [0.0, 0.0] },
+                    unit: if length > 0.0 {
+                        [n / length, m / length]
+                    } else {
+                        [0.0, 0.0]
+                    },
                 });
             }
         }
@@ -738,7 +791,10 @@ impl CpuCascade {
             modes,
             occupied_rows,
             blend,
-            cache: std::sync::Mutex::new(SlotCache { slots: Vec::new(), clock: 0 }),
+            cache: std::sync::Mutex::new(SlotCache {
+                slots: Vec::new(),
+                clock: 0,
+            }),
         }
     }
 
@@ -757,7 +813,10 @@ impl CpuCascade {
             let minus = cmul([h0m[0], -h0m[1]], [c, -s]);
             let h = [plus[0] + minus[0], plus[1] + minus[1]];
             // d/dt: i*omega*plus - i*omega*minus.
-            let v = [-mode.omega * (plus[1] - minus[1]), mode.omega * (plus[0] - minus[0])];
+            let v = [
+                -mode.omega * (plus[1] - minus[1]),
+                mode.omega * (plus[0] - minus[0]),
+            ];
             // D = -i (k/|k|) h, as the GPU evolve pass builds it.
             let dx = [mode.unit[0] * h[1], -mode.unit[0] * h[0]];
             let dz = [mode.unit[1] * h[1], -mode.unit[1] * h[0]];
@@ -807,7 +866,11 @@ impl CpuCascade {
             slot.last_used = clock;
             return slot.data.clone();
         }
-        let slot = Slot { key, last_used: clock, data: data.clone() };
+        let slot = Slot {
+            key,
+            last_used: clock,
+            data: data.clone(),
+        };
         if cache.slots.len() < LATTICE_SLOTS {
             cache.slots.push(slot);
         } else {
@@ -821,7 +884,12 @@ impl CpuCascade {
 
     fn build(&self, key: i64) -> std::sync::Arc<SlotData> {
         let [height, velocity, dx, dz] = self.transform(key as f64 * LATTICE_SECONDS);
-        std::sync::Arc::new(SlotData { height, velocity, dx, dz })
+        std::sync::Arc::new(SlotData {
+            height,
+            velocity,
+            dx,
+            dz,
+        })
     }
 
     /// The lattice slot for `key`, built on this thread if the worker has not
@@ -838,8 +906,18 @@ impl CpuCascade {
 /// takes it (`ocean_fft_cascade`): four bilinear samples half a texel either
 /// side, the value their average and the derivatives their differences, so
 /// slopes are continuous instead of constant over each texel.
-fn sample_slot(slot: &SlotData, tile_meters: f64, position: [f64; 2], delta_seconds: f64) -> FieldSample {
-    sample_slot_taps(slot, &slot_taps(tile_meters, position), tile_meters, delta_seconds)
+fn sample_slot(
+    slot: &SlotData,
+    tile_meters: f64,
+    position: [f64; 2],
+    delta_seconds: f64,
+) -> FieldSample {
+    sample_slot_taps(
+        slot,
+        &slot_taps(tile_meters, position),
+        tile_meters,
+        delta_seconds,
+    )
 }
 
 /// The four half-texel taps (texel indices and bilinear weights) of a field
@@ -869,7 +947,12 @@ fn slot_taps(tile_meters: f64, position: [f64; 2]) -> SlotTaps {
                 row(j1) + i0 as usize,
                 row(j1) + i1 as usize,
             ],
-            [(1.0 - fx) * (1.0 - fy), fx * (1.0 - fy), (1.0 - fx) * fy, fx * fy],
+            [
+                (1.0 - fx) * (1.0 - fy),
+                fx * (1.0 - fy),
+                (1.0 - fx) * fy,
+                fx * fy,
+            ],
         )
     };
     [
@@ -880,7 +963,12 @@ fn slot_taps(tile_meters: f64, position: [f64; 2]) -> SlotTaps {
     ]
 }
 
-fn sample_slot_taps(slot: &SlotData, taps: &SlotTaps, tile_meters: f64, delta_seconds: f64) -> FieldSample {
+fn sample_slot_taps(
+    slot: &SlotData,
+    taps: &SlotTaps,
+    tile_meters: f64,
+    delta_seconds: f64,
+) -> FieldSample {
     let step = tile_meters / GRID as f64;
     let read = |field: &[f32]| {
         taps.map(|(index, weight)| {
@@ -898,7 +986,10 @@ fn sample_slot_taps(slot: &SlotData, taps: &SlotTaps, tile_meters: f64, delta_se
     let mean = |v: [f64; 4]| 0.25 * (v[0] + v[1] + v[2] + v[3]);
     FieldSample {
         height: mean(height),
-        slope: [(height[0] - height[1]) / step, (height[2] - height[3]) / step],
+        slope: [
+            (height[0] - height[1]) / step,
+            (height[2] - height[3]) / step,
+        ],
         velocity: mean(velocity),
         displacement: [mean(dx), mean(dz)],
         jacobian: [
@@ -950,13 +1041,25 @@ fn sample_slots_smooth(
     };
     FieldSample {
         height,
-        slope: std::array::from_fn(|i| catmull_rom(p0.slope[i], p1.slope[i], p2.slope[i], p3.slope[i])),
+        slope: std::array::from_fn(|i| {
+            catmull_rom(p0.slope[i], p1.slope[i], p2.slope[i], p3.slope[i])
+        }),
         velocity,
         displacement: std::array::from_fn(|i| {
-            catmull_rom(p0.displacement[i], p1.displacement[i], p2.displacement[i], p3.displacement[i])
+            catmull_rom(
+                p0.displacement[i],
+                p1.displacement[i],
+                p2.displacement[i],
+                p3.displacement[i],
+            )
         }),
         jacobian: std::array::from_fn(|i| {
-            catmull_rom(p0.jacobian[i], p1.jacobian[i], p2.jacobian[i], p3.jacobian[i])
+            catmull_rom(
+                p0.jacobian[i],
+                p1.jacobian[i],
+                p2.jacobian[i],
+                p3.jacobian[i],
+            )
         }),
     }
 }
@@ -965,7 +1068,9 @@ fn sample_slots_smooth(
 /// moving forward finds its grids ready. Exits when the surface is dropped.
 fn prefetch_worker(shared: std::sync::Weak<SurfaceShared>) {
     loop {
-        let Some(surface) = shared.upgrade() else { return };
+        let Some(surface) = shared.upgrade() else {
+            return;
+        };
         let frontier = surface.frontier.load(std::sync::atomic::Ordering::Relaxed);
         if frontier != i64::MIN {
             for key in frontier + 1..=frontier + PREFETCH_STEPS {
@@ -1076,7 +1181,10 @@ impl CpuSurface {
             .spawn(move || prefetch_worker(weak))
             .expect("spawn ocean CPU FFT worker");
         let k = band_wavenumbers(h0);
-        Self { shared, wavenumbers: [k[0], k[1], k[SWELL_CASCADE]] }
+        Self {
+            shared,
+            wavenumbers: [k[0], k[1], k[SWELL_CASCADE]],
+        }
     }
 
     fn cascades(&self) -> &[CpuCascade] {
@@ -1085,7 +1193,10 @@ impl CpuSurface {
 
     /// Asks the prefetch worker for lattice steps up to `key`.
     fn request(&self, key: i64) {
-        let previous = self.shared.frontier.fetch_max(key, std::sync::atomic::Ordering::Relaxed);
+        let previous = self
+            .shared
+            .frontier
+            .fetch_max(key, std::sync::atomic::Ordering::Relaxed);
         if key > previous {
             let (flag, condvar) = &self.shared.wake;
             *flag.lock().unwrap() = true;
@@ -1128,7 +1239,12 @@ impl CpuSurface {
     /// velocity is -dD/dt), by a central difference across 4 ms of the
     /// smooth field: continuous in time, so whatever follows it (the ship's
     /// anchor, the swimmer's drift) neither steps nor kinks every 0.1 s.
-    fn displacement_and_rate(&self, label: [f64; 2], time: f64, storm_intensity: f32) -> ([f64; 2], [f64; 2]) {
+    fn displacement_and_rate(
+        &self,
+        label: [f64; 2],
+        time: f64,
+        storm_intensity: f32,
+    ) -> ([f64; 2], [f64; 2]) {
         const HALF_SPAN_SECONDS: f64 = 0.002;
         let scales = [
             1.0,
@@ -1159,9 +1275,16 @@ impl CpuSurface {
     ) -> CpuSample {
         let (u, v) = anchor_axes(direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let target = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
+        let target = [
+            radius_meters * dot(u, direction),
+            radius_meters * dot(v, direction),
+        ];
         let (sample, _) = self.sample_at(target, time, storm_intensity);
-        CpuSample { axis_u: u, axis_v: v, ..sample }
+        CpuSample {
+            axis_u: u,
+            axis_v: v,
+            ..sample
+        }
     }
 
     /// Horizontal velocity (planet frame, m/s) of the water drawn at
@@ -1178,7 +1301,10 @@ impl CpuSurface {
     ) -> [f64; 3] {
         let (u, v) = anchor_axes(direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let target = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
+        let target = [
+            radius_meters * dot(u, direction),
+            radius_meters * dot(v, direction),
+        ];
         let (_, label) = self.sample_at(target, time, storm_intensity);
         let (_, d_rate) = self.displacement_and_rate(label, time, storm_intensity);
         let rate = [-d_rate[0], -d_rate[1]];
@@ -1197,7 +1323,10 @@ impl CpuSurface {
     ) -> [f64; 2] {
         let (u, v) = anchor_axes(direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let target = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
+        let target = [
+            radius_meters * dot(u, direction),
+            radius_meters * dot(v, direction),
+        ];
         self.sample_at(target, time, storm_intensity).1
     }
 
@@ -1222,7 +1351,10 @@ impl CpuSurface {
         let rate = [-d_rate[0], -d_rate[1]];
         // The drawn surface is label - D.
         let drawn = [label[0] - now[0], label[1] - now[1]];
-        let here = [radius_meters * dot(u, direction), radius_meters * dot(v, direction)];
+        let here = [
+            radius_meters * dot(u, direction),
+            radius_meters * dot(v, direction),
+        ];
         let gap = [drawn[0] - here[0], drawn[1] - here[1]];
         (
             std::array::from_fn(|i| u[i] * rate[0] + v[i] * rate[1]),
@@ -1231,7 +1363,12 @@ impl CpuSurface {
     }
 
     /// `sample` at tangent-plane metres `target`; also returns the label point.
-    fn sample_at(&self, target: [f64; 2], time: f64, storm_intensity: f32) -> (CpuSample, [f64; 2]) {
+    fn sample_at(
+        &self,
+        target: [f64; 2],
+        time: f64,
+        storm_intensity: f32,
+    ) -> (CpuSample, [f64; 2]) {
         let swell_height = swell_height_meters(storm_intensity) as f64;
         // Wind (0) and mid (1) cascades at unit gain; the mid cascade's
         // distance fade is 1 within 600m of the camera, where CPU queries are.
@@ -1247,7 +1384,12 @@ impl CpuSurface {
                     let scales = [1.0, 1.0, swell_height * giant_wave_envelope(position, time)];
                     let bands: [FieldSample; 3] = std::array::from_fn(|i| {
                         let mut band = FieldSample::default();
-                        let sample = sample_slots_smooth(&slots[i], cascades[i].tile_meters, position, fraction);
+                        let sample = sample_slots_smooth(
+                            &slots[i],
+                            cascades[i].tile_meters,
+                            position,
+                            fraction,
+                        );
                         band.add_scaled(&sample, scales[i]);
                         band
                     });
@@ -1288,7 +1430,10 @@ impl CpuSurface {
                 let (lift, lift_slope, lift_rate) =
                     second_order(&[(k[0], bands[0]), (k[1], bands[1]), (k[2], bands[2])]);
                 let height = sample.height + lift;
-                let [hu, hv] = [sample.slope[0] + lift_slope[0], sample.slope[1] + lift_slope[1]];
+                let [hu, hv] = [
+                    sample.slope[0] + lift_slope[0],
+                    sample.slope[1] + lift_slope[1],
+                ];
                 (
                     CpuSample {
                         height,
@@ -1462,10 +1607,19 @@ impl OceanFft {
         }
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ocean fft params"),
-            contents: bytemuck::bytes_of(&Params { time: 0.0, blend: 1.0, pad: [0.0; 2], tile }),
+            contents: bytemuck::bytes_of(&Params {
+                time: 0.0,
+                blend: 1.0,
+                pad: [0.0; 2],
+                tile,
+            }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let spectrum = SpectrumState { from: h0.to_vec(), to: h0.to_vec(), blend: None };
+        let spectrum = SpectrumState {
+            from: h0.to_vec(),
+            to: h0.to_vec(),
+            blend: None,
+        };
         let h0 = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ocean fft h0"),
             contents: bytemuck::cast_slice(h0),
@@ -1586,7 +1740,10 @@ impl OceanFft {
                     entries: &[
                         wgpu::BindGroupEntry {
                             binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&mip_view(&field, level - 1)),
+                            resource: wgpu::BindingResource::TextureView(&mip_view(
+                                &field,
+                                level - 1,
+                            )),
                         },
                         wgpu::BindGroupEntry {
                             binding: 1,
@@ -1600,12 +1757,30 @@ impl OceanFft {
             label: Some("ocean fft bind group"),
             layout: &layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: h0.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: spec.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&mip_view(&field, 0)) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&curvature_view) },
-                wgpu::BindGroupEntry { binding: 5, resource: h0_from.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: h0.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: spec.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&mip_view(&field, 0)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&curvature_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: h0_from.as_entire_binding(),
+                },
             ],
         });
         Self {
@@ -1657,7 +1832,10 @@ impl OceanFft {
         ];
         let (u, v) = anchor_axes(camera_direction);
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let (cu, cv) = (radius_meters * dot(u, camera_direction), radius_meters * dot(v, camera_direction));
+        let (cu, cv) = (
+            radius_meters * dot(u, camera_direction),
+            radius_meters * dot(v, camera_direction),
+        );
         let wavenumbers = *self.wavenumbers.lock().unwrap();
         let mut cascade = [[0.0f32; 4]; CASCADES];
         for (c, entry) in cascade.iter_mut().enumerate() {
@@ -1673,7 +1851,12 @@ impl OceanFft {
             axis_u: [u[0] as f32, u[1] as f32, u[2] as f32, 0.0],
             axis_v: [v[0] as f32, v[1] as f32, v[2] as f32, 0.0],
             cascade,
-            gain: [gain, choppiness(), swell_height_meters(storm_intensity), f32::from_bits(self.time.load(std::sync::atomic::Ordering::Relaxed))],
+            gain: [
+                gain,
+                choppiness(),
+                swell_height_meters(storm_intensity),
+                f32::from_bits(self.time.load(std::sync::atomic::Ordering::Relaxed)),
+            ],
             second_order: [second_order_strength(), 0.0, cu as f32, cv as f32],
             edge_reference_direction: [
                 reference_direction[0],
@@ -1688,7 +1871,8 @@ impl OceanFft {
     }
 
     pub fn set_time(&self, queue: &wgpu::Queue, time: f32) {
-        self.time.store(time.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.time
+            .store(time.to_bits(), std::sync::atomic::Ordering::Relaxed);
         let blend = self.spectrum.lock().unwrap().weight(f64::from(time));
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&[time, blend]));
     }
@@ -1713,11 +1897,18 @@ impl OceanFft {
             .zip(&state.to)
             .map(|(a, b)| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * w))
             .collect();
-        let blend = SpectrumBlend { start: time, seconds };
+        let blend = SpectrumBlend {
+            start: time,
+            seconds,
+        };
         queue.write_buffer(&self.h0_from, 0, bytemuck::cast_slice(&from));
         queue.write_buffer(&self.h0, 0, bytemuck::cast_slice(&to));
         *self.wavenumbers.lock().unwrap() = band_wavenumbers(&to);
-        *state = SpectrumState { from: from.clone(), to: to.clone(), blend: Some(blend) };
+        *state = SpectrumState {
+            from: from.clone(),
+            to: to.clone(),
+            blend: Some(blend),
+        };
         (from, to, blend)
     }
 
@@ -1730,22 +1921,22 @@ impl OceanFft {
         pass.set_bind_group(0, &self.bind_group, &[]);
         let groups = (GRID / 8) as u32;
         if mask & 1 != 0 {
-        pass.set_pipeline(&self.evolve);
-        pass.dispatch_workgroups(groups, groups, CASCADES as u32);
+            pass.set_pipeline(&self.evolve);
+            pass.dispatch_workgroups(groups, groups, CASCADES as u32);
         }
         if mask & 2 != 0 {
-        pass.set_pipeline(&self.rows);
-        pass.dispatch_workgroups(WORKGROUPS_PER_LINE_PASS, FFT_ARRAYS, 1);
+            pass.set_pipeline(&self.rows);
+            pass.dispatch_workgroups(WORKGROUPS_PER_LINE_PASS, FFT_ARRAYS, 1);
         }
         if mask & 4 != 0 {
-        pass.set_pipeline(&self.cols);
-        pass.dispatch_workgroups(WORKGROUPS_PER_LINE_PASS, FFT_ARRAYS, 1);
+            pass.set_pipeline(&self.cols);
+            pass.dispatch_workgroups(WORKGROUPS_PER_LINE_PASS, FFT_ARRAYS, 1);
         }
         if mask & 8 != 0 {
-        pass.set_pipeline(&self.assemble);
-        pass.dispatch_workgroups(groups, groups, CASCADES as u32);
-        pass.set_pipeline(&self.curvature);
-        pass.dispatch_workgroups(groups, groups, 1);
+            pass.set_pipeline(&self.assemble);
+            pass.dispatch_workgroups(groups, groups, CASCADES as u32);
+            pass.set_pipeline(&self.curvature);
+            pass.dispatch_workgroups(groups, groups, 1);
         }
         drop(pass);
         if mask & 16 != 0 {
@@ -1804,7 +1995,11 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn read_field(device: &wgpu::Device, queue: &wgpu::Queue, fft: &OceanFft) -> Vec<[f32; 4]> {
+    pub(crate) fn read_field(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        fft: &OceanFft,
+    ) -> Vec<[f32; 4]> {
         let row = (GRID * 8) as u32;
         let bytes = row as u64 * GRID as u64 * CASCADES as u64;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1828,13 +2023,22 @@ pub(crate) mod tests {
         );
         queue.submit(Some(encoder.finish()));
         let (tx, rx) = std::sync::mpsc::channel();
-        readback.slice(..).map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
         wait(device);
         rx.recv().unwrap().unwrap();
         let data = readback.slice(..).get_mapped_range();
         bytemuck::cast_slice::<u8, u16>(&data)
             .chunks(4)
-            .map(|t| [f16_to_f32(t[0]), f16_to_f32(t[1]), f16_to_f32(t[2]), f16_to_f32(t[3])])
+            .map(|t| {
+                [
+                    f16_to_f32(t[0]),
+                    f16_to_f32(t[1]),
+                    f16_to_f32(t[2]),
+                    f16_to_f32(t[3]),
+                ]
+            })
             .collect()
     }
 
@@ -1844,8 +2048,14 @@ pub(crate) mod tests {
         let (n_idx, m_idx) = (3i32, 5i32);
         let mut h0 = vec![[0.0f32; 4]; CASCADES * GRID * GRID];
         let amp = 0.25f32;
-        let (x, y) = ((GRID as i32 / 2 + n_idx) as usize, (GRID as i32 / 2 + m_idx) as usize);
-        let (mx, my) = ((GRID as i32 / 2 - n_idx) as usize, (GRID as i32 / 2 - m_idx) as usize);
+        let (x, y) = (
+            (GRID as i32 / 2 + n_idx) as usize,
+            (GRID as i32 / 2 + m_idx) as usize,
+        );
+        let (mx, my) = (
+            (GRID as i32 / 2 - n_idx) as usize,
+            (GRID as i32 / 2 - m_idx) as usize,
+        );
         // Cascade 0: both +k and -k carry amplitude `amp` (real).
         h0[y * GRID + x] = [amp, 0.0, amp, 0.0];
         h0[my * GRID + mx] = [amp, 0.0, amp, 0.0];
@@ -1860,8 +2070,16 @@ pub(crate) mod tests {
         let (kx, kz) = (n_idx as f32 * dk, m_idx as f32 * dk);
         let kl = (kx * kx + kz * kz).sqrt();
         let mut max_err = 0.0f32;
-        for &(px, py) in &[(0usize, 0usize), (17, 40), (101, 7), (200, 250), (255, 255), (128, 129)] {
-            let phase = std::f32::consts::TAU * (n_idx as f32 * px as f32 + m_idx as f32 * py as f32)
+        for &(px, py) in &[
+            (0usize, 0usize),
+            (17, 40),
+            (101, 7),
+            (200, 250),
+            (255, 255),
+            (128, 129),
+        ] {
+            let phase = std::f32::consts::TAU
+                * (n_idx as f32 * px as f32 + m_idx as f32 * py as f32)
                 / GRID as f32;
             // h = 2*(2A) cos ; Dx = 4A (kx/kl) sin ; Dz likewise ; S = -4A k sin.
             let expected = [
@@ -1896,7 +2114,13 @@ pub(crate) mod tests {
             wait(&device);
             start.elapsed().as_secs_f64() * 10.0
         };
-        for (n, m) in [("none", 0), ("evolve", 1), ("rows", 2), ("cols", 4), ("assemble", 8)] {
+        for (n, m) in [
+            ("none", 0),
+            ("evolve", 1),
+            ("rows", 2),
+            ("cols", 4),
+            ("assemble", 8),
+        ] {
             run_mask(m);
             eprintln!("pass {n}: {:.3} ms", run_mask(m));
         }
@@ -1939,12 +2163,22 @@ pub(crate) mod tests {
         let field = read_field(&device, &queue, &fft);
         for (index, layer) in [(0usize, 0usize), (1, 1), (2, SWELL_CASCADE)] {
             let (mut max_err, mut max_h) = (0.0f64, 0.0f64);
-            for &(i, j) in &[(0usize, 0usize), (5, 9), (100, 200), (255, 255), (128, 64), (17, 240), (77, 3)] {
+            for &(i, j) in &[
+                (0usize, 0usize),
+                (5, 9),
+                (100, 200),
+                (255, 255),
+                (128, 64),
+                (17, 240),
+                (77, 3),
+            ] {
                 let gpu = field[layer * GRID * GRID + j * GRID + i][0] as f64;
                 max_err = max_err.max((gpu - cpu.texel(index, i, j, time)).abs());
                 max_h = max_h.max(gpu.abs());
             }
-            eprintln!("layer {layer}: cpu vs gpu texel max error {max_err:.5} m (max height {max_h:.3})");
+            eprintln!(
+                "layer {layer}: cpu vs gpu texel max error {max_err:.5} m (max height {max_h:.3})"
+            );
             assert!(max_err < 0.02, "layer {layer} max error {max_err}");
         }
     }
@@ -1955,7 +2189,10 @@ pub(crate) mod tests {
     fn a_wind_change_blends_the_cpu_sea_from_the_old_spectrum_to_the_new() {
         let calm = generate_h0(1, 8.0, WIND_DIRECTION, 80_000.0);
         let gale = generate_h0(1, 30.0, WIND_DIRECTION, 80_000.0);
-        let blend = SpectrumBlend { start: 10.0, seconds: 4.0 };
+        let blend = SpectrumBlend {
+            start: 10.0,
+            seconds: 4.0,
+        };
         let changing = CpuSurface::blending(&calm, &gale, Some(blend));
         let (before, after) = (CpuSurface::new(&calm), CpuSurface::new(&gale));
         let texels = [(5usize, 9usize), (100, 200), (128, 64), (17, 240)];
@@ -1965,7 +2202,8 @@ pub(crate) mod tests {
         }
         let differs = texels.iter().any(|&(i, j)| {
             let mid = changing.texel(0, i, j, 12.0);
-            (mid - before.texel(0, i, j, 12.0)).abs() > 1e-3 && (mid - after.texel(0, i, j, 12.0)).abs() > 1e-3
+            (mid - before.texel(0, i, j, 12.0)).abs() > 1e-3
+                && (mid - after.texel(0, i, j, 12.0)).abs() > 1e-3
         });
         assert!(differs, "half way the sea is neither spectrum");
         assert_eq!(blend.weight(10.0), 0.0);
@@ -1992,7 +2230,14 @@ pub(crate) mod tests {
         let field = read_field(&device, &queue, &fft);
         for (index, layer) in [(0usize, 0usize), (1, 1), (2, SWELL_CASCADE)] {
             let mut max_err = 0.0f64;
-            for &(i, j) in &[(0usize, 0usize), (5, 9), (100, 200), (255, 255), (128, 64), (17, 240)] {
+            for &(i, j) in &[
+                (0usize, 0usize),
+                (5, 9),
+                (100, 200),
+                (255, 255),
+                (128, 64),
+                (17, 240),
+            ] {
                 let gpu = field[layer * GRID * GRID + j * GRID + i][0] as f64;
                 max_err = max_err.max((gpu - cpu.texel(index, i, j, time)).abs());
             }
@@ -2007,8 +2252,17 @@ pub(crate) mod tests {
         let grid = cpu.cascades()[2].transform(0.0);
         let n = grid[0].len() as f64;
         let mean = grid[0].iter().map(|&h| h as f64).sum::<f64>() / n;
-        let sigma = (grid[0].iter().map(|&h| (h as f64 - mean).powi(2)).sum::<f64>() / n).sqrt();
-        eprintln!("swell layer Hs {:.4} m, modes {}", 4.0 * sigma, cpu.cascades()[2].modes.len());
+        let sigma = (grid[0]
+            .iter()
+            .map(|&h| (h as f64 - mean).powi(2))
+            .sum::<f64>()
+            / n)
+            .sqrt();
+        eprintln!(
+            "swell layer Hs {:.4} m, modes {}",
+            4.0 * sigma,
+            cpu.cascades()[2].modes.len()
+        );
         assert!((4.0 * sigma - 1.0).abs() < 0.01, "Hs {}", 4.0 * sigma);
         assert!(swell_height_meters(0.0) > 0.0);
     }
@@ -2022,7 +2276,12 @@ pub(crate) mod tests {
         let key = (time / LATTICE_SECONDS).round() as i64;
         let delta = time - key as f64 * LATTICE_SECONDS;
         let [height, velocity, dx, dz] = cascade.transform(time);
-        let exact = SlotData { height, velocity, dx, dz };
+        let exact = SlotData {
+            height,
+            velocity,
+            dx,
+            dz,
+        };
         let mut worst = 0.0f64;
         let step = cascade.tile_meters / GRID as f64;
         for &(i, j) in &[(3usize, 7usize), (90, 12), (200, 150), (255, 0)] {
@@ -2056,7 +2315,12 @@ pub(crate) mod tests {
         for fraction in [0.25, 0.5, 0.75] {
             let [height, velocity, dx, dz] =
                 cascade.transform((key as f64 + fraction) * LATTICE_SECONDS);
-            let exact = SlotData { height, velocity, dx, dz };
+            let exact = SlotData {
+                height,
+                velocity,
+                dx,
+                dz,
+            };
             for &position in &positions {
                 let smooth = sample_slots_smooth(&here, cascade.tile_meters, position, fraction);
                 let fresh = sample_slot(&exact, cascade.tile_meters, position, 0.0);
@@ -2069,7 +2333,10 @@ pub(crate) mod tests {
             }
         }
         assert!(height_error < 0.002, "height {height_error}");
-        assert!(displacement_error < 0.005, "displacement {displacement_error}");
+        assert!(
+            displacement_error < 0.005,
+            "displacement {displacement_error}"
+        );
         // Across the lattice point at key + 1: position and speed agree.
         let next = window(key + 1);
         let tiny = 1.0e-4;
@@ -2102,12 +2369,16 @@ pub(crate) mod tests {
         let label = cpu.label_meters(direction, radius, 30.0, 1.0);
         let dt = 1.0 / 120.0;
         let drawn: Vec<[f64; 3]> = (0..240)
-            .map(|i| cpu.follow_label(label, direction, radius, 30.0 + i as f64 * dt, 1.0).1)
+            .map(|i| {
+                cpu.follow_label(label, direction, radius, 30.0 + i as f64 * dt, 1.0)
+                    .1
+            })
             .collect();
         let accel: Vec<f64> = drawn
             .windows(3)
             .map(|w| {
-                let a: [f64; 3] = std::array::from_fn(|k| (w[2][k] - 2.0 * w[1][k] + w[0][k]) / (dt * dt));
+                let a: [f64; 3] =
+                    std::array::from_fn(|k| (w[2][k] - 2.0 * w[1][k] + w[0][k]) / (dt * dt));
                 (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
             })
             .collect();
@@ -2115,7 +2386,10 @@ pub(crate) mod tests {
         sorted.sort_by(f64::total_cmp);
         let median = sorted[sorted.len() / 2];
         let worst = sorted[sorted.len() - 1];
-        assert!(worst < 3.0 * median.max(0.05), "acceleration spikes to {worst:.3} m/s2 against a median {median:.3}");
+        assert!(
+            worst < 3.0 * median.max(0.05),
+            "acceleration spikes to {worst:.3} m/s2 against a median {median:.3}"
+        );
     }
 
     #[test]
@@ -2126,12 +2400,20 @@ pub(crate) mod tests {
         let delta = time - key as f64 * LATTICE_SECONDS;
         let scale = swell_height_meters(storm) as f64;
         let chop = choppiness() as f64;
-        for label in [[10.0, 20.0], [333.3, -71.0], [1234.5, 876.5], [-40.0, 512.25]] {
+        for label in [
+            [10.0, 20.0],
+            [333.3, -71.0],
+            [1234.5, 876.5],
+            [-40.0, 512.25],
+        ] {
             // Forward-map a label exactly as the shader displaces a vertex.
             let at = |p: [f64; 2]| {
                 let mut total = FieldSample::default();
                 for (cascade, weight) in cpu.cascades().iter().zip([1.0, 1.0, scale]) {
-                    total.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, p, delta), weight);
+                    total.add_scaled(
+                        &sample_slot(&cascade.slot(key), cascade.tile_meters, p, delta),
+                        weight,
+                    );
                 }
                 total
             };
@@ -2165,13 +2447,20 @@ pub(crate) mod tests {
                 .zip(cpu.wavenumbers)
                 .map(|((cascade, weight), k)| {
                     let mut band = FieldSample::default();
-                    band.add_scaled(&sample_slot(&cascade.slot(key), cascade.tile_meters, label, delta), weight);
+                    band.add_scaled(
+                        &sample_slot(&cascade.slot(key), cascade.tile_meters, label, delta),
+                        weight,
+                    );
                     (k, band)
                 })
                 .collect();
             let expected = field.height + second_order(&bands).0;
             assert!(miss < 0.02, "{miss}");
-            assert!((sample.height - expected).abs() < 0.005, "{} vs {expected}", sample.height);
+            assert!(
+                (sample.height - expected).abs() < 0.005,
+                "{} vs {expected}",
+                sample.height
+            );
         }
     }
 
@@ -2201,7 +2490,11 @@ pub(crate) mod tests {
             let stokes = strength * 0.5 * k * a * a * (2.0 * k * x).cos();
             let slope = -strength * k * k * a * a * (2.0 * k * x).sin();
             assert!((lift - stokes).abs() < 1e-9, "{lift} vs {stokes}");
-            assert!((gradient[0] - slope).abs() < 1e-9, "{} vs {slope}", gradient[0]);
+            assert!(
+                (gradient[0] - slope).abs() < 1e-9,
+                "{} vs {slope}",
+                gradient[0]
+            );
             mean += lift / steps as f64;
         }
         assert!(mean.abs() < 1e-9, "sea level moved {mean}");
@@ -2229,7 +2522,8 @@ pub(crate) mod tests {
             for i in 0..=80 {
                 let x = centre + 8.0 * (i as f64 / 80.0 - 0.5);
                 let swell = one_wave(k_swell, a_swell, x);
-                let both = second_order(&[(k_swell, swell), (k_chop, one_wave(k_chop, a_chop, x))]).0;
+                let both =
+                    second_order(&[(k_swell, swell), (k_chop, one_wave(k_chop, a_chop, x))]).0;
                 let chop_part = both - second_order(&[(k_swell, swell)]).0;
                 low = low.min(chop_part);
                 high = high.max(chop_part);
@@ -2238,9 +2532,17 @@ pub(crate) mod tests {
         };
         let (crest, trough) = (chop_range(0.0), chop_range(150.0));
         let own = second_order_strength() as f64 * k_chop * a_chop * a_chop;
-        eprintln!("chop second-order range: crest {crest:.4} m, trough {trough:.4} m, own Stokes {own:.4} m");
-        assert!((crest - trough).abs() < 1e-3, "crest {crest} vs trough {trough}");
-        assert!(crest <= own + 1e-3, "{crest} is more than the chop's own Stokes term {own}");
+        eprintln!(
+            "chop second-order range: crest {crest:.4} m, trough {trough:.4} m, own Stokes {own:.4} m"
+        );
+        assert!(
+            (crest - trough).abs() < 1e-3,
+            "crest {crest} vs trough {trough}"
+        );
+        assert!(
+            crest <= own + 1e-3,
+            "{crest} is more than the chop's own Stokes term {own}"
+        );
     }
 
     #[test]
@@ -2254,9 +2556,17 @@ pub(crate) mod tests {
         let start = std::time::Instant::now();
         for i in 0..n {
             let a = i as f64 * 1.0e-6;
-            std::hint::black_box(cpu.sample([0.6 + a, 0.8, a], r, time + (i % 3) as f64 * 0.01, 1.0));
+            std::hint::black_box(cpu.sample(
+                [0.6 + a, 0.8, a],
+                r,
+                time + (i % 3) as f64 * 0.01,
+                1.0,
+            ));
         }
-        eprintln!("CPU water sample: {:.2} us each", start.elapsed().as_secs_f64() * 1e6 / n as f64);
+        eprintln!(
+            "CPU water sample: {:.2} us each",
+            start.elapsed().as_secs_f64() * 1e6 / n as f64
+        );
     }
 
     /// The drawn mesh, as the vertex shader places it: label points on a
@@ -2343,7 +2653,10 @@ pub(crate) mod tests {
         }
         let percent = 100.0 * inverted as f64 / cells as f64;
         eprintln!("{inverted} of {cells} drawn cells inside out ({percent:.4}%)");
-        assert!(percent < 0.005, "{percent}% of the drawn sea turned inside out");
+        assert!(
+            percent < 0.005,
+            "{percent}% of the drawn sea turned inside out"
+        );
     }
 
     #[test]
@@ -2364,14 +2677,23 @@ pub(crate) mod tests {
                 }
             }
             slopes.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let q = |p: f64| slopes[((slopes.len() - 1) as f64 * p) as usize].atan().to_degrees();
+            let q = |p: f64| {
+                slopes[((slopes.len() - 1) as f64 * p) as usize]
+                    .atan()
+                    .to_degrees()
+            };
             let over = |degrees: f64| {
                 let t = degrees.to_radians().tan();
                 100.0 * slopes.iter().filter(|&&s| s > t).count() as f64 / slopes.len() as f64
             };
             eprintln!(
                 "budget {budget:.2}: inverted {:.4}% | slope p50 {:.1} p99 {:.1} p99.99 {:.1} deg, over 45 {:.4}%, over 60 {:.5}%",
-                100.0 * inverted as f64 / total as f64, q(0.5), q(0.99), q(0.9999), over(45.0), over(60.0)
+                100.0 * inverted as f64 / total as f64,
+                q(0.5),
+                q(0.99),
+                q(0.9999),
+                over(45.0),
+                over(60.0)
             );
         }
     }
@@ -2380,14 +2702,26 @@ pub(crate) mod tests {
     fn legacy_fold_scale_bounds_the_frozen_scale_determinant() {
         let det = |j: [f64; 4], f: f64| (1.0 + f * j[0]) * (1.0 + f * j[1]) - f * f * j[2] * j[3];
         // Gentle, one-axis cusp, crossing crests compressing both ways, shear.
-        for j in [[-0.3, -0.1, 0.0, 0.0], [-1.6, 0.2, 0.1, 0.1], [-1.2, -1.2, 0.3, 0.3], [-0.9, -0.9, -0.8, 0.8]] {
+        for j in [
+            [-0.3, -0.1, 0.0, 0.0],
+            [-1.6, 0.2, 0.1, 0.1],
+            [-1.2, -1.2, 0.3, 0.3],
+            [-0.9, -0.9, -0.8, 0.8],
+        ] {
             let f = fold_scale(j);
             assert!((0.0..=1.0).contains(&f));
-            assert!(det(j, f) >= MIN_JACOBIAN - 1.0e-9, "{j:?} f {f} det {}", det(j, f));
+            assert!(
+                det(j, f) >= MIN_JACOBIAN - 1.0e-9,
+                "{j:?} f {f} det {}",
+                det(j, f)
+            );
             if det(j, 1.0) >= MIN_JACOBIAN {
                 assert_eq!(f, 1.0, "left alone when it does not fold");
             } else {
-                assert!((det(j, f) - MIN_JACOBIAN).abs() < 1.0e-9, "held exactly at the floor");
+                assert!(
+                    (det(j, f) - MIN_JACOBIAN).abs() < 1.0e-9,
+                    "held exactly at the floor"
+                );
             }
         }
     }
@@ -2416,7 +2750,9 @@ pub(crate) mod tests {
     #[test]
     fn the_shader_holds_crests_at_the_same_pinch() {
         let shader = include_str!("shared_planet.wgsl");
-        assert!(shader.contains(&format!("const OCEAN_FFT_MIN_JACOBIAN: f32 = {MIN_JACOBIAN:?};")));
+        assert!(shader.contains(&format!(
+            "const OCEAN_FFT_MIN_JACOBIAN: f32 = {MIN_JACOBIAN:?};"
+        )));
         let budget = format!("const OCEAN_FFT_CHOP_BUDGET: f32 = {CHOP_STEEPNESS_BUDGET:?};");
         assert!(shader.contains(&budget));
         assert!(include_str!("ocean_spray_update.wgsl").contains(&budget));
@@ -2430,17 +2766,27 @@ pub(crate) mod tests {
         assert_eq!(stormed_swell_height(8.0, 0.0), 8.0);
         assert!((stormed_swell_height(8.0, 1.0) - 14.4).abs() < 1e-4);
         assert!((stormed_swell_height(5.0, 1.0) - 9.0).abs() < 1e-4);
-        assert!((stormed_swell_height(30.0, 1.0) - 38.0).abs() < 1e-4, "not 54m");
+        assert!(
+            (stormed_swell_height(30.0, 1.0) - 38.0).abs() < 1e-4,
+            "not 54m"
+        );
         assert!(stormed_swell_height(30.0, 0.5) < 38.0);
     }
 
     #[test]
     fn bigger_swell_is_longer_swell() {
-        assert_eq!(swell_wavelength_for_height(4.0), 170.0, "small swell keeps the floor");
+        assert_eq!(
+            swell_wavelength_for_height(4.0),
+            170.0,
+            "small swell keeps the floor"
+        );
         assert_eq!(swell_wavelength_for_height(16.0), 624.0);
         assert_eq!(swell_wavelength_for_height(30.0), 1170.0);
         // A fully developed sea's steepness, well under breaking (1/7).
-        assert!(DEFAULT_SWELL_HEIGHT_METERS / swell_wavelength_for_height(DEFAULT_SWELL_HEIGHT_METERS) < 1.0 / 35.0);
+        assert!(
+            DEFAULT_SWELL_HEIGHT_METERS / swell_wavelength_for_height(DEFAULT_SWELL_HEIGHT_METERS)
+                < 1.0 / 35.0
+        );
         // Several waves per swell tile even at the largest.
         assert!(TILE_METERS[SWELL_CASCADE] / swell_wavelength_for_height(30.0) > 5.0);
     }
@@ -2450,12 +2796,20 @@ pub(crate) mod tests {
         let h0 = generate_h0(1, 0.0, WIND_DIRECTION, 80_000.0);
         assert!(h0.iter().flatten().all(|value| value.is_finite()));
         let wind_layers = &h0[..WIND_CASCADES * GRID * GRID];
-        assert!(wind_layers.iter().flatten().all(|&value| value == 0.0), "no wind sea");
+        assert!(
+            wind_layers.iter().flatten().all(|&value| value == 0.0),
+            "no wind sea"
+        );
         let swell = &h0[SWELL_CASCADE * GRID * GRID..];
-        assert!(swell.iter().flatten().any(|&value| value != 0.0), "swell remains");
+        assert!(
+            swell.iter().flatten().any(|&value| value != 0.0),
+            "swell remains"
+        );
         let cpu = CpuSurface::new(&h0);
         let sample = cpu.sample([0.6, 0.8, 0.0], 4_000_000.0, 12.0, 0.0);
-        assert!(sample.height.is_finite() && sample.velocity.is_finite() && sample.fold.is_finite());
+        assert!(
+            sample.height.is_finite() && sample.velocity.is_finite() && sample.fold.is_finite()
+        );
         assert!(sample.slope_uv.iter().all(|value| value.is_finite()));
     }
 
@@ -2470,7 +2824,10 @@ pub(crate) mod tests {
         for ahead in 1..=PREFETCH_STEPS {
             for cascade in cpu.cascades() {
                 while cascade.cached(key + ahead).is_none() {
-                    assert!(std::time::Instant::now() < deadline, "step +{ahead} never prefetched");
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "step +{ahead} never prefetched"
+                    );
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
             }
@@ -2498,7 +2855,11 @@ pub(crate) mod tests {
         let elapsed = start.elapsed().as_secs_f64();
         // 1s of steps spans ~10 lattice steps per look-ahead offset, but the
         // offsets revisit each other's steps: at most ~40 distinct keys.
-        eprintln!("transform (all CPU cascades) {:.2} ms; 180 look-ahead samples {:.1} ms", one_step * 1e3, elapsed * 1e3);
+        eprintln!(
+            "transform (all CPU cascades) {:.2} ms; 180 look-ahead samples {:.1} ms",
+            one_step * 1e3,
+            elapsed * 1e3
+        );
         assert!(elapsed < one_step * 45.0, "{elapsed} vs {one_step}");
     }
 }
@@ -2529,13 +2890,20 @@ mod jacobian_study {
         }
         // One spot, an hour in one-second steps.
         for t in 0..3600 {
-            over_time_full += (giant_wave_envelope([1234.0, -5678.0], t as f64) >= GIANT_WAVE_GAIN - 0.01) as u32;
+            over_time_full +=
+                (giant_wave_envelope([1234.0, -5678.0], t as f64) >= GIANT_WAVE_GAIN - 0.01) as u32;
         }
         let fraction = full as f64 / total as f64;
-        assert!((0.08..0.12).contains(&fraction), "full-gain fraction {fraction}");
+        assert!(
+            (0.08..0.12).contains(&fraction),
+            "full-gain fraction {fraction}"
+        );
         assert!(calm as f64 / total as f64 > 0.8);
         // A single spot over an hour is few samples of slow patches: loose bound.
-        assert!((0.02..0.25).contains(&(over_time_full as f64 / 3600.0)), "{over_time_full}");
+        assert!(
+            (0.02..0.25).contains(&(over_time_full as f64 / 3600.0)),
+            "{over_time_full}"
+        );
     }
 
     /// The WGSL envelope carries the same constants as the Rust one.
@@ -2549,11 +2917,20 @@ mod jacobian_study {
             assert!(source.contains("return 1.0 + smoothstep(1.35, 1.85, n);"));
             for (wavelength, _, speed, phase) in GIANT_TERMS {
                 let k = std::f64::consts::TAU / wavelength;
-                assert!(source.contains(&format!("{:.9e} * dot(position", k)), "{wavelength}");
-                assert!(source.contains(&format!("{:.9e} * seconds + {phase}", k * speed)), "{wavelength}");
+                assert!(
+                    source.contains(&format!("{:.9e} * dot(position", k)),
+                    "{wavelength}"
+                );
+                assert!(
+                    source.contains(&format!("{:.9e} * seconds + {phase}", k * speed)),
+                    "{wavelength}"
+                );
             }
         }
-        assert_eq!((GIANT_RAMP_LOW, GIANT_RAMP_HIGH, GIANT_WAVE_GAIN), (1.35, 1.85, 2.0));
+        assert_eq!(
+            (GIANT_RAMP_LOW, GIANT_RAMP_HIGH, GIANT_WAVE_GAIN),
+            (1.35, 1.85, 2.0)
+        );
     }
 
     #[test]
@@ -2584,13 +2961,20 @@ mod jacobian_study {
             }
             j.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let p = |q: f32| j[((j.len() - 1) as f32 * q) as usize];
-            let hs: Vec<f32> = (0..GRID * GRID).map(|i| field[c * GRID * GRID + i][0]).collect();
+            let hs: Vec<f32> = (0..GRID * GRID)
+                .map(|i| field[c * GRID * GRID + i][0])
+                .collect();
             let mean = hs.iter().sum::<f32>() / hs.len() as f32;
-            let std = (hs.iter().map(|h| (h - mean) * (h - mean)).sum::<f32>() / hs.len() as f32).sqrt();
+            let std =
+                (hs.iter().map(|h| (h - mean) * (h - mean)).sum::<f32>() / hs.len() as f32).sqrt();
             eprintln!("cascade {c}: height std {std:.4} m");
             eprintln!(
                 "cascade {c}: J min {:.3} p0.1 {:.3} p1 {:.3} p5 {:.3} p50 {:.3}",
-                j[0], p(0.001), p(0.01), p(0.05), p(0.5)
+                j[0],
+                p(0.001),
+                p(0.01),
+                p(0.05),
+                p(0.5)
             );
         }
     }

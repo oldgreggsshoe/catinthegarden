@@ -229,7 +229,217 @@ pub fn separate_accesses(
     Ok(())
 }
 
+/// Merge coincident/collinear fork prefixes before they acquire independent
+/// heights. Filleting each arm separately can leave a shared straight approach
+/// represented twice, even when the later curves separate correctly.
+fn share_prefixes(
+    aligned: &mut Aligned,
+    frame: &Frame,
+    terrain: &impl Survey,
+) -> Result<(), String> {
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    let region = &mut aligned.region;
+    let points: Vec<_> = region
+        .nodes
+        .iter()
+        .map(|n| {
+            let d = DVec3::from_array(n.direction);
+            DVec2::new(d.dot(frame.across), d.dot(frame.forward)) * (frame.radius / d.dot(frame.up))
+        })
+        .collect();
+    let mut unique = BTreeMap::new();
+    let aliases: Vec<_> = points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            *unique
+                .entry((
+                    (p.x * 10000.0).round() as i64,
+                    (p.y * 10000.0).round() as i64,
+                ))
+                .or_insert(i)
+        })
+        .collect();
+    for e in &mut region.edges {
+        e.a = aliases[e.a];
+        e.b = aliases[e.b];
+    }
+    region.edges.retain(|e| e.a != e.b);
+    let mut adjacent = vec![BTreeSet::new(); region.nodes.len()];
+    for (i, e) in region.edges.iter().enumerate() {
+        adjacent[e.a].insert(i);
+        adjacent[e.b].insert(i);
+    }
+    let mut queue: VecDeque<_> = (0..region.nodes.len()).collect();
+    while let Some(hub) = queue.pop_front() {
+        if terrain.cancelled() {
+            return Err("road generation superseded".into());
+        }
+        let arms: Vec<_> = adjacent[hub]
+            .iter()
+            .map(|&i| {
+                let e = &region.edges[i];
+                let end = if e.a == hub { e.b } else { e.a };
+                let delta = points[end] - points[hub];
+                (i, end, delta, delta.length())
+            })
+            .collect();
+        let mut shared = None;
+        'pair: for (i, a) in arms.iter().enumerate() {
+            for b in &arms[i + 1..] {
+                let (near, far) = if a.3 < b.3 { (a, b) } else { (b, a) };
+                if near.3 > 0.001
+                    && far.3 - near.3 > 0.001
+                    && near.2.dot(far.2) > 0.0
+                    && cross(near.2, far.2).abs() / far.3 < 0.0001
+                {
+                    shared = Some((far.0, near.1));
+                    break 'pair;
+                }
+            }
+        }
+        if let Some((id, end)) = shared {
+            let e = &mut region.edges[id];
+            if e.a == hub {
+                e.a = end;
+            } else {
+                e.b = end;
+            }
+            adjacent[hub].remove(&id);
+            adjacent[end].insert(id);
+            queue.push_back(hub);
+            queue.push_back(end);
+        }
+    }
+    // Drop duplicate edges and unused aliases, retaining terminal identities
+    // and remapping height preferences alongside the horizontal topology.
+    for e in &mut region.edges {
+        if e.a > e.b {
+            std::mem::swap(&mut e.a, &mut e.b);
+        }
+    }
+    region.edges.sort_by_key(|e| (e.a, e.b));
+    region.edges.dedup_by(|a, b| {
+        if (a.a, a.b) != (b.a, b.b) {
+            return false;
+        }
+        b.requires_undersea_tunnel |= a.requires_undersea_tunnel;
+        true
+    });
+    let mut used = vec![false; region.nodes.len()];
+    for e in &region.edges {
+        used[e.a] = true;
+        used[e.b] = true;
+    }
+    for i in &mut region.terminal_nodes {
+        *i = aliases[*i];
+        used[*i] = true;
+    }
+    let mut remap = vec![usize::MAX; region.nodes.len()];
+    let mut count = 0;
+    for (i, &keep) in used.iter().enumerate() {
+        if keep {
+            remap[i] = count;
+            count += 1;
+        }
+    }
+    let mut index = 0;
+    region.nodes.retain(|_| {
+        let keep = used[index];
+        index += 1;
+        keep
+    });
+    for e in &mut region.edges {
+        e.a = remap[e.a];
+        e.b = remap[e.b];
+    }
+    for i in &mut region.terminal_nodes {
+        *i = remap[*i];
+    }
+    aligned.seeds = aligned
+        .seeds
+        .iter()
+        .filter_map(|&(i, h)| {
+            let j = remap[aliases[i]];
+            (j != usize::MAX).then_some((j, h))
+        })
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .collect();
+    let mut degree = vec![0; count];
+    region.length_meters = 0.0;
+    for e in &region.edges {
+        degree[e.a] += 1;
+        degree[e.b] += 1;
+        let a = DVec3::from_array(region.nodes[e.a].direction);
+        let b = DVec3::from_array(region.nodes[e.b].direction);
+        region.length_meters += a.cross(b).length().atan2(a.dot(b)) * frame.radius;
+    }
+    region.junction_count = degree.iter().filter(|&&d| d > 2).count();
+    Ok(())
+}
+
+fn sharp_bend(region: &Region, frame: &Frame) -> bool {
+    let mut adjacent = vec![Vec::new(); region.nodes.len()];
+    for edge in &region.edges {
+        adjacent[edge.a].push(edge.b);
+        adjacent[edge.b].push(edge.a);
+    }
+    let point = |i: usize| {
+        let d = DVec3::from_array(region.nodes[i].direction);
+        DVec2::new(d.dot(frame.across), d.dot(frame.forward)) * (frame.radius / d.dot(frame.up))
+    };
+    adjacent.iter().enumerate().any(|(i, arms)| {
+        if region.terminal_nodes.contains(&i) {
+            return false;
+        }
+        let &[a, b] = arms.as_slice() else {
+            return false;
+        };
+        let (a, b) = (point(a) - point(i), point(b) - point(i));
+        a.length() > 0.001
+            && b.length() > 0.001
+            && a.normalize().dot(b.normalize()) > -(MAX_ANGLE + 0.001).cos()
+    })
+}
+
 pub fn align(
+    region: &Region,
+    radius: f64,
+    terrain: &impl Survey,
+    seeds: Option<&[f64]>,
+    target: f64,
+) -> Result<Aligned, String> {
+    let frame = Frame::new(road_network::direction(region.key, 0.5, 0.5), radius)?;
+    let mut aligned = align_once(region, radius, terrain, seeds, target)?;
+    // A former branch can become an ordinary bend when its duplicate arm is
+    // merged. Refit those new degree-two bends before profiles/meshes, rather
+    // than bypassing the mesh's drivable-angle rejection.
+    for _ in 0..2 {
+        if !sharp_bend(&aligned.region, &frame) {
+            return Ok(aligned);
+        }
+        let heights = seeds.map(|_| {
+            let mut heights: Vec<_> = aligned
+                .region
+                .nodes
+                .iter()
+                .map(|n| n.ground_meters)
+                .collect();
+            for &(i, h) in &aligned.seeds {
+                heights[i] = h;
+            }
+            heights
+        });
+        aligned = align_once(&aligned.region, radius, terrain, heights.as_deref(), target)?;
+    }
+    if sharp_bend(&aligned.region, &frame) {
+        return Err("shared trunk still has an unrounded bend".into());
+    }
+    Ok(aligned)
+}
+
+fn align_once(
     region: &Region,
     radius: f64,
     terrain: &impl Survey,
@@ -415,7 +625,7 @@ pub fn align(
             }
         }
     }
-    Ok(Aligned {
+    let mut aligned = Aligned {
         region: Region {
             key: region.key,
             village_count: region.village_count,
@@ -430,12 +640,101 @@ pub fn align(
         },
         seeds: fitted_seeds,
         minimum_radius: minimum,
-    })
+    };
+    share_prefixes(&mut aligned, &frame, terrain)?;
+    Ok(aligned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coincident_fork_prefix_is_one_trunk_before_fitting_heights() {
+        struct Flat;
+        impl Survey for Flat {
+            fn ground(&self, _: DVec3) -> Result<road_network::Ground, String> {
+                Ok(road_network::Ground {
+                    height: 1000.0,
+                    ocean: false,
+                })
+            }
+            fn villages(&self, _: planet_coretypes::TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(Vec::new())
+            }
+        }
+        use planet_coretypes::{CubeFace, TileKey};
+        let d = |x: f64, y: f64| DVec3::new(x, y, 4e6).normalize();
+        let mut region = Region {
+            key: TileKey {
+                face: CubeFace::PositiveZ,
+                level: 8,
+                x: 128,
+                y: 128,
+            },
+            nodes: [
+                (-200.0, 0.0),
+                (0.0, 0.0),
+                (212.0, 0.0),
+                (500.0, 0.0),
+                (212.0, 500.0),
+            ]
+            .into_iter()
+            .map(|(x, y)| Node {
+                direction: d(x, y).to_array(),
+                ground_meters: 1000.0,
+                ocean: false,
+            })
+            .collect(),
+            edges: [(0, 1), (1, 3), (1, 2), (2, 4)]
+                .into_iter()
+                .map(|(a, b)| RoadEdge {
+                    a,
+                    b,
+                    requires_undersea_tunnel: false,
+                })
+                .collect(),
+            terminals: Vec::new(),
+            terminal_nodes: Vec::new(),
+            village_count: 0,
+            junction_count: 1,
+            length_meters: 0.0,
+            construction_cost_proxy: 0.0,
+            lattice_survey_samples: 0,
+        };
+        // The old hub can become a 45-degree ordinary bend after merging.
+        region.nodes[0].direction = d(-200.0, -200.0).to_array();
+        let aligned = align(&region, 4e6, &Flat, None, 100.0).unwrap();
+        let frame = Frame::new(road_network::direction(region.key, 0.5, 0.5), 4e6).unwrap();
+        assert!(!sharp_bend(&aligned.region, &frame));
+        for i in 0..aligned.region.nodes.len() {
+            let o = DVec3::from_array(aligned.region.nodes[i].direction);
+            let arms: Vec<_> = aligned
+                .region
+                .edges
+                .iter()
+                .filter_map(|e| {
+                    let j = if e.a == i {
+                        e.b
+                    } else if e.b == i {
+                        e.a
+                    } else {
+                        return None;
+                    };
+                    let q = DVec3::from_array(aligned.region.nodes[j].direction);
+                    Some((q - o * q.dot(o)).normalize())
+                })
+                .collect();
+            for (a, u) in arms.iter().enumerate() {
+                for v in &arms[a + 1..] {
+                    assert!(
+                        u.dot(*v) < 0.999999,
+                        "duplicated horizontal trunk at node {i}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn right_angle_is_a_tangent_circle_not_a_cut_corner() {
         let (p, r) = fillet(

@@ -250,13 +250,7 @@ impl SunRenderer {
             pass.set_bind_group(2, &self.visibility_bind_group, &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
-        encoder.copy_buffer_to_buffer(
-            &self.visibility_output,
-            0,
-            target,
-            0,
-            SUN_VISIBILITY_BYTES,
-        );
+        encoder.copy_buffer_to_buffer(&self.visibility_output, 0, target, 0, SUN_VISIBILITY_BYTES);
     }
 
     pub fn resize_depth(&mut self, device: &wgpu::Device, depth_view: &wgpu::TextureView) {

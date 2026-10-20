@@ -49,10 +49,7 @@ pub fn enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
         !matches!(
-            std::env::var("PLANET_GUSTS")
-                .ok()
-                .as_deref()
-                .map(str::trim),
+            std::env::var("PLANET_GUSTS").ok().as_deref().map(str::trim),
             Some("0" | "off" | "false")
         )
     })

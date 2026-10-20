@@ -493,7 +493,12 @@ impl VillageRenderer {
         }
         // Beams are independent of the houses: they exist to show villages
         // that are too far away, or too high below, to draw.
-        self.update_beams(queue, terrain, camera_world_position, camera_altitude_meters);
+        self.update_beams(
+            queue,
+            terrain,
+            camera_world_position,
+            camera_altitude_meters,
+        );
         if camera_altitude_meters >= draw_altitude_meters() {
             self.instance_count = 0;
             self.last_build_position = None;

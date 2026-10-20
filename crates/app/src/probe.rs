@@ -6,15 +6,14 @@
 //! holds if the CPU's terrain height and the renderer's displaced surface are
 //! the same surface, and the two are computed by completely separate code: a
 //! resident-tile lookup plus an f64 detail ladder on one side, a streamed
-//! texture fetch plus an f32 detail ladder inside a vertex or ray shader on
+//! texture fetch plus an f32 detail ladder inside a vertex shader on
 //! the other.
 //!
 //! Reading the depth buffer measures the drawn result rather than
 //! re-evaluating the shader's arithmetic on the CPU and hoping the two agree,
 //! so it also catches everything between the height function and the pixel:
-//! mesh tessellation, LOD selection, skirts, and the raymarcher's hit
-//! refinement. It works the same way for both render paths because both write
-//! reversed-Z depth into the same attachment.
+//! mesh tessellation, LOD selection, and skirts. The depth is read from the
+//! reversed-Z attachment the raster pass writes.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -22,7 +21,7 @@ use std::time::Duration;
 use glam::{DVec2, DVec3};
 
 use crate::planet::{CameraViewBasis, planet_radius_meters};
-use crate::terrain::{DetailFilterRung, NearFieldCoverage, SurfaceHeightBreakdown};
+use crate::terrain::{DetailFilterRung, SurfaceHeightBreakdown};
 
 /// Grid resolution of the screen-space sample pattern, per axis.
 pub const PROBE_GRID: u32 = 9;
@@ -233,7 +232,6 @@ pub struct SurfaceProbeReport {
     pub sim_time: f64,
     pub render_path: String,
     pub render_debug_mode: String,
-    pub ray_near_field: Option<NearFieldCoverage>,
     pub comparison_distance_limit_meters: f64,
     pub camera_altitude_meters: f64,
     pub camera_surface_height_meters: f64,
@@ -247,9 +245,9 @@ pub struct SurfaceProbeReport {
     /// is dominated by whichever point happened to graze the horizon: at 2m of
     /// eye height the horizon is 4km, the probe compares out to 4km, and a ray
     /// arriving there at a fraction of a degree turns a metre of ground into
-    /// hundreds of metres of reconstructed height. Measured at the landing site
-    /// in the raymarch path, 75 of 77 points sat inside 5m while two grazing
-    /// points at 2-3km read 25m and 195m.
+    /// hundreds of metres of reconstructed height. Measured at the landing site,
+    /// 75 of 77 points sat inside 5m while two grazing points at 2-3km read 25m
+    /// and 195m.
     pub p90_abs_delta_meters: f64,
     pub median_abs_delta_meters: f64,
     pub mean_delta_meters: f64,
@@ -429,7 +427,6 @@ pub fn compare_surface_with_limit(
         sim_time,
         render_path: render_path.to_owned(),
         render_debug_mode: "final HDR scene".to_owned(),
-        ray_near_field: None,
         comparison_distance_limit_meters: maximum_comparison_distance_meters,
         camera_altitude_meters,
         camera_surface_height_meters,
@@ -755,7 +752,7 @@ mod tests {
         let depth = uniform_depth(64, 64, (1.0 / 400.0) as f32);
         let report = compare_surface(
             0.0,
-            "ray",
+            "raster",
             &geometry,
             &depth,
             altitude,

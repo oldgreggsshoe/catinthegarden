@@ -676,11 +676,11 @@ fn gpu_ocean_chunks_agree_on_their_shared_edge() {
     // kept. Cases: (tile_uv, level delta on edge 3 (u = 0), node spacing).
     let spacing = 3.0_f32;
     let cases: [([f32; 2], u32, f32); 5] = [
-        ([0.0, 0.25], 1, spacing * 2.0),  // on the shared edge, neighbour one level coarser
-        ([0.0, 0.5], 2, spacing * 4.0),   // two levels coarser
-        ([0.5, 0.5], 1, spacing),         // centre: its own spacing
-        ([0.5, 0.0], 1, spacing),         // another edge, same-level neighbour
-        ([0.0, 0.5], 0, spacing),         // same-level neighbour on this edge
+        ([0.0, 0.25], 1, spacing * 2.0), // on the shared edge, neighbour one level coarser
+        ([0.0, 0.5], 2, spacing * 4.0),  // two levels coarser
+        ([0.5, 0.5], 1, spacing),        // centre: its own spacing
+        ([0.5, 0.0], 1, spacing),        // another edge, same-level neighbour
+        ([0.0, 0.5], 0, spacing),        // same-level neighbour on this edge
     ];
     let inputs = cases
         .iter()
@@ -760,7 +760,11 @@ fn test_edge(@builtin(global_invocation_id) id: vec3<u32>) {{
     encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
     queue.submit(Some(encoder.finish()));
     let (sender, receiver) = std::sync::mpsc::channel();
-    readback.slice(..).map_async(wgpu::MapMode::Read, move |result| sender.send(result).unwrap());
+    readback
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            sender.send(result).unwrap()
+        });
     device
         .poll(wgpu::PollType::Wait {
             submission_index: None,

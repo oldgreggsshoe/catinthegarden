@@ -1353,7 +1353,6 @@ impl RunArtifacts {
             target: "planet::gpu_profile",
             sim_time,
             gpu_scene_ms = timings.scene_ms,
-            gpu_raymarch_ms = timings.raymarch_ms,
             gpu_luminance_ms = timings.luminance_ms,
             gpu_sun_ms = timings.sun_ms,
             gpu_blur_ms = timings.blur_ms,
@@ -1928,7 +1927,6 @@ mod tests {
             sim_time: 0.0,
             render_path: "raster".to_owned(),
             render_debug_mode: "final HDR scene".to_owned(),
-            ray_near_field: None,
             comparison_distance_limit_meters: crate::probe::MAX_COMPARISON_DISTANCE_METERS,
             camera_altitude_meters: 1_000.0,
             camera_surface_height_meters: 1_000.0 - clearance_meters,
@@ -1961,8 +1959,7 @@ mod tests {
         tracker.observe_surface_probe(&probe_report(2.0, 0.1, 40));
         assert!(result(&tracker.results(0), "camera_stands_on_the_ground").passed);
 
-        // Sunk: the raymarch path reported -63.9m here before terrain
-        // streaming was made path-independent.
+        // Sunk: a camera 63.9m inside the ground must fail the assertion.
         let mut sunk = AssertionTracker::new(config.clone());
         sunk.observe_surface_probe(&probe_report(-63.9, 0.1, 40));
         assert!(!result(&sunk.results(0), "camera_stands_on_the_ground").passed);

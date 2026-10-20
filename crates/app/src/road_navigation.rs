@@ -417,6 +417,11 @@ fn roadside(p: DVec3, forward: DVec3, lines: Vec<String>, inside: bool, village:
     let up = p.normalize();
     let right = forward.cross(up).normalize();
     let width = if inside { 5.0 } else { 6.0 };
+    let verge = if village {
+        crate::road_parking::RADIUS + 0.75
+    } else {
+        4.8
+    };
     Board {
         kind: if village {
             Kind::Village
@@ -426,15 +431,28 @@ fn roadside(p: DVec3, forward: DVec3, lines: Vec<String>, inside: bool, village:
             Kind::Distance
         },
         centre: p + up * if inside { 6.7 } else { 3.4 }
-            - right * if inside { 0.0 } else { 5.6 + width * 0.5 },
+            - right
+                * if inside {
+                    0.0
+                } else {
+                    verge + 0.8 + width * 0.5
+                },
         right,
         up,
         lines,
         width,
         village,
-        support: (!inside).then_some(p - right * 4.8 - up * 0.6),
+        support: (!inside).then_some(p - right * verge - up * 0.6),
     }
 }
+fn village_sign(access: DVec3, toward_road: DVec3, name: &str) -> Board {
+    // Match the court beyond the terminal, not the narrow approach road.
+    let up = access.normalize();
+    let toward = (toward_road - up * toward_road.dot(up)).normalize();
+    let court = access - toward * crate::road_parking::OFFSET;
+    roadside(court, -toward, vec![name.into()], false, true)
+}
+
 /// A finger board on the departure branch, readable from either main-road
 /// approach. Reversing both the text plane and arrow keeps both faces pointing
 /// physically towards the same village. Only the first face owns the post.
@@ -505,7 +523,7 @@ pub fn boards(
         if let Some(name) = nav.name(id).filter(|_| near) {
             if let Some(e) = arms.first() {
                 let (_, f) = e.at(0.0);
-                boards.push(roadside(p - f * 8.0, -f, vec![name.into()], false, true));
+                boards.push(village_sign(p, f, name));
             }
         }
         if near && arms.len() > 2 {
@@ -630,6 +648,29 @@ pub fn boards(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn village_nameplate_is_outside_the_parking_circle_and_approach() {
+        let access = DVec3::Z * 4e6;
+        let toward_road = DVec3::Y;
+        let court = access - toward_road * crate::road_parking::OFFSET;
+        let board = village_sign(access, toward_road, "NORTH HIGHFORD");
+        let post = board.support.unwrap();
+        let horizontal = |p: DVec3| (p - court).with_z(0.0).length();
+        assert!(
+            horizontal(post) >= crate::road_parking::RADIUS + 0.5,
+            "nameplate post occupies the parking/turning circle: {}m",
+            horizontal(post)
+        );
+        assert!(horizontal(post) <= crate::road_parking::RADIUS + 1.0);
+        for edge in [-0.5, 0.5] {
+            assert!(
+                horizontal(board.centre + board.right * (edge * board.width))
+                    > crate::road_parking::RADIUS
+            );
+        }
+        assert!(board.right.cross(board.up).dot(toward_road) > 0.99);
+    }
+
     #[test]
     fn branch_fingers_name_the_destination_and_point_the_same_way_on_both_faces() {
         let a = DVec3::Z * 4e6;

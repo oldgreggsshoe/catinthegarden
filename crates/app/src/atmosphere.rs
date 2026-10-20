@@ -538,12 +538,8 @@ mod tests {
             outer_half_angle < half_horizontal_fov,
             "a single lightning glow must not include both horizontal edges"
         );
-        assert!(display.contains(
-            "max(SKY_LIGHTNING_GLOW_OUTER_COSINE, outer_cosine),"
-        ));
-        assert!(display.contains(
-            "max(SKY_LIGHTNING_GLOW_INNER_COSINE, inner_cosine),"
-        ));
+        assert!(display.contains("max(SKY_LIGHTNING_GLOW_OUTER_COSINE, outer_cosine),"));
+        assert!(display.contains("max(SKY_LIGHTNING_GLOW_INNER_COSINE, inner_cosine),"));
     }
 
     #[test]
@@ -741,7 +737,9 @@ mod tests {
         // In a storm, overhead rays take the horizon averaged over every
         // azimuth, not their own: all azimuths meet at the zenith, and the
         // bright sun-side horizon hung there as a wedge of light.
-        assert!(display.contains("let overhead = smoothstep(0.0, 0.5, dot(ray, up)) * smoothstep(0.0, 0.1, overcast);"));
+        assert!(display.contains(
+            "let overhead = smoothstep(0.0, 0.5, dot(ray, up)) * smoothstep(0.0, 0.1, overcast);"
+        ));
         assert!(display.contains("let fog_amount = 1.0 - exp("));
         assert!(display.contains("mix(visible_radiance, horizon_fog_radiance, fog_amount)"));
     }

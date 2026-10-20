@@ -250,8 +250,11 @@ impl Bubbles {
     /// even above water, so it is already moving with the water when the eye
     /// goes under.
     pub fn update(&mut self, queue: &wgpu::Queue, frame: BubbleFrame) {
-        self.drift
-            .advance(frame.camera_position, frame.time_seconds, frame.water_velocity);
+        self.drift.advance(
+            frame.camera_position,
+            frame.time_seconds,
+            frame.water_velocity,
+        );
         self.visibility = visibility_at_depth(frame.depth_meters);
         if self.visibility <= 0.0 {
             return;
@@ -323,7 +326,11 @@ mod tests {
         // Carried 0.1 m by the current in 0.05 s: the box does not move
         // relative to the eye.
         drift.advance(position + current * 0.05, 10.05, current);
-        assert!((drift.scroll[0] - before[0]).abs() < 1.0e-9, "{:?}", drift.scroll);
+        assert!(
+            (drift.scroll[0] - before[0]).abs() < 1.0e-9,
+            "{:?}",
+            drift.scroll
+        );
         // Swimming 0.3 m east through still water: the box goes 0.3 m west.
         let mut still = Drift::default();
         still.advance(position, 10.0, DVec3::ZERO);

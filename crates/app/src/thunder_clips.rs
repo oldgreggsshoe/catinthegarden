@@ -67,7 +67,9 @@ impl ThunderClips {
     pub(crate) fn load() -> Option<Self> {
         let directory = [
             PathBuf::from(CLIP_DIRECTORY),
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(CLIP_DIRECTORY),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(CLIP_DIRECTORY),
         ]
         .into_iter()
         .find(|path| path.is_dir())?;
@@ -80,7 +82,10 @@ impl ThunderClips {
         let mut clips = Vec::new();
         let mut kinds: [Vec<usize>; 3] = Default::default();
         for path in names {
-            let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("");
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("");
             let kind = if stem.starts_with("crack") {
                 Kind::Crack
             } else if stem.starts_with("mid") {
@@ -114,7 +119,13 @@ impl ThunderClips {
     /// uniform 0-1 draws; `avoid` is the clip played last, not repeated if
     /// there is another of the kind. Falls back to the nearest kind that has
     /// clips.
-    pub(crate) fn choose(&self, distance_meters: f32, jitter: f32, pick: f32, avoid: Option<usize>) -> usize {
+    pub(crate) fn choose(
+        &self,
+        distance_meters: f32,
+        jitter: f32,
+        pick: f32,
+        avoid: Option<usize>,
+    ) -> usize {
         let kind = kind_for_distance(distance_meters * (0.8 + 0.4 * jitter));
         let order = match kind {
             Kind::Crack => [Kind::Crack, Kind::Mid, Kind::Roll],
@@ -178,8 +189,16 @@ fn decode(path: &Path) -> Result<Clip, String> {
         }
     }
     let loudness = loudest_rms(&samples, rate);
-    let level = if loudness > 1.0e-6 { CLIP_LOUDNESS / loudness } else { 0.0 };
-    Ok(Clip { samples, rate, level })
+    let level = if loudness > 1.0e-6 {
+        CLIP_LOUDNESS / loudness
+    } else {
+        0.0
+    };
+    Ok(Clip {
+        samples,
+        rate,
+        level,
+    })
 }
 
 #[cfg(test)]
@@ -197,9 +216,16 @@ mod tests {
         for clip in &clips.clips {
             let seconds = clip.samples.len() as f32 / clip.rate;
             assert!((4.0..25.0).contains(&seconds), "{seconds} s");
-            let peak = clip.samples.iter().fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+            let peak = clip
+                .samples
+                .iter()
+                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
             assert!((0.5..=1.0).contains(&peak), "peak {peak}");
-            let scaled: Vec<f32> = clip.samples.iter().map(|value| value * clip.level).collect();
+            let scaled: Vec<f32> = clip
+                .samples
+                .iter()
+                .map(|value| value * clip.level)
+                .collect();
             assert!((loudest_rms(&scaled, clip.rate) - CLIP_LOUDNESS).abs() < 1.0e-3);
         }
     }
@@ -209,9 +235,18 @@ mod tests {
         let clips = ThunderClips::load().expect("clips");
         for jitter in [0.0, 0.5, 1.0] {
             for pick in [0.0, 0.3, 0.99] {
-                assert_eq!(clips.kind_of(clips.choose(300.0, jitter, pick, None)), Kind::Crack);
-                assert_eq!(clips.kind_of(clips.choose(3_500.0, jitter, pick, None)), Kind::Mid);
-                assert_eq!(clips.kind_of(clips.choose(9_000.0, jitter, pick, None)), Kind::Roll);
+                assert_eq!(
+                    clips.kind_of(clips.choose(300.0, jitter, pick, None)),
+                    Kind::Crack
+                );
+                assert_eq!(
+                    clips.kind_of(clips.choose(3_500.0, jitter, pick, None)),
+                    Kind::Mid
+                );
+                assert_eq!(
+                    clips.kind_of(clips.choose(9_000.0, jitter, pick, None)),
+                    Kind::Roll
+                );
             }
         }
         // The clip just played is not picked again.

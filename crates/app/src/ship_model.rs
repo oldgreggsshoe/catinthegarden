@@ -245,7 +245,11 @@ fn prism(
     caps: bool,
 ) {
     let axis = (to - from).normalize();
-    let helper = if axis.z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
+    let helper = if axis.z.abs() < 0.9 {
+        DVec3::Z
+    } else {
+        DVec3::X
+    };
     let u = axis.cross(helper).normalize();
     let w = axis.cross(u);
     let ring = |centre: DVec3, radius: f64, index: usize| {
@@ -266,8 +270,22 @@ fn prism(
             outward,
         );
         if caps {
-            triangle_facing(vertices, from, ring(from, radius_from, index), ring(from, radius_from, next), colour, -axis);
-            triangle_facing(vertices, to, ring(to, radius_to, index), ring(to, radius_to, next), colour, axis);
+            triangle_facing(
+                vertices,
+                from,
+                ring(from, radius_from, index),
+                ring(from, radius_from, next),
+                colour,
+                -axis,
+            );
+            triangle_facing(
+                vertices,
+                to,
+                ring(to, radius_to, index),
+                ring(to, radius_to, next),
+                colour,
+                axis,
+            );
         }
     }
 }
@@ -309,7 +327,15 @@ fn build_hull(v: &mut Vec<ShipVertex>) {
             let inner = |x: f64, b: f64, z: f64| DVec3::new(x, side * SIDE_INNER * b, z);
             let hint = DVec3::new(0.0, side, 0.0);
             if r > 0.0 {
-                quad_facing(v, outer(x0, b0, s0), outer(x1, b1, s1), outer(x1, b1, s1 + r), outer(x0, b0, s0 + r), TOPSIDE, hint);
+                quad_facing(
+                    v,
+                    outer(x0, b0, s0),
+                    outer(x1, b1, s1),
+                    outer(x1, b1, s1 + r),
+                    outer(x0, b0, s0 + r),
+                    TOPSIDE,
+                    hint,
+                );
             }
             quad_facing(
                 v,
@@ -339,7 +365,8 @@ fn build_hull(v: &mut Vec<ShipVertex>) {
                 -hint,
             );
         }
-        let in_hatch_run = (HATCH_FIRST_SEGMENT..HATCH_FIRST_SEGMENT + HATCH_SEGMENTS).contains(&segment);
+        let in_hatch_run =
+            (HATCH_FIRST_SEGMENT..HATCH_FIRST_SEGMENT + HATCH_SEGMENTS).contains(&segment);
         for plank in 0..PLANKS {
             if in_hatch_run && HATCH_PLANKS.contains(&plank) {
                 continue;
@@ -417,7 +444,11 @@ fn build_hull(v: &mut Vec<ShipVertex>) {
     let levels = [
         (sheer, sheer + 2.4 * S, TOPSIDE),
         (sheer + 2.4 * S, sheer + POOP_RAISE * S, TOPSIDE),
-        (sheer + POOP_RAISE * S, sheer + (POOP_RAISE + RAIL_HEIGHT) * S, GOLD),
+        (
+            sheer + POOP_RAISE * S,
+            sheer + (POOP_RAISE + RAIL_HEIGHT) * S,
+            GOLD,
+        ),
     ];
     for (z0, z1, colour) in levels {
         quad_facing(
@@ -454,9 +485,7 @@ const DARK_DOOR: [f32; 3] = [0.06, 0.04, 0.03];
 /// next and `w` of the way from ring `ring` to the next, pushed a hair out.
 fn side_point(segment: usize, ring: usize, u: f64, w: f64, side: f64) -> DVec3 {
     let (t0, t1) = (station_t(segment), station_t(segment + 1));
-    let along = |ring: usize| {
-        ring_point(t0, ring, side).lerp(ring_point(t1, ring, side), u)
-    };
+    let along = |ring: usize| ring_point(t0, ring, side).lerp(ring_point(t1, ring, side), u);
     let point = along(ring).lerp(along(ring + 1), w);
     point + DVec3::new(0.0, side * 0.004, 0.0)
 }
@@ -506,9 +535,27 @@ fn gunports_and_guns(v: &mut Vec<ShipVertex>) {
 fn stem_beakhead_and_rudder(v: &mut Vec<ShipVertex>) {
     let bow_top = sheer_height_meters(1.0);
     // Stem post.
-    prism(v, p(21.0, 0.0, -0.75), DVec3::new(station_x(1.0) + 0.3 * S, 0.0, bow_top), 0.3 * S, 0.3 * S, 6, WOOD, true);
+    prism(
+        v,
+        p(21.0, 0.0, -0.75),
+        DVec3::new(station_x(1.0) + 0.3 * S, 0.0, bow_top),
+        0.3 * S,
+        0.3 * S,
+        6,
+        WOOD,
+        true,
+    );
     // Bowsprit, steeving up from the forecastle.
-    prism(v, p(15.0, 0.0, 5.6), p(31.0, 0.0, 10.4), 0.5 * S, 0.22 * S, 8, WOOD, true);
+    prism(
+        v,
+        p(15.0, 0.0, 5.6),
+        p(31.0, 0.0, 10.4),
+        0.5 * S,
+        0.22 * S,
+        8,
+        WOOD,
+        true,
+    );
     // Beakhead platform and a gilded lion figurehead.
     push_box(v, p(22.4, 0.0, 4.5), p(1.6, 0.9, 0.12), DECK_A);
     push_box(v, p(23.9, 0.0, 5.1), p(0.6, 0.35, 0.5), GOLD);
@@ -521,14 +568,43 @@ fn deck_furniture(v: &mut Vec<ShipVertex>) {
     let waist = deck_z(5.0 * S);
     // Main hatch with its grating, a capstan, a longboat chocked on the waist.
     hatch_coaming_and_hold(v);
-    prism(v, DVec3::new(6.0 * S, 0.0, waist), DVec3::new(6.0 * S, 0.0, waist + 1.4 * S), 0.8 * S, 0.7 * S, 8, WOOD, true);
+    prism(
+        v,
+        DVec3::new(6.0 * S, 0.0, waist),
+        DVec3::new(6.0 * S, 0.0, waist + 1.4 * S),
+        0.8 * S,
+        0.7 * S,
+        8,
+        WOOD,
+        true,
+    );
     let boat_z = deck_z(7.5 * S);
-    push_box(v, p(7.5, 0.0, 0.0) + DVec3::new(0.0, 0.0, boat_z + 0.7 * S), p(3.2, 1.3, 0.7), TOPSIDE);
-    push_box(v, p(7.5, 0.0, 0.0) + DVec3::new(0.0, 0.0, boat_z + 1.42 * S), p(3.0, 1.1, 0.05), DECK_B);
+    push_box(
+        v,
+        p(7.5, 0.0, 0.0) + DVec3::new(0.0, 0.0, boat_z + 0.7 * S),
+        p(3.2, 1.3, 0.7),
+        TOPSIDE,
+    );
+    push_box(
+        v,
+        p(7.5, 0.0, 0.0) + DVec3::new(0.0, 0.0, boat_z + 1.42 * S),
+        p(3.0, 1.1, 0.05),
+        DECK_B,
+    );
     // Binnacle and the whipstaff on the poop, by the helm.
     let poop = deck_z(-15.5 * S) + POOP_RAISE * S;
-    push_box(v, p(-15.5, -1.6, 0.0) + DVec3::new(0.0, 0.0, poop + 0.6 * S), p(0.6, 0.6, 0.6), WOOD);
-    push_box(v, p(-15.5, -1.6, 0.0) + DVec3::new(0.0, 0.0, poop + 1.35 * S), p(0.35, 0.35, 0.15), GOLD);
+    push_box(
+        v,
+        p(-15.5, -1.6, 0.0) + DVec3::new(0.0, 0.0, poop + 0.6 * S),
+        p(0.6, 0.6, 0.6),
+        WOOD,
+    );
+    push_box(
+        v,
+        p(-15.5, -1.6, 0.0) + DVec3::new(0.0, 0.0, poop + 1.35 * S),
+        p(0.35, 0.35, 0.15),
+        GOLD,
+    );
 }
 
 /// Coaming above the hatch, pit walls and a dark floor below it.
@@ -539,36 +615,122 @@ fn hatch_coaming_and_hold(v: &mut Vec<ShipVertex>) {
     let floor = |c: DVec3| DVec3::new(c.x, c.y, HATCH_FLOOR_Z * S);
     for edge in 0..4 {
         let (a, b) = (corners[edge], corners[(edge + 1) % 4]);
-        let outward = DVec3::new((a.x + b.x) * 0.5 - centre.x, (a.y + b.y) * 0.5 - centre.y, 0.0);
+        let outward = DVec3::new(
+            (a.x + b.x) * 0.5 - centre.x,
+            (a.y + b.y) * 0.5 - centre.y,
+            0.0,
+        );
         // Coaming outside face, and the pit wall facing in.
         quad_facing(v, a, b, b + rise, a + rise, DECK_B, outward);
-        quad_facing(v, a + rise, b + rise, floor(b), floor(a), TOPSIDE_DARK, -outward);
+        quad_facing(
+            v,
+            a + rise,
+            b + rise,
+            floor(b),
+            floor(a),
+            TOPSIDE_DARK,
+            -outward,
+        );
         // The rim on top, 0.12m wide.
-        let inset = |c: DVec3| c + rise - (DVec3::new(c.x - centre.x, c.y - centre.y, 0.0).normalize()) * 0.12 * S;
-        quad_facing(v, a + rise, b + rise, inset(b), inset(a), RAIL_CAP, DVec3::Z);
+        let inset = |c: DVec3| {
+            c + rise - (DVec3::new(c.x - centre.x, c.y - centre.y, 0.0).normalize()) * 0.12 * S
+        };
+        quad_facing(
+            v,
+            a + rise,
+            b + rise,
+            inset(b),
+            inset(a),
+            RAIL_CAP,
+            DVec3::Z,
+        );
     }
-    quad_facing(v, floor(corners[0]), floor(corners[1]), floor(corners[2]), floor(corners[3]), DARK_OPENING, DVec3::Z);
+    quad_facing(
+        v,
+        floor(corners[0]),
+        floor(corners[1]),
+        floor(corners[2]),
+        floor(corners[3]),
+        DARK_OPENING,
+        DVec3::Z,
+    );
 }
 
 fn stern_details(v: &mut Vec<ShipVertex>) {
     let top = sheer_height_meters(-1.0) + (POOP_RAISE + RAIL_HEIGHT) * S;
     let x = station_x(-1.0);
     // Stern lantern.
-    prism(v, DVec3::new(x + 0.3 * S, 0.0, top), DVec3::new(x + 0.3 * S, 0.0, top + 1.6 * S), 0.12 * S, 0.12 * S, 4, WOOD, false);
-    push_box(v, DVec3::new(x + 0.3 * S, 0.0, top + 2.3 * S), p(0.5, 0.5, 0.8), GOLD);
-    push_box(v, DVec3::new(x + 0.3 * S, 0.0, top + 3.3 * S), p(0.35, 0.35, 0.2), GOLD);
+    prism(
+        v,
+        DVec3::new(x + 0.3 * S, 0.0, top),
+        DVec3::new(x + 0.3 * S, 0.0, top + 1.6 * S),
+        0.12 * S,
+        0.12 * S,
+        4,
+        WOOD,
+        false,
+    );
+    push_box(
+        v,
+        DVec3::new(x + 0.3 * S, 0.0, top + 2.3 * S),
+        p(0.5, 0.5, 0.8),
+        GOLD,
+    );
+    push_box(
+        v,
+        DVec3::new(x + 0.3 * S, 0.0, top + 3.3 * S),
+        p(0.35, 0.35, 0.2),
+        GOLD,
+    );
     // Ensign: a red cross on white, flying aft from a leaning staff.
     let staff_top = DVec3::new(x - 0.9 * S, 0.0, top + 6.2 * S);
-    prism(v, DVec3::new(x + 0.6 * S, 0.0, top), staff_top, 0.1 * S, 0.07 * S, 4, WOOD, true);
+    prism(
+        v,
+        DVec3::new(x + 0.6 * S, 0.0, top),
+        staff_top,
+        0.1 * S,
+        0.07 * S,
+        4,
+        WOOD,
+        true,
+    );
     let (length, height) = (4.6 * S, 2.8 * S);
     let corner = |along: f64, down: f64, y: f64| {
-        DVec3::new(staff_top.x - along * length, y, staff_top.z - 0.1 * S - down * height)
+        DVec3::new(
+            staff_top.x - along * length,
+            y,
+            staff_top.z - 0.1 * S - down * height,
+        )
     };
-    quad_both_sides(v, corner(0.0, 0.0, 0.0), corner(1.0, 0.0, 0.0), corner(1.0, 1.0, 0.0), corner(0.0, 1.0, 0.0), WHITE, DVec3::Y);
+    quad_both_sides(
+        v,
+        corner(0.0, 0.0, 0.0),
+        corner(1.0, 0.0, 0.0),
+        corner(1.0, 1.0, 0.0),
+        corner(0.0, 1.0, 0.0),
+        WHITE,
+        DVec3::Y,
+    );
     for y in [0.01 * S, -0.01 * S] {
         let hint = DVec3::new(0.0, y.signum(), 0.0);
-        quad_facing(v, corner(0.0, 0.4, y), corner(1.0, 0.4, y), corner(1.0, 0.6, y), corner(0.0, 0.6, y), RED, hint);
-        quad_facing(v, corner(0.32, 0.0, y), corner(0.48, 0.0, y), corner(0.48, 1.0, y), corner(0.32, 1.0, y), RED, hint);
+        quad_facing(
+            v,
+            corner(0.0, 0.4, y),
+            corner(1.0, 0.4, y),
+            corner(1.0, 0.6, y),
+            corner(0.0, 0.6, y),
+            RED,
+            hint,
+        );
+        quad_facing(
+            v,
+            corner(0.32, 0.0, y),
+            corner(0.48, 0.0, y),
+            corner(0.48, 1.0, y),
+            corner(0.32, 1.0, y),
+            RED,
+            hint,
+        );
     }
 }
 
@@ -586,9 +748,27 @@ struct Mast {
 }
 
 const MASTS: [Mast; 3] = [
-    Mast { x: 12.5, raise: 0.0, lower_top: 19.0, top: 32.0, has_top: true },
-    Mast { x: 2.5, raise: 0.0, lower_top: 23.0, top: 38.0, has_top: true },
-    Mast { x: -9.0, raise: QUARTERDECK_RAISE, lower_top: 17.0, top: 27.0, has_top: false },
+    Mast {
+        x: 12.5,
+        raise: 0.0,
+        lower_top: 19.0,
+        top: 32.0,
+        has_top: true,
+    },
+    Mast {
+        x: 2.5,
+        raise: 0.0,
+        lower_top: 23.0,
+        top: 38.0,
+        has_top: true,
+    },
+    Mast {
+        x: -9.0,
+        raise: QUARTERDECK_RAISE,
+        lower_top: 17.0,
+        top: 27.0,
+        has_top: false,
+    },
 ];
 
 fn mast_base(mast: Mast) -> f64 {
@@ -598,8 +778,26 @@ fn mast_base(mast: Mast) -> f64 {
 fn mast_and_rigging(v: &mut Vec<ShipVertex>, mast: Mast) {
     let base = mast_base(mast);
     let x = mast.x;
-    prism(v, p(x, 0.0, base - 1.0), p(x, 0.0, mast.lower_top), 0.55 * S, 0.38 * S, 8, WOOD, true);
-    prism(v, p(x, 0.0, mast.lower_top - 2.0), p(x, 0.0, mast.top), 0.3 * S, 0.12 * S, 8, WOOD, true);
+    prism(
+        v,
+        p(x, 0.0, base - 1.0),
+        p(x, 0.0, mast.lower_top),
+        0.55 * S,
+        0.38 * S,
+        8,
+        WOOD,
+        true,
+    );
+    prism(
+        v,
+        p(x, 0.0, mast.lower_top - 2.0),
+        p(x, 0.0, mast.top),
+        0.3 * S,
+        0.12 * S,
+        8,
+        WOOD,
+        true,
+    );
     if mast.has_top {
         push_box(v, p(x, 0.0, mast.lower_top), p(1.8, 1.5, 0.22), WOOD);
     }
@@ -624,7 +822,11 @@ fn mast_and_rigging(v: &mut Vec<ShipVertex>, mast: Mast) {
             for k in 0..shroud_count - 1 {
                 for rung in 1..=6 {
                     let f = rung as f64 / 7.0;
-                    line(v, foot(k).lerp(head(k), f), foot(k + 1).lerp(head(k + 1), f));
+                    line(
+                        v,
+                        foot(k).lerp(head(k), f),
+                        foot(k + 1).lerp(head(k + 1), f),
+                    );
                 }
             }
         }
@@ -644,11 +846,29 @@ fn sails(v: &mut Vec<ShipVertex>) {
         (12.5, 29.0, 7.0, 5.0),
     ];
     for (x, z, length, depth) in square {
-        prism(v, p(x, -0.5 * length, z), p(x, 0.5 * length, z), 0.2 * S, 0.2 * S, 6, WOOD, true);
+        prism(
+            v,
+            p(x, -0.5 * length, z),
+            p(x, 0.5 * length, z),
+            0.2 * S,
+            0.2 * S,
+            6,
+            WOOD,
+            true,
+        );
         square_sail(v, x, z - 0.3, depth, 0.46 * length, 0.4 * length, 1.5);
     }
     // Spritsail under the bowsprit's end.
-    prism(v, p(27.2, -4.0, 8.9), p(27.2, 4.0, 8.9), 0.15 * S, 0.15 * S, 6, WOOD, true);
+    prism(
+        v,
+        p(27.2, -4.0, 8.9),
+        p(27.2, 4.0, 8.9),
+        0.15 * S,
+        0.15 * S,
+        6,
+        WOOD,
+        true,
+    );
     square_sail(v, 27.2, 8.7, 5.0, 3.6, 3.2, 0.9);
 
     // Lateen mizzen: a long yard slung from the mast, the sail a triangle.
@@ -661,7 +881,12 @@ fn sails(v: &mut Vec<ShipVertex>) {
         let w = row as f64 / rows as f64;
         let on_yard = head.lerp(tail, u);
         let base = on_yard.lerp(clew, w);
-        base + DVec3::Y * (1.4 * S * (std::f64::consts::PI * u).sin() * (std::f64::consts::PI * w).sin() * (1.0 - w))
+        base + DVec3::Y
+            * (1.4
+                * S
+                * (std::f64::consts::PI * u).sin()
+                * (std::f64::consts::PI * w).sin()
+                * (1.0 - w))
     };
     for column in 0..columns {
         for row in 0..rows {
@@ -722,7 +947,14 @@ fn stays_and_pennants(v: &mut Vec<ShipVertex>) {
     }
     for mast in MASTS {
         let (x, z) = (mast.x, mast.top);
-        triangle_both_sides(v, p(x, 0.0, z), p(x, 0.0, z - 1.3), p(x - 6.0, 0.0, z - 0.65), RED, DVec3::Y);
+        triangle_both_sides(
+            v,
+            p(x, 0.0, z),
+            p(x, 0.0, z - 1.3),
+            p(x - 6.0, 0.0, z - 0.65),
+            RED,
+            DVec3::Y,
+        );
     }
 }
 
@@ -861,7 +1093,11 @@ mod water_tests {
         }
         body.flood_kg = 40_000.0;
         let water = build_water(&body, &hull);
-        assert!(water.len() > 60 && water.len() < 1_000, "{} vertices", water.len());
+        assert!(
+            water.len() > 60 && water.len() < 1_000,
+            "{} vertices",
+            water.len()
+        );
         for vertex in &water {
             assert!((0.0..=1.0).contains(&vertex.alpha));
             assert!(vertex.position[1].abs() <= 0.5 * crate::ship::HULL_BEAM_METERS as f32 + 0.05);

@@ -3,8 +3,8 @@ use std::{
     collections::{BinaryHeap, HashMap, HashSet},
 };
 
-use planet_coretypes::TILE_LOGICAL_SIZE;
 use glam::{DQuat, DVec3, IVec3, Mat4, Vec3, Vec4};
+use planet_coretypes::TILE_LOGICAL_SIZE;
 
 /// Re-exported rather than restated. The baker writes outmap tiles against the
 /// coretypes radius, so a second literal here could silently place the runtime
@@ -432,9 +432,7 @@ pub(crate) fn cloud_shadow_enabled() -> bool {
 /// than from nothing: `PLANET_CREVASSES=1`.
 pub(crate) fn crevasses_enabled() -> bool {
     matches!(
-        std::env::var("PLANET_CREVASSES")
-            .as_deref()
-            .map(str::trim),
+        std::env::var("PLANET_CREVASSES").as_deref().map(str::trim),
         Ok("1" | "true" | "on")
     )
 }
@@ -564,7 +562,10 @@ pub(crate) fn shared_planet_shader_source() -> String {
 /// Experimental FFT wave field (`PLANET_OCEAN_FFT=1`); default off.
 pub(crate) fn ocean_fft_enabled() -> bool {
     matches!(
-        std::env::var("PLANET_OCEAN_FFT").ok().as_deref().map(str::trim),
+        std::env::var("PLANET_OCEAN_FFT")
+            .ok()
+            .as_deref()
+            .map(str::trim),
         Some("1" | "true" | "on")
     )
 }
@@ -573,12 +574,12 @@ pub(crate) fn ocean_fft_enabled() -> bool {
 pub(crate) fn ocean_foam_history_enabled() -> bool {
     ocean_fft_enabled()
         || matches!(
-        std::env::var("PLANET_OCEAN_FOAM_HISTORY")
-            .ok()
-            .as_deref()
-            .map(str::trim),
-        Some("1" | "true" | "on")
-    )
+            std::env::var("PLANET_OCEAN_FOAM_HISTORY")
+                .ok()
+                .as_deref()
+                .map(str::trim),
+            Some("1" | "true" | "on")
+        )
 }
 
 pub fn planet_rotation_radians(sim_time_seconds: f64) -> f64 {
@@ -890,8 +891,8 @@ fn terrain_detail_domain(direction: DVec3) -> DVec3 {
 ///
 /// A multiply-free chain of shifts and adds was tried first, because Maxwell
 /// runs 32-bit integer multiply at quarter rate. It needed so many full-rate
-/// operations to diffuse that it cost 2ms in the raster path and up to 13ms in
-/// the raymarch path, taking the ground-level scenarios over the 33ms budget.
+/// operations to diffuse that it cost 2ms in the raster path, taking the
+/// ground-level scenarios over the 33ms budget.
 /// One wide multiply diffuses further than a dozen shifts.
 fn detail_mix(value: u32) -> u32 {
     let h = value.wrapping_mul(0x9e37_79b1);
@@ -1328,13 +1329,12 @@ fn node_is_in_view_frustum(
     // sideways, into view from nodes the plain frustum rejects; near the
     // surface that culled wedges of sea at the frame edges (a 1.15x margin
     // closed most of them, 1.5x all). Orbital views keep the exact frustum.
-    let margin = if camera_world.length() - planet_radius_meters()
-        < NEAR_SURFACE_FRUSTUM_ALTITUDE_METERS
-    {
-        NEAR_SURFACE_FRUSTUM_MARGIN
-    } else {
-        1.0
-    };
+    let margin =
+        if camera_world.length() - planet_radius_meters() < NEAR_SURFACE_FRUSTUM_ALTITUDE_METERS {
+            NEAR_SURFACE_FRUSTUM_MARGIN
+        } else {
+            1.0
+        };
     let vertical_tangent = (vertical_fov_radians * 0.5).tan() * margin;
     let horizontal_tangent = vertical_tangent * aspect_ratio;
 
@@ -2987,7 +2987,6 @@ pub enum RenderDebugMode {
     SurfaceLighting = 2,
     AerialContribution = 3,
     SkyOnly = 4,
-    RayHitStatus = 5,
     FlatTriangles = 6,
     UndersideTransmission = 7,
     UndersideRefractedSky = 8,
@@ -3030,7 +3029,6 @@ impl RenderDebugMode {
             Self::AerialContribution => Self::SkyOnly,
             Self::SkyOnly => Self::FlatTriangles,
             Self::FlatTriangles
-            | Self::RayHitStatus
             | Self::UndersideTransmission
             | Self::UndersideRefractedSky
             | Self::UndersideReflectionHit => Self::Final,
@@ -3044,7 +3042,6 @@ impl RenderDebugMode {
             Self::SurfaceLighting => "surface lighting",
             Self::AerialContribution => "aerial contribution",
             Self::SkyOnly => "sky only",
-            Self::RayHitStatus => "ray detail-hit status",
             Self::FlatTriangles => "flat L7 triangles",
             Self::UndersideTransmission => "underside Snell transmission",
             Self::UndersideRefractedSky => "underside refracted sky",
@@ -3179,9 +3176,15 @@ mod tests {
     #[test]
     fn lightning_extends_the_camera_uniform_without_moving_existing_lanes() {
         assert_eq!(std::mem::offset_of!(CameraUniform, projection), 160);
-        assert_eq!(std::mem::offset_of!(CameraUniform, flat_triangle_options), 176);
+        assert_eq!(
+            std::mem::offset_of!(CameraUniform, flat_triangle_options),
+            176
+        );
         assert_eq!(std::mem::offset_of!(CameraUniform, lightning), 192);
-        for shader in [include_str!("shared_planet.wgsl"), include_str!("atmosphere.wgsl")] {
+        for shader in [
+            include_str!("shared_planet.wgsl"),
+            include_str!("atmosphere.wgsl"),
+        ] {
             let projection = shader.find("projection: vec4<f32>").unwrap();
             let options = shader.find("flat_triangle_options: vec4<f32>").unwrap();
             let lightning = shader.find("lightning: vec4<f32>").unwrap();
@@ -4159,8 +4162,7 @@ mod tests {
             (TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS - sum).abs() < 1.0,
             "the ladder sums to {sum}m, not {TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS}m"
         );
-        // It is a ceiling the ray path searches to, so it must not be loose:
-        // an overstated reach is spread over the same fixed sample count.
+        // It is a ceiling, so it must not be loose.
         assert!(TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS >= sum * 0.99);
     }
 
@@ -4737,7 +4739,10 @@ mod tests {
                 let direction = super::direction_across_node_edge(*node, edge);
                 if let Some(neighbor) = leaves.iter().copied().find(|candidate| {
                     *candidate != *node && super::node_contains_direction(*candidate, direction)
-                }) && node.level > neighbor.level.saturating_add(super::MAX_ADJACENT_LOD_LEVEL_DELTA)
+                }) && node.level
+                    > neighbor
+                        .level
+                        .saturating_add(super::MAX_ADJACENT_LOD_LEVEL_DELTA)
                 {
                     coarse.insert(neighbor);
                 }
@@ -4751,8 +4756,7 @@ mod tests {
     #[test]
     fn coarse_neighbor_lookup_matches_scan_across_cube_edges_and_culled_holes() {
         for branch in 0..4 {
-            let mut leaves: std::collections::HashSet<_> =
-                (0..6).map(QuadtreeNode::root).collect();
+            let mut leaves: std::collections::HashSet<_> = (0..6).map(QuadtreeNode::root).collect();
             for face in 0..6 {
                 let mut node = QuadtreeNode::root(face);
                 for _ in 0..MAX_LOD_LEVEL {
