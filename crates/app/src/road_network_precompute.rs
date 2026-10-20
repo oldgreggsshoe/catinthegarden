@@ -194,9 +194,9 @@ fn process(
             file.villages = plan.region.village_count;
             file.junctions = plan.region.junction_count;
             file.road_length_meters = plan.region.length_meters;
-            file.tunnel_length_meters = bores.iter().map(|b| b.length_meters).sum();
+            file.tunnel_length_meters = bores.iter().fold(0.0, |t, b| t + b.length_meters);
             file.undersea_tunnel_length_meters =
-                bores.iter().map(|b| b.undersea_length_meters).sum();
+                bores.iter().fold(0.0, |t, b| t + b.undersea_length_meters);
             file.max_grade = Some(plan.profile.maximum_grade);
             file.bores = bores;
             if write_plans {

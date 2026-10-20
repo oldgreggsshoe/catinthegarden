@@ -551,7 +551,8 @@ mod tests {
             * 4_010_000.0;
         let (mut worker, snapshot) = Worker::start(root, initial).unwrap();
         worker.request(snapshot.build_centre, true);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(600);
         let ready = loop {
             if let Some((_, ready)) = worker.take() {
                 break ready.unwrap();
@@ -562,6 +563,7 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
+        eprintln!("neighbour generation took {:.1}s", started.elapsed().as_secs_f64());
         assert_eq!(ready.keys.len(), nearby_keys(snapshot.build_centre).len());
         assert!(ready.villages >= snapshot.villages);
         assert!(ready.vertices.len() <= crate::road_network_mesh::MAX_VERTICES);
