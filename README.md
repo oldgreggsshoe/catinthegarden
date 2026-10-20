@@ -125,6 +125,32 @@ or capacity check is logged explicitly and retains the previous complete set;
 it never silently claims a missing village was connected. See
 [`docs/ROAD_NETWORK.md`](docs/ROAD_NETWORK.md) for limits and validation.
 
+### Offline road precompute and live status
+
+The CPU-only precompute writes one atomic result per retained region. It can be
+resumed **after the previous process has stopped** using the same command:
+
+```sh
+target/release/planet-app --road-network-precompute /home/dad/roadnet --road-precompute-threads 7
+python3 scripts/road-precompute-status.py /home/dad/roadnet --expected-regions 145422
+```
+
+The status script is read-only and works before `summary.json` exists; add
+`--json` for the full report, including failed region names. Processed files
+include failures, not just buildable roads. Lengths/counts are **regional covered
+components**, possibly branched or split at gateways, not unique global tunnels.
+
+New launches reuse parseable successful records for the same region/terrain
+version; failed, incomplete and mismatched records are retried. This upgrade
+does not change an already-running process. Existing files stay in place until
+an atomic replacement is ready. Planner revisions are not fingerprinted: use a
+new output folder when changing routing/engineering rules.
+
+The default command stores statistics only. `--road-precompute-plans` additionally
+saves the engineered geometry data; adding it later recomputes stats-only
+regions. Those plans are **not yet loaded by the interactive renderer**. Do not
+run two precomputes against the same output folder concurrently.
+
 ### Original 30 km terrain-planned road pilot
 
 The original opt-in pilot is approximately **30 km** of terrain-led bends on

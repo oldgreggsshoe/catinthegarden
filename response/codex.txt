@@ -64,3 +64,26 @@ Plan: extend only crates/app/scenarios/road_network_village_fork.json with two o
 
 The new oblique view shows both the main road and the branch to the parking area:
 /home/dad/stuff/test-runs/road_network_village_fork/1792525990-99922/screenshots/capture-006.png
+
+I’ll check the live job, its output and the handoff first, without interrupting it. Then I’ll identify the next useful step for the precompute work.
+
+The live output is further along than that handoff: about 19,063 regions processed (13.1%), with 700 failures recorded.
+
+Two important limits: the current run saves statistics, not reusable road plans, and restarting currently skips failed files too. I’ll add a read-only progress report and fix restart checks so failed or incomplete results can be retried. Neither change will interrupt the running job.
+
+The largest recorded covered component is about 25.6 km, but it may include branches or stop at a region boundary—not necessarily one entrance-to-exit tunnel.
+
+Plan: inspect scripts/ reporting conventions and precompute resume/summary code; modify crates/app/src/road_network_precompute.rs only for validated resume checks, add a standard-library-only status script with focused tests, and document the commands. Keep routing, solver limits and the active output/job unchanged.
+Stopped the background road precompute (task bn874szrk). It is resumable: rerun target/release/planet-app --road-network-precompute /home/dad/roadnet --road-precompute-threads 7. Existing region files are kept.
+
+So far, 43 regional tunnel components contain undersea sections; 31 are entirely undersea. These aren’t necessarily 43 separate tunnels—a tunnel crossing a region boundary can appear in multiple records.
+
+I’ll make the default road-experiment start a real entrance to the longest undersea tunnel recorded so far. I’ll verify the entrance and facing direction first, so you don’t spawn midway underground. The planet-wide survey may still find a longer one.
+
+Explained purpose of road precompute: offline whole-planet road plan, tunnel inventory, failure list, future stored plans for runtime.
+
+I found an entrance to the tunnel containing the longest recorded undersea section: 19.14 km in region PositiveX_8_152_152.
+
+I’ll update the interactive road-start selection and portal-facing pose, keep the existing site overrides and scripted camera starts unchanged, then check the spawn in the renderer.
+
+Spawn plan: inspect/modify road_network_render.rs (default site), main.rs (preserve replay defaults) and road_network_mesh.rs (a near-portal pose on the actual open-road segment); add focused and real-worker spawn checks in the existing road tests. No per-frame scan of statistics and no changes to routing, grades or the running precompute.

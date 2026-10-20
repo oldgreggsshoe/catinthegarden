@@ -10,7 +10,7 @@ use crate::{
 };
 use glam::DVec3;
 use planet_coretypes::TileKey;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
@@ -52,9 +52,14 @@ impl Options {
                 )
             }
             _ => {
-                let v: Vec<f64> = value.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+                let v: Vec<f64> = value
+                    .split(',')
+                    .filter_map(|p| p.trim().parse().ok())
+                    .collect();
                 if v.len() != 4 || v[0] > v[1] || v[2] > v[3] {
-                    return Err("--road-precompute-box needs min_lat,max_lat,min_lon,max_lon".into());
+                    return Err(
+                        "--road-precompute-box needs min_lat,max_lat,min_lon,max_lon".into(),
+                    );
                 }
                 self.area = Some([v[0], v[1], v[2], v[3]]);
             }
@@ -80,16 +85,16 @@ impl Survey for Offline<'_> {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Bore {
     pub length_meters: f64,
     pub undersea_length_meters: f64,
     pub segments: usize,
 }
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct RegionFile {
     key: String,
-    status: &'static str,
+    status: String,
     error: Option<String>,
     source_version: u64,
     villages: usize,
@@ -108,14 +113,16 @@ fn name(key: TileKey) -> String {
     format!("{:?}_{}_{}_{}", key.face, key.level, key.x, key.y)
 }
 fn in_area(area: &Option<[f64; 4]>, d: DVec3) -> bool {
-    let Some([a, b, c, e]) = area else { return true };
+    let Some([a, b, c, e]) = area else {
+        return true;
+    };
     let d = d.normalize();
     let lat = d.y.asin().to_degrees();
     let lon = (-d.z).atan2(d.x).to_degrees();
     (*a..=*b).contains(&lat) && (*c..=*e).contains(&lon)
 }
 
-/// Connected runs of covered segments with metres of each over open sea.
+/// Connected covered components (including branches), with metres over open sea.
 fn bores(
     plan: &road_network_mesh::Prepared,
     radius: f64,
@@ -172,7 +179,7 @@ fn process(
     let survey = Offline(surface);
     let mut file = RegionFile {
         key: name(key),
-        status: "ok",
+        status: "ok".into(),
         error: None,
         source_version: version,
         villages: 0,
@@ -185,10 +192,11 @@ fn process(
         seconds: 0.0,
         plan: None,
     };
-    let result = road_network_mesh::prepare_local(backbone, key, radius, &survey).and_then(|plan| {
-        let bores = bores(&plan, radius, &survey)?;
-        Ok((plan, bores))
-    });
+    let result =
+        road_network_mesh::prepare_local(backbone, key, radius, &survey).and_then(|plan| {
+            let bores = bores(&plan, radius, &survey)?;
+            Ok((plan, bores))
+        });
     match result {
         Ok((plan, bores)) => {
             file.villages = plan.region.village_count;
@@ -204,12 +212,31 @@ fn process(
             }
         }
         Err(error) => {
-            file.status = "failed";
+            file.status = "failed".into();
             file.error = Some(error);
         }
     }
     file.seconds = started.elapsed().as_secs_f64();
     file
+}
+
+// The writer publishes complete JSON atomically, but an existing file may
+// still represent a failed attempt, different terrain or a stats-only run.
+// Keep successful compatible results; retry everything else without deleting
+// the old result before its replacement is ready.
+fn reusable(bytes: &[u8], key: &str, version: u64, require_plan: bool) -> bool {
+    let Ok(file) = serde_json::from_slice::<RegionFile>(bytes) else {
+        return false;
+    };
+    file.status == "ok"
+        && file.key == key
+        && file.source_version == version
+        && (!require_plan
+            || file.plan.as_ref().is_some_and(|plan| {
+                plan.as_array().is_some_and(|parts| {
+                    parts.len() == 3 && parts.iter().all(|part| !part.is_null())
+                })
+            }))
 }
 
 pub fn run(root: &Path, options: &Options) -> Result<(), String> {
@@ -234,7 +261,12 @@ pub fn run(root: &Path, options: &Options) -> Result<(), String> {
     let todo: Vec<_> = keys
         .iter()
         .copied()
-        .filter(|&k| !options.output.join(format!("{}.json", name(k))).exists())
+        .filter(|&k| {
+            let key = name(k);
+            std::fs::read(options.output.join(format!("{key}.json"))).map_or(true, |bytes| {
+                !reusable(&bytes, &key, version, options.write_plans)
+            })
+        })
         .collect();
     eprintln!(
         "Road precompute: {} regions selected, {} already done, {} threads",
@@ -255,7 +287,9 @@ pub fn run(root: &Path, options: &Options) -> Result<(), String> {
                     let backbone = surface.backbone()?;
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(&key) = todo.get(i) else { return Ok(()) };
+                        let Some(&key) = todo.get(i) else {
+                            return Ok(());
+                        };
                         let file = process(&backbone, &surface, version, key, options.write_plans);
                         let path = options.output.join(format!("{}.json", name(key)));
                         let temporary = path.with_extension("tmp");
@@ -279,9 +313,10 @@ pub fn run(root: &Path, options: &Options) -> Result<(), String> {
                 })
             }));
         }
-        handles
-            .into_iter()
-            .try_for_each(|h| h.join().map_err(|_| "precompute thread panicked".to_owned())?)
+        handles.into_iter().try_for_each(|h| {
+            h.join()
+                .map_err(|_| "precompute thread panicked".to_owned())?
+        })
     })?;
     summarise(&options.output, &keys)
 }
@@ -307,11 +342,17 @@ fn summarise(dir: &Path, keys: &[TileKey]) -> Result<(), String> {
         total_tunnel_meters: 0.0,
         longest_tunnel: None,
         longest_undersea_tunnel: None,
-        note: "Runs are per region and use the pre-curve-fit profile; a bore crossing a region gateway counts as two. Undersea length is metres of covered segments whose midpoint is over open sea.",
+        note: concat!(
+            "Lengths sum connected covered components, including branches, in the final engineered profile. ",
+            "Region gateways split components; these are not necessarily entrance-to-exit tunnel lengths. ",
+            "Undersea length counts covered segments whose midpoint is over open sea."
+        ),
     };
     for &key in keys {
         let path = dir.join(format!("{}.json", name(key)));
-        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
         let v: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         summary.regions += 1;
         if v["status"] != "ok" {
@@ -322,11 +363,17 @@ fn summarise(dir: &Path, keys: &[TileKey]) -> Result<(), String> {
         for bore in v["bores"].as_array().into_iter().flatten() {
             for (field, slot) in [
                 ("length_meters", &mut summary.longest_tunnel),
-                ("undersea_length_meters", &mut summary.longest_undersea_tunnel),
+                (
+                    "undersea_length_meters",
+                    &mut summary.longest_undersea_tunnel,
+                ),
             ] {
                 let length = bore[field].as_f64().unwrap_or(0.0);
                 if length > slot.as_ref().map_or(0.0, |l| l.length_meters) {
-                    *slot = Some(Longest { region: name(key), length_meters: length });
+                    *slot = Some(Longest {
+                        region: name(key),
+                        length_meters: length,
+                    });
                 }
             }
         }
@@ -341,7 +388,86 @@ fn summarise(dir: &Path, keys: &[TileKey]) -> Result<(), String> {
         summary.regions,
         summary.failed.len(),
         summary.longest_tunnel.as_ref().map(|l| l.length_meters),
-        summary.longest_undersea_tunnel.as_ref().map(|l| l.length_meters)
+        summary
+            .longest_undersea_tunnel
+            .as_ref()
+            .map(|l| l.length_meters)
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record() -> serde_json::Value {
+        serde_json::json!({
+            "key": "PositiveX_8_42_1", "status": "ok", "error": null,
+            "source_version": 11553600317892695948_u64,
+            "villages": 14, "junctions": 13, "road_length_meters": 1000.0,
+            "tunnel_length_meters": 200.0, "undersea_tunnel_length_meters": 0.0,
+            "bores": [{"length_meters": 200.0, "undersea_length_meters": 0.0, "segments": 10}],
+            "max_grade": 0.24, "seconds": 8.0
+        })
+    }
+    fn accepts(record: &serde_json::Value, plans: bool) -> bool {
+        reusable(
+            &serde_json::to_vec(record).unwrap(),
+            "PositiveX_8_42_1",
+            11553600317892695948,
+            plans,
+        )
+    }
+
+    #[test]
+    fn road_precompute_resume_keeps_complete_compatible_successes() {
+        let file = record();
+        assert!(accepts(&file, false), "legacy stats remain reusable");
+        assert!(!reusable(
+            &serde_json::to_vec(&file).unwrap(),
+            "PositiveX_8_43_1",
+            11553600317892695948,
+            false
+        ));
+        assert!(!reusable(
+            &serde_json::to_vec(&file).unwrap(),
+            "PositiveX_8_42_1",
+            1,
+            false
+        ));
+    }
+
+    #[test]
+    fn road_precompute_resume_retries_failures_and_incomplete_files() {
+        let mut file = record();
+        file["status"] = "failed".into();
+        assert!(!accepts(&file, false));
+        file["status"] = "unknown".into();
+        assert!(!accepts(&file, false));
+        assert!(!reusable(
+            b"{truncated",
+            "PositiveX_8_42_1",
+            11553600317892695948,
+            false
+        ));
+        let mut file = record();
+        file.as_object_mut().unwrap().remove("bores");
+        assert!(!accepts(&file, false));
+    }
+
+    #[test]
+    fn road_precompute_resume_requires_the_requested_plan_payload() {
+        let mut file = record();
+        assert!(!accepts(&file, true));
+        for plan in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!([null, null, null]),
+        ] {
+            file["plan"] = plan;
+            assert!(!accepts(&file, true));
+        }
+        file["plan"] = serde_json::json!([{"nodes": [], "edges": []}, {"directions": [], "heights_meters": [], "segments": []}, []]);
+        assert!(accepts(&file, true));
+    }
 }

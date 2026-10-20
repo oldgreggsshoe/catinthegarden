@@ -10,7 +10,25 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 20 October: shared fork topology before curve fitting.**
+**Current work, 20 October: precompute continuation and longest-undersea entrance spawn.**
+The existing seven-thread job was not interrupted. `scripts/road-precompute-status.py`
+reads atomic regional files before summary.json exists; supports --expected-regions
+and --json, separates failure/invalid/success counts and labels lengths honestly
+as regional connected covered components (including branches). Three pure Rust
+resume checks and four standard-library Python tests pass. Future launches retry
+failed/malformed/incomplete/different-terrain records, and stats-only records when
+--road-precompute-plans is requested. Complete compatible legacy successes stay.
+No planner-revision fingerprint: use a fresh folder after engineering changes.
+Live audit:19,090 files/145,422,18,387 successes/703 failures,0 with plans;43 regional
+components have sea portions,31 wholly sea. Largest regional sea portion19,144.74m
+in PositiveX_8_152_152. Stats-only files cannot be loaded as road geometry.
+The user now requests the default PLANET_ROAD_EXPERIMENT start at that tunnel's
+actual entrance. A separate one-region --road-precompute-plans probe is saved in
+`test-runs/undersea-start-plans/`; its exact portal pose is in undersea-start-pose.json.
+Portal878 has open and covered incident spans; current interactive default still
+needs changing/visual verification. Preserve explicit legacy sites/replay starts.
+
+**Previous phase, 20 October: shared fork topology before curve fitting.**
 The photographed ramp in `road_network_village_fork` was two independently
 engineered copies of a connected horizontal trunk, not a legitimate overpass.
 A height-state route had distinct nodes22/56 at exactly the same direction,
