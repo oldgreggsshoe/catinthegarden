@@ -111,6 +111,9 @@ final engineered bends or individual village accesses. Generated regions stay
 green for the session even after leaving the resident cache; close-up green
 traces follow the exact resident roads.
 `PLANET_ROAD_LINES=1` starts the overlay on; it is off by default.
+Regional planning favours viable tunnel shortcuts, but retains conservative
+routing as fallback. Roof cover, the 25% grade cap and smooth transitions remain
+mandatory; an unsuccessful preference alone cannot discard a buildable region.
 `PLANET_ROAD_NETWORK=1` also enables the network directly. Set
 `PLANET_ROAD_NETWORK=0` to retain the old single-road interactive experiment;
 its existing replay names select the pilot automatically.

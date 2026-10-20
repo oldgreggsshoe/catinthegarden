@@ -10,45 +10,60 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 20 October: shared forks, court-edge signs, orbital traces and more tunnels.**
-The photographed nameplate now stands outside the parking pavement (post20.75m
-from its20m-radius court), facing arriving traffic. The112m duplicated fork
-prefix is one shared trunk before heights are fitted. Connected physical deck
-quad intersections, not inflated capsules, determine each arm's flat overlap.
-Former branch nodes that become ordinary bends are re-filleted before fitting;
-mesh angle checks are not bypassed. Exact-photo checks find33 spans and25 real
-piers with no duplicate trunk or blocking pier (baseline6 obstructions).
-
-The broader checks exposed two near village accesses only27m apart, with
-incompatible court heights. Siting now keeps accesses75m apart, accounting conservatively for two20m court
-radii, two15m offsets and5m margin, using the existing bounded
-alternate-position search. Original village identities/centres remain intact.
-A real51-village hillside regression now passes with5259 spans. Routing retains the legacy17% search first, with12%/8% alternatives; FINAL roads retain the25%
-physical grade and0.005/m grade-rate limits. The vertical solver can reject a
-provably impossible bounded linear system early using its dual rows; there is
-no increased sweep budget or relaxed engineering tolerance.
-
-R toggles the overlay (off by default; PLANET_ROAD_LINES=1 starts enabled).
+**Current phase, 20 October: viable tunnel preference and orbital road traces.**
+R toggles road traces; off by default, PLANET_ROAD_LINES=1 starts enabled.
 Exact resident road/tunnel traces are green. Above50km, cached whole-planet
-SCHEMATIC centre/gateway trunks are red until their region successfully
-engineers, then green for the session independently of cache eviction. Known
-occupancy-pruned links are omitted. The schematic is NOT an exact engineered
-planet-wide alignment or individual village-access map. Far-side traces are
-horizon-clipped; planned lines are thinner/translucent to avoid blanketing the
-globe. Geometry/colour changes are worker-built and GPU-cached, with no overlay
-draw/upload while off, and no per-frame routing/layout.
+SCHEMATIC region-centre/gateway connections are red until successfully prepared
+by the streaming worker, then green for this session even after cache eviction.
+Known occupancy-pruned links are omitted. This is not an exact global alignment
+or individual village-access map. Traces are horizon-clipped; planned strokes
+are thinner/translucent so the globe remains readable. Off adds no overlay GPU
+draws/uploads; all routing and line generation remain on the existing worker.
 
-Land bore base cost is1.25 (was2.0), retaining travel, depth and unchanged sea
-costs. A1.2km land bore with100m cover now beats a1.5km ordinary-road detour;
-an equally short surface road still wins. Cover, minimum bore extent, shared
-anchors, vehicle grade and vertical-curve constraints remain mandatory.
+Regional surveys now prefer tunnel shortcuts (land-bore hint1.25 versus the
+conservative2.0), with sea/depth costs and all cover, minimum bore extent,25%
+physical-grade and0.005/m vertical-curve checks unchanged. The coarse planetary
+gateway graph and height-state search retain their established conservative
+costs. Changing those global weights selected unengineerable gateways and was
+rejected, not shipped.
 
-Opened fork/parking four-view replay1792494885-6132 and orbital red/green
-three-view replay1792494773-5773 pass. These precede only the final court-spacing
-siting guard; the photographed geometry itself is unchanged. Final broader
-validation is running; do not treat this as a global engineering audit or a
-measured FPS improvement. F5/ray removal is DONE (see the final section); other
-junction exterior/support envelopes and tunnel concrete material remain deferred. Preserve unrelated renderer edits.
+`road_network_mesh::prepare_local` tries the preferred survey/engineering first,
+bounded deterministically by100,000 terrain probes or256 cancellation polls
+without survey progress. If rejected/exhausted it reconstructs the conservative
+regional survey and engineers that with the original full budgets. Cancellation
+from a superseding request still exits immediately. Both streaming and distant
+sign navigation use this producer; no preference-only failure drops a previously
+buildable region or leaves distance signs describing a different road.
+
+A controlled ridge geometry regression changes a19,281.6m surface detour into
+a15,447.6m route with4,740.7m covered, retaining grade and curvature limits.
+This demonstrates a viable shortcut in the fixture, not a planet-wide tunnel count.
+
+Parking-edge nameplates remain: post20.75m from a20m-radius court, complete
+board outside pavement and facing arrivals. Other sign offsets are unchanged.
+
+**Fork prototype deliberately rolled back:** dc1ca92's parallel F5 commit also
+included the unfinished shared-prefix/extended-flat-apron experiment. It fixes
+the photographed112m duplicated trunk locally but regresses dense-region
+engineering. This follow-up restores established alignment, profiles and court
+siting, without undoing F5/raster/ocean work. The photographed unusable fork and
+general junction/support envelopes are still unfinished; do not claim them fixed.
+Draft source is preserved in dc1ca92 and
+`test-runs/road-fork-draft-20261020-132253/`, plus the saved experiment patches.
+The old `road_network_village_fork` replay remains available for reproduction.
+
+Validation:85 focused road tests and7 Vulkan checks pass on the active post-F5
+checkout. Seven real worker checks pass (244/15/76 villages retained, including
+both manual unserved positions and sign publication). Full suite723 pass/same6
+unrelated FOV/optical-zoom/shallow-water/ship-label failures,62 ignored; release
+build passes. Opened all three final orbital captures1792499224-40556. Real X11
+R key presses in1792499448-40702 produce on/off/on captures and enabled=false/
+true log entries; manifest passes and the off/on globe views were opened.
+No steady-state FPS gain is claimed. Temporary validation checkout
+`/home/dad/stuff-road-validation` has its own `target-roads/`; it is a validation
+workspace, NOT the release branch to push. The follow-up belongs on the active
+`experiment/ocean-wind-sea-spectrum` branch. Tunnel concrete material and the
+shared-fork engineering still need follow-up.
 
 **Previous phase, 19 October: narrow through-road seam at a junction.**
 Manual `1792415387-1209990/capture-001.png` shows a deck wedge and broken
@@ -110,7 +125,7 @@ Opened `road_network_signs/1792414153-1199645` junction,
 `1792415034-1209238` reassurance4.5km; all scenario manifests pass. These are
 visual evidence, not an FPS gain. User app competed during parts of testing.
 
-**Current user priority:** fix parking sign placement and the unusable fork, commit/push,
+**Current user priority:** ship road traces and viable tunnel preference, commit/push; the fork still needs follow-up,
 and conserve usage. Village entrance/branch signs are committed. F5/ray removal was deferred here and has since been completed (final section).
 
 **Still unfinished:** general junction-outline/support-envelope review and tunnel

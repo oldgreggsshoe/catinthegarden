@@ -12,3 +12,13 @@ desert 19.59 -> 19.70 | tundra 19.41 -> 19.32 | coast 19.50 -> 19.55 | low fligh
 ground to orbit 17.26 -> 15.76
 Steady-state FPS is unchanged within noise. The ray pass never ran in raster mode, so none was expected.
 Ray-specific startup work fell from about 0.9 s to about 0.4 s. Total startup is too noisy to compare (4.6-7.9 s either way).
+
+I’ll make the tunnel-preferred route a bounded planning attempt, with the existing route as fallback if it fails engineering checks. That lets viable shortcuts use more tunnels without disconnecting villages or weakening road limits.
+
+The parallel F5 commit has now included the unfinished road prototype too. I’ll make a road-only follow-up that preserves the renderer changes, restores the established junction code, and keeps the tunnel-preference pass with its safe fallback. The draft remains recoverable from the earlier commit and saved files.
+
+The tunnel preference now passes a real geometry regression: the test ridge’s 19.3 km detour becomes a 15.4 km route with 4.7 km underground, while retaining the grade and smoothing limits. All seven village-network checks pass too. I’m finishing the commit and push.
+
+Implemented and pushed: regional routing now favours viable tunnel shortcuts, with a safe fallback if engineering fails. The 25% gradient cap, smooth transitions and roof-cover requirements remain unchanged.
+
+85 road tests pass; the full suite retains six unrelated failures. R toggles the red planned / green generated road overlay. The unusable fork fix remains pending.

@@ -14,40 +14,36 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
-## Forks, courts, orbital traces and tunnel preference, 20 October
+## Road traces and viable tunnel preference, 20 October
 
-The photographed112m duplicated horizontal prefix is merged before independent
-height fitting. Actual carriageway-quad intersections trace connected fork
-mouth overlap across curved stations, separately for each arm. Refit ordinary
-bends created by branch merging; do not disable the drivable-angle validator.
-All final25% grade,0.005/m grade-rate, cover and anchor limits remain in force.
-Routing retains the legacy17% search first, with conservative12%/8% alternatives
-when needed. The bounded vertical solve can reject certified infeasibility early.
+**R** toggles traces, off by default; **PLANET_ROAD_LINES=1** starts on.
+Resident engineered roads/bores are green. Above50km the whole planned backbone
+is shown SCHEMATICALLY via region centres/gateways, red until prepared by the
+streaming worker and green afterward for this session, independent of eviction.
+Known occupancy-pruned links are omitted. This is not an exact planet-wide
+village-access drawing. Far-side strokes are horizon-clipped; cached worker-built
+geometry needs no frame-loop routing/layout and no overlay GPU draws/uploads
+while off. `road_network_lines` captures100km and two whole-globe distances.
 
-Nameplate posts stand20.75m from their20m-radius court centre, with the whole
-board outside the pavement and facing arrivals. A new court-spacing guard keeps
-accesses75m apart (two20m radii, two15m offsets and5m margin); existing
-bounded alternate positions avoid incompatible overlapping parking levels.
-The real51-village hillside regression checks access spacing and final grades.
-`road_network_village_fork` reproduces both manual views and parking/fork
-outlooks at1024x640/FOV60. Other junction/overpass envelopes remain unaudited.
+Regional planning favours viable tunnel shortcuts with a1.25 land-bore hint
+rather than the conservative2.0. Global gateway topology and height-state search
+keep their established conservative costs; sea/depth costs and all25% grades,
+vertical curves, roof cover and minimum bore-extent checks remain unchanged.
+A bounded preferred attempt (100,000 ground probes/256 no-progress cancellation
+polls) falls back to the original conservative survey/engineering when it cannot
+be built. Streaming and distant sign navigation share `prepare_local`, so an
+optional preference does not discard a previously feasible regional network.
+The controlled ridge geometry regression reduces road length19,281.6m ->
+15,447.6m with4,740.7m covered, while checking grade and curvature limits.
+This is fixture evidence, not a planet-wide tunnel inventory.
 
-**R** toggles debug road traces, off by default; **PLANET_ROAD_LINES=1** starts
-on. Resident engineered lines (including bores) are green. Above50km, the whole
-planet's planned backbone is shown schematically via region centres/gateways:
-red for ungenerated regions, green for successfully generated regions for this
-session, even after cache eviction. Exact occupancy-pruned connections disappear.
-This is not a claim that every red link has passed engineering, nor an exact
-planet-wide village-access drawing. Global lines are horizon-clipped; cached
-worker-built geometry needs no frame-loop routing or layout. Disabled overlays
-have no additional GPU uploads/draws. `road_network_lines` captures100km and two
-whole-globe distances.
-
-Land bore base cost is reduced2.0 ->1.25 in the shared construction model.
-Travel/depth costs and sea bore costs are unchanged. A1.2km bore with100m cover
-now beats a1.5km ordinary-road detour, while equal-length ordinary road remains
-cheaper. Roof cover, minimum tunnel extent and all engineering verification are
-unchanged: this encourages viable shortcuts rather than forcing unsafe bores.
+Nameplate posts remain20.75m from their20m-radius court centre, with the complete
+board outside pavement and facing arriving traffic. The unsuccessful broader
+shared-fork/extended-apron prototype from dc1ca92 is not retained: original
+alignment/profiling/court siting is restored. The draft survives in that commit
+and test-runs archives; the photographed unusable fork and general junction /
+support-envelope work are still pending. Do not infer a global geometry audit
+from the debug overlay or these real-worker checks.
 
 ## Narrow through-road junction seam, 19 October
 

@@ -259,9 +259,7 @@ impl Navigator {
         if let Some(error) = self.rejected.get(&key) {
             return Err(error.clone());
         }
-        let result = backbone
-            .local(key, radius, terrain)
-            .and_then(|region| crate::road_network_mesh::prepare(region, radius, terrain));
+        let result = crate::road_network_mesh::prepare_local(backbone, key, radius, terrain);
         let p = match result {
             Ok(p) => p,
             Err(error) => {

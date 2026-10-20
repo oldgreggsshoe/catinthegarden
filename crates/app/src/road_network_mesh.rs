@@ -110,6 +110,95 @@ impl Prepared {
     }
 }
 
+// A preference must not turn a previously connected village into a rejected
+// region. Bound speculative work deterministically, then retain the established
+// conservative survey/profile if the cheaper-bore alignment cannot be built.
+const PREFERRED_SURVEY_SAMPLES: usize = 100_000;
+// Stop a speculative solver/search that keeps polling without advancing the
+// terrain survey; the conservative pass retains its existing full budgets.
+const PREFERRED_QUIET_CHECKS: usize = 256;
+struct TunnelPreference<'a, T> {
+    terrain: &'a T,
+    samples: std::cell::Cell<usize>,
+    last_samples: std::cell::Cell<usize>,
+    quiet_checks: std::cell::Cell<usize>,
+}
+impl<T: Survey> Survey for TunnelPreference<'_, T> {
+    fn cancelled(&self) -> bool {
+        if self.terrain.cancelled() {
+            return true;
+        }
+        let samples = self.samples.get();
+        if samples == self.last_samples.get() {
+            self.quiet_checks
+                .set(self.quiet_checks.get().saturating_add(1));
+        } else {
+            self.last_samples.set(samples);
+            self.quiet_checks.set(0);
+        }
+        samples >= PREFERRED_SURVEY_SAMPLES || self.quiet_checks.get() >= PREFERRED_QUIET_CHECKS
+    }
+    fn ground(&self, d: DVec3) -> Result<road_network::Ground, String> {
+        if self.cancelled() {
+            return Err("tunnel preference probe budget exhausted".into());
+        }
+        self.samples.set(self.samples.get() + 1);
+        self.terrain.ground(d)
+    }
+    fn villages(&self, key: TileKey) -> Result<Vec<DVec3>, String> {
+        self.terrain.villages(key)
+    }
+    fn settlement_core_at(&self, d: DVec3) -> Result<bool, String> {
+        self.terrain.settlement_core_at(d)
+    }
+    fn village_access_height(&self, g: road_network::Ground) -> f64 {
+        self.terrain.village_access_height(g)
+    }
+    fn may_have_villages(&self, key: TileKey) -> Result<bool, String> {
+        self.terrain.may_have_villages(key)
+    }
+}
+pub fn prepare_local(
+    backbone: &road_network::Backbone,
+    key: TileKey,
+    radius: f64,
+    terrain: &impl Survey,
+) -> Result<Prepared, String> {
+    if terrain.cancelled() {
+        return Err("road generation superseded".into());
+    }
+    let preferred = TunnelPreference {
+        terrain,
+        samples: std::cell::Cell::new(0),
+        last_samples: std::cell::Cell::new(0),
+        quiet_checks: std::cell::Cell::new(0),
+    };
+    match backbone
+        .local(key, radius, &preferred)
+        .and_then(|r| prepare(r, radius, &preferred))
+    {
+        Ok(plan) => {
+            tracing::debug!(
+                ?key,
+                samples = preferred.samples.get(),
+                "tunnel-preferred alignment accepted"
+            );
+            return Ok(plan);
+        }
+        Err(error) => {
+            if terrain.cancelled() {
+                return Err(error);
+            }
+            tracing::debug!(?key,%error,"tunnel-preferred alignment rejected; keeping conservative route");
+        }
+    }
+    prepare(
+        backbone.local_conservative(key, radius, terrain)?,
+        radius,
+        terrain,
+    )
+}
+
 pub fn prepare(region: Region, radius: f64, terrain: &impl Survey) -> Result<Prepared, String> {
     let mut error = String::new();
     // Siting a wider court changes the fixed approach height. A dry first
@@ -133,7 +222,6 @@ fn prepare_at(
     setback: f64,
 ) -> Result<Prepared, String> {
     let mut centres = Vec::new();
-    let mut accesses: Vec<DVec3> = Vec::new();
     for (index, terminal) in region.terminals.iter_mut().enumerate() {
         if !matches!(terminal.kind, TerminalKind::Village) {
             continue;
@@ -175,13 +263,6 @@ fn prepare_at(
                                 + 4.0
                                 + extra))
                         .normalize();
-                    // Leave room for both 20m courts, their 15m offsets,
-                    // and the approach transitions even when headings differ.
-                    let separation =
-                        2.0 * (crate::road_parking::RADIUS + crate::road_parking::OFFSET) + 5.0;
-                    if accesses.iter().any(|p| p.distance(d) * radius < separation) {
-                        continue;
-                    }
                     if planet_coretypes::tile_key_for_direction(d, region.key.level) == region.key
                         && !terrain.ground(d)?.ocean
                         && !terrain.settlement_core_at(d)?
@@ -214,7 +295,6 @@ fn prepare_at(
             }
             let approach =
                 approach.ok_or("no dry village access apron outside protected houses")?;
-            accesses.push(approach);
             terminal.direction = approach.to_array();
             region.nodes[node].direction = approach.to_array();
             region.nodes[node].ground_meters = terrain.ground(approach)?.height;
@@ -1275,6 +1355,46 @@ fn banks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn road_tunnel_preference_budget_preserves_survey_contract_and_stops_speculation() {
+        struct Flat;
+        impl Survey for Flat {
+            fn ground(&self, _: DVec3) -> Result<road_network::Ground, String> {
+                Ok(road_network::Ground {
+                    height: 1000.0,
+                    ocean: false,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(Vec::new())
+            }
+            fn village_access_height(&self, g: road_network::Ground) -> f64 {
+                g.height + 0.25
+            }
+            fn settlement_core_at(&self, _: DVec3) -> Result<bool, String> {
+                Ok(true)
+            }
+        }
+        let trial = TunnelPreference {
+            terrain: &Flat,
+            samples: std::cell::Cell::new(0),
+            last_samples: std::cell::Cell::new(0),
+            quiet_checks: std::cell::Cell::new(0),
+        };
+        let g = trial.ground(DVec3::Z).unwrap();
+        assert_eq!(trial.village_access_height(g), 1000.25);
+        assert!(trial.settlement_core_at(DVec3::Z).unwrap());
+        assert!(!trial.cancelled());
+        for _ in 0..PREFERRED_QUIET_CHECKS {
+            trial.cancelled();
+        }
+        assert!(trial.cancelled());
+        assert!(trial.ground(DVec3::Z).is_err());
+        trial.quiet_checks.set(0);
+        trial.samples.set(PREFERRED_SURVEY_SAMPLES);
+        assert!(trial.cancelled());
+    }
+
     use crate::road_network::{Backbone, Ground};
     use planet_coretypes::CubeFace;
     struct Flat;

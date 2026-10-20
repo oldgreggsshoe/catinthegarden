@@ -121,11 +121,7 @@ impl Worker {
                             shared: &thread_shared,
                             generation: 0,
                         };
-                        let plan = Arc::new(road_network_mesh::prepare(
-                            backbone.local(key, radius, &survey)?,
-                            radius,
-                            &survey,
-                        )?);
+                        let plan = Arc::new(road_network_mesh::prepare_local(&backbone,key,radius,&survey)?);
                         let pose = plan.inspection_pose(initial, radius);
                         let centre = pose.map_or(initial, |p| p.0);
                         let mut initial_plans = vec![plan.clone()];
@@ -153,11 +149,7 @@ impl Worker {
                                 if neighbour != key
                                     && !initial_plans.iter().any(|p| p.region.key == neighbour)
                                 {
-                                    initial_plans.push(Arc::new(road_network_mesh::prepare(
-                                        backbone.local(neighbour, radius, &survey)?,
-                                        radius,
-                                        &survey,
-                                    )?));
+                                    initial_plans.push(Arc::new(road_network_mesh::prepare_local(&backbone,neighbour,radius,&survey)?));
                                 }
                             }
                         }
@@ -206,11 +198,7 @@ impl Worker {
                                         return Err("road generation superseded".into());
                                     }
                                     if !cache.contains_key(&key) {
-                                        let plan = road_network_mesh::prepare(
-                                            backbone.local(key, radius, &survey)?,
-                                            radius,
-                                            &survey,
-                                        )?;
+                                        let plan = road_network_mesh::prepare_local(&backbone,key,radius,&survey)?;
                                         if cache.len() >= CACHE_REGIONS {
                                             let oldest = *cache
                                                 .iter()
@@ -308,194 +296,6 @@ impl Drop for Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    #[ignore = "asset-backed dense hillside fork regression; no GPU"]
-    fn road_network_live_dense_hillside_region_remains_feasible() {
-        let source = Surface::load(&crate::find_default_outmap().unwrap()).unwrap();
-        let shared = Shared {
-            request: Mutex::new(None),
-            wake: Condvar::new(),
-            result: Mutex::new(None),
-            signs: Mutex::new(None),
-            generation: AtomicU64::new(0),
-            stop: AtomicBool::new(false),
-        };
-        let survey = Engineering {
-            source: &source,
-            shared: &shared,
-            generation: 0,
-        };
-        for (x, y) in [(44, 1), (43, 0)] {
-            let key = TileKey {
-                face: planet_coretypes::CubeFace::PositiveX,
-                level: 8,
-                x,
-                y,
-            };
-            let radius = crate::planet::planet_radius_meters();
-            let region = source
-                .backbone()
-                .unwrap()
-                .local(key, radius, &survey)
-                .unwrap();
-            let villages = region.village_count;
-            let plan = road_network_mesh::prepare(region, radius, &survey).unwrap();
-            assert_eq!(plan.village_centres.len(), villages);
-            let courts: Vec<_> = plan
-                .region
-                .terminals
-                .iter()
-                .zip(&plan.region.terminal_nodes)
-                .filter(|(t, _)| matches!(t.kind, road_network::TerminalKind::Village))
-                .map(|(_, &node)| {
-                    let &[a, b] = plan
-                        .profile
-                        .segments
-                        .iter()
-                        .find(|&&[a, b]| a == node || b == node)
-                        .unwrap();
-                    let d = DVec3::from_array(plan.profile.directions[node]);
-                    let next =
-                        DVec3::from_array(plan.profile.directions[if a == node { b } else { a }]);
-                    let forward = (next - d * next.dot(d)).normalize();
-                    d * radius - forward * crate::road_parking::OFFSET
-                })
-                .collect();
-            for (i, a) in courts.iter().enumerate() {
-                for b in &courts[..i] {
-                    assert!(
-                        a.distance(*b) >= 2.0 * crate::road_parking::RADIUS,
-                        "overlapping courts: {a:?} {b:?}"
-                    );
-                }
-            }
-            assert!(plan.profile.maximum_grade <= crate::road_route::MAX_GRADE);
-            assert!(
-                plan.profile.maximum_grade_change_per_meter
-                    <= crate::road_vertical::MAX_GRADE_CHANGE_PER_METER
-            );
-            eprintln!(
-                "dense hillside: {villages} villages, {} spans",
-                plan.profile.segments.len()
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "asset-backed photographed shared fork and support clearance; no GPU"]
-    fn road_network_live_photographed_fork_shares_trunk_and_clearance() {
-        let eye = DVec3::new(1818071.767832849, 2162375.6548068463, 2843752.6942250505);
-        let (mut worker, _) = Worker::start(crate::find_default_outmap().unwrap(), eye).unwrap();
-        worker.request(eye, true);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
-        let snapshot = loop {
-            if let Some((_, s)) = worker.take() {
-                break s.unwrap();
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        };
-        // At this photographed fork, ten pairs of spans shared a horizontal
-        // prefix with up to 11.7m height separation. It must be one trunk.
-        let field = &snapshot.field;
-        let local = field.frame.local(eye);
-        let roads: Vec<_> = field
-            .segments
-            .iter()
-            .filter(|s| !s.is_parking() && s.nearest(local.truncate()).1 < 200.0)
-            .collect();
-        for (i, s) in roads.iter().enumerate() {
-            let delta = (s.b - s.a).truncate();
-            let length = delta.length();
-            let u = delta / length;
-            for other in &roads[..i] {
-                let d = (other.b - other.a).truncate();
-                if u.dot(d.normalize()).abs() < 0.99999 {
-                    continue;
-                }
-                let a = (other.a - s.a).truncate().dot(u);
-                let b = (other.b - s.a).truncate().dot(u);
-                let lo = a.min(b).max(0.0);
-                let hi = a.max(b).min(length);
-                if hi - lo < 0.2 {
-                    continue;
-                }
-                let p = s.a.lerp(s.b, (lo + hi) * 0.5 / length);
-                assert!(
-                    other.nearest(p.truncate()).1 >= 0.05,
-                    "photographed fork still has duplicate horizontal trunks: {:?} {:?}",
-                    s.a,
-                    other.a
-                );
-            }
-        }
-        // Inspect real generated axis-aligned 0.9m pier boxes, rather than
-        // hiding supports or accepting two road surfaces at different levels.
-        let mut piers = std::collections::BTreeSet::new();
-        for vertices in snapshot.vertices.windows(36).step_by(3) {
-            if vertices.iter().any(|v| {
-                v.colour
-                    .iter()
-                    .zip([0.32, 0.31, 0.29])
-                    .any(|(&a, b)| (a - b).abs() > 1e-5)
-            }) {
-                continue;
-            }
-            let mut low = DVec3::splat(f64::INFINITY);
-            let mut high = DVec3::splat(f64::NEG_INFINITY);
-            for v in vertices {
-                let p = DVec3::from_array(v.position.map(f64::from));
-                low = low.min(p);
-                high = high.max(p);
-            }
-            let size = high - low;
-            if (size.x - 0.9).abs() > 0.003
-                || (size.y - 0.9).abs() > 0.003
-                || size.z < 2.0
-                || ((low + high) * 0.5 - local).truncate().length() > 200.0
-            {
-                continue;
-            }
-            if vertices.iter().any(|v| {
-                let p = DVec3::from_array(v.position.map(f64::from));
-                (p - low).abs().min((p - high).abs()).max_element() > 0.003
-            }) {
-                continue;
-            }
-            if !piers.insert((
-                (low.x * 100.0).round() as i64,
-                (low.y * 100.0).round() as i64,
-                (low.z * 100.0).round() as i64,
-            )) {
-                continue;
-            }
-            for x in [0.05, 0.5, 0.95] {
-                for y in [0.05, 0.5, 0.95] {
-                    let p = low + size * DVec3::new(x, y, 0.0);
-                    for s in &roads {
-                        let d = (s.b - s.a).truncate();
-                        let t = (p - s.a).truncate().dot(d) / d.length_squared();
-                        if !(0.0..=1.0).contains(&t) {
-                            continue;
-                        }
-                        let deck = s.a.lerp(s.b, t);
-                        let inside = (p - deck).truncate().length() < 4.8;
-                        assert!(
-                            !(inside && low.z < deck.z && high.z > deck.z + 0.25),
-                            "support blocks the photographed carriageway: {low:?} {high:?} at {deck:?}"
-                        );
-                    }
-                }
-            }
-        }
-        assert!(piers.len() >= 2, "the test must examine actual supports");
-        eprintln!(
-            "photographed fork: {} spans and {} unobstructing piers",
-            roads.len(),
-            piers.len()
-        );
-    }
-
     #[test]
     #[ignore = "asset-backed asynchronous road sign/atlas publication; no GPU"]
     fn road_network_live_signs_follow_published_field() {

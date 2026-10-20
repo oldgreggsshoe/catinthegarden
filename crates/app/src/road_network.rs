@@ -162,7 +162,11 @@ impl Backbone {
                 for j in 0..4 {
                     let distance = arc(points[j], points[j + 1], radius);
                     length += distance;
-                    cost += edge_cost(distance, samples[j], samples[j + 1]);
+                    cost += crate::road_construction::backbone_edge(
+                        distance,
+                        samples[j],
+                        samples[j + 1],
+                    );
                 }
                 candidates.push(Link {
                     a,
@@ -334,6 +338,23 @@ impl Backbone {
         radius: f64,
         terrain: &impl Survey,
     ) -> Result<Region, String> {
+        self.local_at_preference(region, radius, terrain, true)
+    }
+    pub(crate) fn local_conservative(
+        &self,
+        region: TileKey,
+        radius: f64,
+        terrain: &impl Survey,
+    ) -> Result<Region, String> {
+        self.local_at_preference(region, radius, terrain, false)
+    }
+    fn local_at_preference(
+        &self,
+        region: TileKey,
+        radius: f64,
+        terrain: &impl Survey,
+        prefer_tunnels: bool,
+    ) -> Result<Region, String> {
         if !radius.is_finite() || radius <= 0.0 {
             return Err("invalid local survey radius".into());
         }
@@ -379,7 +400,14 @@ impl Backbone {
                 });
             }
         }
-        local_tree(region, radius, terrain, terminals, village_count)
+        local_tree_at_preference(
+            region,
+            radius,
+            terrain,
+            terminals,
+            village_count,
+            prefer_tunnels,
+        )
     }
 }
 
@@ -459,12 +487,23 @@ impl Ord for Queue {
     }
 }
 
+#[cfg(test)]
 fn local_tree(
     region: TileKey,
     radius: f64,
     terrain: &impl Survey,
     terminals: Vec<Terminal>,
     village_count: usize,
+) -> Result<Region, String> {
+    local_tree_at_preference(region, radius, terrain, terminals, village_count, true)
+}
+fn local_tree_at_preference(
+    region: TileKey,
+    radius: f64,
+    terrain: &impl Survey,
+    terminals: Vec<Terminal>,
+    village_count: usize,
+    prefer_tunnels: bool,
 ) -> Result<Region, String> {
     if !radius.is_finite() || radius <= 0.0 {
         return Err("invalid local survey radius".into());
@@ -570,7 +609,14 @@ fn local_tree(
             .filter(|&j| j != usize::MAX)
             .chain(extra[i].iter().copied())
     };
-    let cost = |a: usize, b: usize| edge_cost(arc(dirs[a], dirs[b], radius), ground[a], ground[b]);
+    let cost = |a: usize, b: usize| {
+        let length = arc(dirs[a], dirs[b], radius);
+        if prefer_tunnels {
+            edge_cost(length, ground[a], ground[b])
+        } else {
+            crate::road_construction::backbone_edge(length, ground[a], ground[b])
+        }
+    };
     let mut distance = vec![f64::INFINITY; dirs.len()];
     let mut owner = vec![usize::MAX; dirs.len()];
     let mut parent = vec![usize::MAX; dirs.len()];
@@ -818,6 +864,72 @@ mod tests {
         let empty = Backbone::survey(2, 4e6, &Sparse { none: true }).unwrap();
         assert!(empty.links.is_empty());
         assert_eq!(empty.retained_region_count(), 0);
+    }
+
+    #[test]
+    fn road_network_tunnel_preference_adds_a_viable_shortcut_not_just_a_lower_price() {
+        struct Ridge;
+        impl Survey for Ridge {
+            fn ground(&self, d: DVec3) -> Result<Ground, String> {
+                let k = test_key();
+                let (normal, u, v) = crate::planet::cube_face_basis(k.face.index());
+                let x = (d.dot(u) / d.dot(normal) + 1.0) * 128.0 - k.x as f64;
+                let y = (d.dot(v) / d.dot(normal) + 1.0) * 128.0 - k.y as f64;
+                let ridge = (1.0 - (x - 0.5).abs() / 0.08).max(0.0);
+                Ok(Ground {
+                    height: 900.0 + 1400.0 * ridge * ((0.65 - y) / 0.1).clamp(0.0, 1.0),
+                    ocean: false,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(Vec::new())
+            }
+        }
+        let plan = |preferred| {
+            let region = local_tree_at_preference(
+                test_key(),
+                4e6,
+                &Ridge,
+                terminals(&[(0.25, 0.5), (0.75, 0.5)]),
+                2,
+                preferred,
+            )
+            .unwrap();
+            crate::road_network_mesh::prepare(region, 4e6, &Ridge).unwrap()
+        };
+        let conservative = plan(false);
+        let preferred = plan(true);
+        let covered = |p: &crate::road_network_mesh::Prepared| {
+            p.profile
+                .segments
+                .iter()
+                .zip(&p.tunnels)
+                .filter(|(_, covered)| **covered)
+                .map(|(&[a, b], _)| {
+                    arc(
+                        DVec3::from_array(p.profile.directions[a]),
+                        DVec3::from_array(p.profile.directions[b]),
+                        4e6 + p.profile.heights_meters[a].min(p.profile.heights_meters[b]),
+                    )
+                })
+                .sum::<f64>()
+        };
+        eprintln!(
+            "ridge preference: covered {:.1} -> {:.1}m; road {:.1} -> {:.1}m",
+            covered(&conservative),
+            covered(&preferred),
+            conservative.region.length_meters,
+            preferred.region.length_meters
+        );
+        assert!(covered(&preferred) > covered(&conservative) + 500.0);
+        assert!(preferred.region.length_meters < conservative.region.length_meters);
+        for p in [&conservative, &preferred] {
+            assert!(p.profile.maximum_grade <= crate::road_route::MAX_GRADE);
+            assert!(
+                p.profile.maximum_grade_change_per_meter
+                    <= crate::road_vertical::MAX_GRADE_CHANGE_PER_METER
+            );
+        }
     }
 
     #[test]
