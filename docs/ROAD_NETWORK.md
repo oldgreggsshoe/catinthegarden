@@ -14,6 +14,20 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Interactive entrance start, 20 October
+
+Ordinary road-experiment startup now uses the verified mouth of the largest
+recorded regional undersea component (19.14km in PositiveX152/152). Tracing its
+unbranched continuation through152/151 yields20.06km to the opposite real exit,
+not merely a cache boundary. The site is pinned to the current survey; it does
+not assert that the unfinished whole-planet survey has found its global maximum.
+The camera stands3m inside the dry mouth, looking along the road. Both current
+mouths are below sea level; an outside pose floated to the sea and was rejected.
+Their exposed approaches remain an engineering defect, not repaired by spawning
+inside. Opened actual flight/walking captures1792536909-130927 retain2.0/1.7m
+floor clearance. Legacy site overrides and default scenario starts are retained.
+No per-frame work or routing/grade/cover change. See HANDOFF for tests/evidence.
+
 ## Shared fork topology before curves, 20 October
 
 The photographed under-running branch was a duplicate horizontal trunk at

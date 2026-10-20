@@ -87,3 +87,11 @@ I found an entrance to the tunnel containing the longest recorded undersea secti
 I’ll update the interactive road-start selection and portal-facing pose, keep the existing site overrides and scripted camera starts unchanged, then check the spawn in the renderer.
 
 Spawn plan: inspect/modify road_network_render.rs (default site), main.rs (preserve replay defaults) and road_network_mesh.rs (a near-portal pose on the actual open-road segment); add focused and real-worker spawn checks in the existing road tests. No per-frame scan of statistics and no changes to routing, grades or the running precompute.
+
+The first render check caught a problem: that portal’s approach is below sea level, and the camera ends up on the water. I won’t use that spawn. I’m tracing the tunnel to its other end to check for a usable land-side entrance.
+
+Both ends currently have below-sea-level mouths. I’ll put the start 3 metres inside the dry tunnel mouth, facing along the road. That keeps it at the entrance without the camera jumping to the sea surface. The exposed approach needs separate follow-up.
+
+The new start is verified in both flight and walking modes: it stays on the road, 3 metres inside the mouth, facing into the tunnel. Tracing across the neighbouring region gives a 20.06 km entrance-to-exit route. Existing site overrides and scripted starts still work.
+
+Changed and pushed. PLANET_ROAD_EXPERIMENT=1 now starts 3 metres inside that tunnel’s mouth, facing in. Verified in both flight and walking modes; the usual launch flag is unchanged.

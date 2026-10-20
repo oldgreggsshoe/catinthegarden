@@ -25,7 +25,8 @@ pub struct Prepared {
 impl Prepared {
     pub fn inspection_pose(&self, near: DVec3, radius: f64) -> Option<(DVec3, DVec3)> {
         let p = &self.profile;
-        if std::env::var("PLANET_ROAD_SIGN_VIEW").as_deref() == Ok("tunnel") {
+        let tunnel_header = std::env::var("PLANET_ROAD_SIGN_VIEW").as_deref() == Ok("tunnel");
+        {
             let mut status = vec![(false, false, None); p.directions.len()];
             for (index, &[a, b]) in p.segments.iter().enumerate() {
                 for (i, j) in [(a, b), (b, a)] {
@@ -51,10 +52,42 @@ impl Prepared {
             {
                 let at = DVec3::from_array(p.directions[i]) * (radius + p.heights_meters[i]);
                 let next = DVec3::from_array(p.directions[*j]) * (radius + p.heights_meters[*j]);
-                return Some((
-                    at - (next - at).normalize() * 18.0 + at.normalize() * 2.0,
-                    at + at.normalize() * 7.5,
-                ));
+                if tunnel_header {
+                    return Some((
+                        at - (next - at).normalize() * 18.0 + at.normalize() * 2.0,
+                        at + at.normalize() * 7.5,
+                    ));
+                }
+                // A surveyed entrance seed must not be replaced by the nearest
+                // village court. Use the real approach for dry outdoor mouths;
+                // a submerged mouth starts 3m inside its dry bore so normal sea
+                // clearance cannot relocate the eye onto the water. This does
+                // not repair the exposed approach. Legacy distant starts stay unchanged.
+                if near.distance(at) < 32.0 {
+                    let outside = p.segments.iter().enumerate().find_map(|(edge, &[a, b])| {
+                        if self.tunnels[edge] {
+                            return None;
+                        }
+                        let other = if a == i {
+                            b
+                        } else if b == i {
+                            a
+                        } else {
+                            return None;
+                        };
+                        let point = DVec3::from_array(p.directions[other])
+                            * (radius + p.heights_meters[other]);
+                        (point.distance(at) > 0.001).then_some(point)
+                    });
+                    if let Some(outside) = outside {
+                        let floor = if at.length() < radius {
+                            at.lerp(next, (3.0 / at.distance(next)).min(1.0))
+                        } else {
+                            at.lerp(outside, (18.0 / at.distance(outside)).min(1.0))
+                        };
+                        return Some((floor + at.normalize() * 2.0, next + next.normalize() * 2.0));
+                    }
+                }
             }
         }
         let node = self

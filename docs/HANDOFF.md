@@ -10,7 +10,42 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current work, 20 October: precompute continuation and longest-undersea entrance spawn.**
+**Current phase, 20 October: verified interactive longest-recorded undersea start.**
+`PLANET_ROAD_EXPERIMENT=1` without a scenario/site override now starts3m inside
+the dry mouth of the tunnel containing the largest completed regional sea
+component: PositiveX8/152/152,19,144.74m. A second saved plan in152/151 proves
+an unbranched910.82m continuation, identical shared gateway coordinates, and
+another actual open/covered portal:20,055.56m entrance-to-exit. Proof is in
+`test-runs/undersea-start-chain.json` and the two plans in undersea-start-plans/.
+This is a verified pinned candidate, NOT a completed planetary longest-tunnel
+result and NOT an automatic scan of statistics at startup or in a frame.
+
+`road_network_render::initial_position(interactive)` preserves the mountain
+start for scenarios and all explicit legacy sites; `longest_undersea` selects
+the new one explicitly, `mountain` selects the former default. `Prepared` finds
+a real nearby portal/floor rather than replacing the seed with a village court.
+Above-water mouths use their actual open approach; a submerged mouth uses3m of
+the covered road to retain the dry camera volume. Existing tunnel-header views
+remain unchanged. No routing, cover, grade, solver or presentation changes.
+
+**Rejected outside pose:** actual interactive captures1792536566-118230 show
+the nominal open-road eye at-10.47m being clamped to the water near+0.5m. Both
+ends of this tunnel have below-sea-level mouths in the current geometry. Do NOT
+claim their exposed approaches are repaired or normally drivable from outside.
+Final seed `(3863787.3709397693,737621.9152840758,-725919.6145042669)` is3m inside.
+Opened both actual interactive captures1792536909-130927: dry interior, facing
+along the road, altitude-12.721962m, clearance2.000003m in flight; real G toggle
+retains altitude-13.021965m/1.7m walking clearance. The helper checks those actual
+camera metrics, not just the CPU planned pose, and only controls its own PID.
+It leaves the user's existing renderer untouched.
+
+Validation:91 focused road tests pass, real-worker entrance/floor/heading/dry
+volume check passes, existing9-region/76-village undersea check passes; full
+suite729 pass/same6 unrelated failures,64 ignored. Release built. No FPS claim.
+Coastal open-approach water ownership/portal engineering still needs follow-up;
+dense244-village generation timeout below is not resolved by this spawn change.
+
+**Previous work, 20 October: precompute continuation and longest-undersea entrance spawn.**
 The existing seven-thread job was not interrupted. `scripts/road-precompute-status.py`
 reads atomic regional files before summary.json exists; supports --expected-regions
 and --json, separates failure/invalid/success counts and labels lengths honestly
@@ -25,8 +60,8 @@ in PositiveX_8_152_152. Stats-only files cannot be loaded as road geometry.
 The user now requests the default PLANET_ROAD_EXPERIMENT start at that tunnel's
 actual entrance. A separate one-region --road-precompute-plans probe is saved in
 `test-runs/undersea-start-plans/`; its exact portal pose is in undersea-start-pose.json.
-Portal878 has open and covered incident spans; current interactive default still
-needs changing/visual verification. Preserve explicit legacy sites/replay starts.
+Portal878 has open and covered incident spans; the final dry-mouth default is
+implemented/verified above. Explicit legacy sites/replay starts are preserved.
 
 **Previous phase, 20 October: shared fork topology before curve fitting.**
 The photographed ramp in `road_network_village_fork` was two independently

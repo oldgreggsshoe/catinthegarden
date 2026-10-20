@@ -12,22 +12,40 @@ pub fn enabled() -> bool {
         Err(_) => crate::road::enabled(),
     }
 }
-pub fn initial_position() -> DVec3 {
-    let direction = match std::env::var("PLANET_ROAD_NETWORK_SITE").as_deref() {
-        Ok("village") => {
+pub fn initial_position(interactive: bool) -> DVec3 {
+    initial_position_for_site(
+        std::env::var("PLANET_ROAD_NETWORK_SITE").ok().as_deref(),
+        interactive,
+    )
+}
+fn initial_position_for_site(site: Option<&str>, interactive: bool) -> DVec3 {
+    if site == Some("longest_undersea") || (site.is_none() && interactive) {
+        return longest_undersea_start_position();
+    }
+    let direction = match site {
+        Some("village") => {
             DVec3::new(2574139.618674488, -2554011.900402223, 1699659.6951081678).normalize()
         }
-        Ok("undersea") => return undersea_start_position(),
-        Ok("manual_snow") => {
+        Some("undersea") => return undersea_start_position(),
+        Some("manual_snow") => {
             DVec3::new(1804537.8505246886, 2191767.3184277415, 2834020.239721973).normalize()
         }
-        Ok("manual_corners") => {
+        Some("manual_corners") => {
             DVec3::new(1818372.4030723977, 2163321.697198833, 2842753.1646584594).normalize()
         }
         _ => crate::road::up(),
     };
     direction * (crate::planet::planet_radius_meters() + 10_000.0)
 }
+/// Entrance to the longest completed regional sea component in the current
+/// survey (PositiveX 8/152/152, 19,144.74m over sea; terrain version
+/// 11553600317892695948). Pinned, not a per-launch scan or a global length claim.
+/// The worker re-finds the portal/floor. This eye is 3m inside the dry mouth;
+/// its exposed approach is below sea level and cannot be used as an outdoor spawn.
+pub(crate) fn longest_undersea_start_position() -> DVec3 {
+    DVec3::new(3863787.3709397693, 737621.9152840758, -725919.6145042669)
+}
+
 pub(crate) fn undersea_start_position() -> DVec3 {
     let r = crate::planet::planet_radius_meters();
     let gateway = DVec3::new(-0.674991988920733, 0.2979456826095423, -0.674991988920733);
@@ -419,5 +437,43 @@ mod tests {
         assert!(!super::far_lod(4500.0, 600.0, false));
         assert!(super::far_lod(4700.0, 600.0, false));
         assert!(super::far_lod(100.0, 50.0, true));
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+    #[test]
+    fn road_default_interactive_site_is_the_verified_undersea_entrance() {
+        assert_eq!(
+            initial_position_for_site(None, true),
+            longest_undersea_start_position()
+        );
+        assert_eq!(
+            initial_position_for_site(Some("longest_undersea"), false),
+            longest_undersea_start_position()
+        );
+        let key = planet_coretypes::tile_key_for_direction(
+            longest_undersea_start_position(),
+            crate::road_network::REGION_LEVEL,
+        );
+        assert_eq!(
+            (key.face, key.x, key.y),
+            (planet_coretypes::CubeFace::PositiveX, 152, 152)
+        );
+    }
+    #[test]
+    fn road_replay_and_explicit_legacy_sites_retain_their_starts() {
+        let mountain = crate::road::up() * (crate::planet::planet_radius_meters() + 10_000.0);
+        assert_eq!(initial_position_for_site(None, false), mountain);
+        assert_eq!(initial_position_for_site(Some("mountain"), true), mountain);
+        assert_eq!(
+            initial_position_for_site(Some("undersea"), true),
+            undersea_start_position()
+        );
+        assert_ne!(
+            initial_position_for_site(Some("village"), true),
+            longest_undersea_start_position()
+        );
     }
 }

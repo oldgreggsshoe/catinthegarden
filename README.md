@@ -101,8 +101,15 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-ap
 ```
 
 Omit `--scenario` for ordinary walking/free flight. Mouse/WASD and **G** work as
-below. The default start is mountainous; `PLANET_ROAD_NETWORK_SITE=village` or
-`undersea` selects the other inspection starts. `road_network_trial`,
+below. The default interactive start is **3 m inside the entrance** of the
+undersea tunnel containing the longest sea section in the completed survey so
+far (19.14 km in one region; traced entrance-to-exit route about20.06 km).
+Its exposed approach is below sea level, so the dry-mouth placement avoids
+snapping the camera onto the sea surface. This is a pinned verified location,
+not an automatically updated global maximum as the survey continues.
+`PLANET_ROAD_NETWORK_SITE=mountain`, `village` or `undersea` keeps the legacy
+inspection sites; `longest_undersea` explicitly selects the new entrance.
+Unset this variable to use the new default. Scripted replay starts are unchanged. `road_network_trial`,
 `road_network_overview` and `road_network_walk` are automated replays.
 **R** toggles constant-pixel-width road traces (including tunnels): **green**
 for generated roads, **red** for ungenerated planned trunks. Above 50 km altitude,

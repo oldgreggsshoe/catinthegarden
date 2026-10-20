@@ -1948,7 +1948,7 @@ impl State {
                 &camera_bind_group_layout,
                 &mut terrain,
                 network_root.expect("village roads require a baked planet"),
-                road_network_render::initial_position(),
+                road_network_render::initial_position(scenario.is_none()),
             )
             .expect("village road network initial region must pass engineering")
         });
