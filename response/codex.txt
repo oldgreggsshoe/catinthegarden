@@ -46,3 +46,7 @@ The photographed fork is fixed, but I can’t sign off the dense-network check: 
 Pending question: May I temporarily pause the seven-thread road precompute for an unloaded dense-network test, then resume it automatically? Pausing preserves its progress.
 
 The photographed fork is fixed and visually verified; Claude’s work is preserved. All 86 road tests and seven road GPU tests pass. Dense-network validation still times out under the precompute load, so that check remains open pending an unloaded comparison.
+
+Fixed fork: test-runs/road_network_village_fork/1792500947-44571/screenshots/capture-004.png
+
+The fixed fork, viewed from above.
