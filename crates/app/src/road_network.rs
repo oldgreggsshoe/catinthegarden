@@ -246,6 +246,15 @@ impl Backbone {
             self.links.len() + 1
         }
     }
+    /// Regions that carry at least one backbone link, in stable key order.
+    pub fn retained_keys(&self) -> Vec<TileKey> {
+        let mut keys: Vec<_> = (0..self.incident.len())
+            .filter(|&i| !self.incident[i].is_empty())
+            .map(|i| key(i, self.level))
+            .collect();
+        keys.sort();
+        keys
+    }
     pub fn region_count(&self) -> usize {
         self.incident.len()
     }

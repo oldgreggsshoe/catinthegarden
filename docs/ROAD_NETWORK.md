@@ -14,6 +14,20 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Shared fork topology before curves, 20 October
+
+The photographed under-running branch was a duplicate horizontal trunk at
+separate elevations, with upper-deck piers obstructing the lower carriageway.
+Height-state routing supplied duplicate connected waypoint states. Before
+curve fitting, `road_network_align::share_prefixes` now shares those outgoing
+prefixes and merges their endpoint branches. Curves and heights then fit one
+physical road; unrelated crossings remain separate. Terminal identities and
+height-preference indexing survive compaction. This replaces the earlier
+post-fillet prototype, without expanding flat aprons or relaxing engineering.
+The original real-worker duplicate-span regression fails; the corrected worker
+checks28 nearby spans and22 unobstructing piers. Broader validation is pending.
+No changes to frame rendering, presentation or the25% grade limit.
+
 ## Road traces and viable tunnel preference, 20 October
 
 **R** toggles traces, off by default; **PLANET_ROAD_LINES=1** starts on.

@@ -229,6 +229,162 @@ pub fn separate_accesses(
     Ok(())
 }
 
+/// Share connected, coincident outgoing alignments BEFORE rounding corners.
+/// Height-state routing may visit one horizontal cell at different heights.
+/// Those states are preferences, not separate carriageways at a shared fork.
+/// Do not merge unrelated crossings: only arms with a common graph endpoint.
+fn share_prefixes(
+    region: &mut Region,
+    radius: f64,
+    terrain: &impl Survey,
+    mut seeds: Option<&mut Vec<f64>>,
+) -> Result<(), String> {
+    use std::collections::{BTreeSet, VecDeque};
+    let frame = Frame::new(road_network::direction(region.key, 0.5, 0.5), radius)?;
+    let points: Vec<_> = region
+        .nodes
+        .iter()
+        .map(|n| {
+            let d = DVec3::from_array(n.direction);
+            DVec2::new(d.dot(frame.across), d.dot(frame.forward)) * (radius / d.dot(frame.up))
+        })
+        .collect();
+    let mut adjacent = vec![BTreeSet::new(); region.nodes.len()];
+    for (id, e) in region.edges.iter().enumerate() {
+        adjacent[e.a].insert(id);
+        adjacent[e.b].insert(id);
+    }
+    let mut aliases: Vec<_> = (0..region.nodes.len()).collect();
+    let mut active = vec![true; region.edges.len()];
+    let mut queue: VecDeque<_> = (0..region.nodes.len()).collect();
+    while let Some(hub) = queue.pop_front() {
+        if terrain.cancelled() {
+            return Err("road generation superseded".into());
+        }
+        let arms: Vec<_> = adjacent[hub]
+            .iter()
+            .map(|&id| {
+                let e = &region.edges[id];
+                let end = if e.a == hub { e.b } else { e.a };
+                let delta = points[end] - points[hub];
+                (id, end, delta, delta.length())
+            })
+            .collect();
+        let mut pair = None;
+        'find: for (i, a) in arms.iter().enumerate() {
+            for b in &arms[i + 1..] {
+                let (near, far) = if a.3 <= b.3 { (a, b) } else { (b, a) };
+                if near.3 > 0.001
+                    && near.2.dot(far.2) > 0.0
+                    && cross(near.2, far.2).abs() / far.3 < 0.0001
+                {
+                    pair = Some((*near, *far));
+                    break 'find;
+                }
+            }
+        }
+        let Some((near, far)) = pair else {
+            continue;
+        };
+        if points[near.1].distance(points[far.1]) < 0.0001 {
+            // Equal-length arms: coalesce their endpoint states, preserving
+            // all onward branches and terminal identities. Keep one existing
+            // height preference; the shared profile re-solves both branches.
+            if near.1 != far.1 {
+                let ids = std::mem::take(&mut adjacent[far.1]);
+                for id in ids {
+                    let e = &mut region.edges[id];
+                    if e.a == far.1 {
+                        e.a = near.1;
+                    }
+                    if e.b == far.1 {
+                        e.b = near.1;
+                    }
+                    adjacent[near.1].insert(id);
+                }
+                aliases[far.1] = near.1;
+            }
+            region.edges[near.0].requires_undersea_tunnel |=
+                region.edges[far.0].requires_undersea_tunnel;
+            active[far.0] = false;
+            adjacent[hub].remove(&far.0);
+            adjacent[near.1].remove(&far.0);
+        } else {
+            // Unequal arms: the shorter one is the shared prefix. Start the
+            // longer road at its end, instead of engineering two copies.
+            let e = &mut region.edges[far.0];
+            if e.a == hub {
+                e.a = near.1;
+            } else {
+                e.b = near.1;
+            }
+            adjacent[hub].remove(&far.0);
+            adjacent[near.1].insert(far.0);
+        }
+        queue.push_back(hub);
+        queue.push_back(near.1);
+    }
+    let root = |mut i: usize| {
+        while aliases[i] != i {
+            i = aliases[i];
+        }
+        i
+    };
+    let mut used = vec![false; region.nodes.len()];
+    let mut id = 0;
+    region.edges.retain(|e| {
+        let keep = active[id];
+        id += 1;
+        if keep {
+            used[e.a] = true;
+            used[e.b] = true;
+        }
+        keep
+    });
+    for i in &mut region.terminal_nodes {
+        *i = root(*i);
+        used[*i] = true;
+    }
+    let mut remap = vec![usize::MAX; region.nodes.len()];
+    let mut count = 0;
+    for (i, &keep) in used.iter().enumerate() {
+        if keep {
+            remap[i] = count;
+            count += 1;
+        }
+    }
+    let mut i = 0;
+    region.nodes.retain(|_| {
+        let keep = used[i];
+        i += 1;
+        keep
+    });
+    if let Some(s) = seeds.as_mut() {
+        let mut i = 0;
+        s.retain(|_| {
+            let keep = used[i];
+            i += 1;
+            keep
+        });
+    }
+    let mut degree = vec![0; count];
+    region.length_meters = 0.0;
+    for e in &mut region.edges {
+        e.a = remap[e.a];
+        e.b = remap[e.b];
+        degree[e.a] += 1;
+        degree[e.b] += 1;
+        let a = DVec3::from_array(region.nodes[e.a].direction);
+        let b = DVec3::from_array(region.nodes[e.b].direction);
+        region.length_meters += a.cross(b).length().atan2(a.dot(b)) * radius;
+    }
+    for i in &mut region.terminal_nodes {
+        *i = remap[*i];
+    }
+    region.junction_count = degree.iter().filter(|&&d| d > 2).count();
+    Ok(())
+}
+
 pub fn align(
     region: &Region,
     radius: f64,
@@ -236,6 +392,11 @@ pub fn align(
     seeds: Option<&[f64]>,
     target: f64,
 ) -> Result<Aligned, String> {
+    let mut region = region.clone();
+    let mut seeds = seeds.map(<[f64]>::to_vec);
+    share_prefixes(&mut region, radius, terrain, seeds.as_mut())?;
+    let region = &region;
+    let seeds = seeds.as_deref();
     let frame = Frame::new(road_network::direction(region.key, 0.5, 0.5), radius)?;
     let project = |d: DVec3| {
         DVec2::new(d.dot(frame.across), d.dot(frame.forward)) * (radius / d.dot(frame.up))
@@ -415,7 +576,7 @@ pub fn align(
             }
         }
     }
-    Ok(Aligned {
+    let result = Aligned {
         region: Region {
             key: region.key,
             village_count: region.village_count,
@@ -430,12 +591,152 @@ pub fn align(
         },
         seeds: fitted_seeds,
         minimum_radius: minimum,
-    })
+    };
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn coincident_fork_prefix_is_one_trunk_before_fitting_heights() {
+        struct Flat;
+        impl Survey for Flat {
+            fn ground(&self, _: DVec3) -> Result<road_network::Ground, String> {
+                Ok(road_network::Ground {
+                    height: 1000.0,
+                    ocean: false,
+                })
+            }
+            fn villages(&self, _: planet_coretypes::TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(Vec::new())
+            }
+        }
+        use planet_coretypes::{CubeFace, TileKey};
+        let d = |x: f64, y: f64| DVec3::new(x, y, 4e6).normalize();
+        let mut region = Region {
+            key: TileKey {
+                face: CubeFace::PositiveZ,
+                level: 8,
+                x: 128,
+                y: 128,
+            },
+            nodes: [
+                (-200.0, 0.0),
+                (0.0, 0.0),
+                (212.0, 0.0),
+                (500.0, 0.0),
+                (212.0, 500.0),
+            ]
+            .into_iter()
+            .map(|(x, y)| Node {
+                direction: d(x, y).to_array(),
+                ground_meters: 1000.0,
+                ocean: false,
+            })
+            .collect(),
+            edges: [(0, 1), (1, 3), (1, 2), (2, 4)]
+                .into_iter()
+                .map(|(a, b)| RoadEdge {
+                    a,
+                    b,
+                    requires_undersea_tunnel: false,
+                })
+                .collect(),
+            terminals: Vec::new(),
+            terminal_nodes: Vec::new(),
+            village_count: 0,
+            junction_count: 1,
+            length_meters: 0.0,
+            construction_cost_proxy: 0.0,
+            lattice_survey_samples: 0,
+        };
+        // The photographed router case has two distinct height states at
+        // exactly the same horizontal waypoint, not merely unequal prefixes.
+        let mut duplicated = region.clone();
+        duplicated.nodes.push(duplicated.nodes[2].clone());
+        duplicated.edges[1].a = 5;
+        duplicated.edges.push(RoadEdge {
+            a: 1,
+            b: 5,
+            requires_undersea_tunnel: true,
+        });
+        duplicated.terminals = [2, 5]
+            .into_iter()
+            .map(|i| road_network::Terminal {
+                direction: duplicated.nodes[i].direction,
+                kind: TerminalKind::Village,
+            })
+            .collect();
+        duplicated.terminal_nodes = vec![2, 5];
+        let mut seeds = vec![1000.0, 1000.0, 1010.0, 1000.0, 1000.0, 990.0];
+        share_prefixes(&mut duplicated, 4e6, &Flat, Some(&mut seeds)).unwrap();
+        assert_eq!(duplicated.nodes.len(), 5);
+        assert_eq!(duplicated.edges.len(), 4);
+        assert_eq!(seeds.len(), duplicated.nodes.len());
+        assert_eq!(duplicated.terminal_nodes[0], duplicated.terminal_nodes[1]);
+        assert_eq!(duplicated.terminals.len(), 2);
+        assert!(duplicated.edges.iter().any(|e| e.requires_undersea_tunnel));
+
+        // Coincident states at unrelated crossings must NOT become junctions.
+        let mut crossing = region.clone();
+        crossing.nodes.push(crossing.nodes[2].clone());
+        crossing.nodes[1].direction = d(-200.0, 500.0).to_array();
+        crossing.edges = [(0, 2), (4, 5), (0, 1), (1, 4)]
+            .into_iter()
+            .map(|(a, b)| RoadEdge {
+                a,
+                b,
+                requires_undersea_tunnel: false,
+            })
+            .collect();
+        share_prefixes(&mut crossing, 4e6, &Flat, None).unwrap();
+        assert_eq!(
+            crossing
+                .edges
+                .iter()
+                .map(|e| (e.a, e.b))
+                .collect::<Vec<_>>(),
+            // Unused node 3 is compacted, but the two coincident nodes stay distinct.
+            vec![(0, 2), (3, 4), (0, 1), (1, 3)]
+        );
+        assert_eq!(crossing.nodes.len(), 5);
+
+        // The old hub can become a 45-degree ordinary bend after merging.
+        region.nodes[0].direction = d(-200.0, -200.0).to_array();
+        let aligned = align(&region, 4e6, &Flat, None, 100.0).unwrap();
+        for i in 0..aligned.region.nodes.len() {
+            let o = DVec3::from_array(aligned.region.nodes[i].direction);
+            let arms: Vec<_> = aligned
+                .region
+                .edges
+                .iter()
+                .filter_map(|e| {
+                    let j = if e.a == i {
+                        e.b
+                    } else if e.b == i {
+                        e.a
+                    } else {
+                        return None;
+                    };
+                    let q = DVec3::from_array(aligned.region.nodes[j].direction);
+                    Some((q - o * q.dot(o)).normalize())
+                })
+                .collect();
+            if arms.len() == 2 {
+                assert!(arms[0].dot(arms[1]) < -(MAX_ANGLE + 1e-6).cos());
+            }
+            for (a, u) in arms.iter().enumerate() {
+                for v in &arms[a + 1..] {
+                    assert!(
+                        u.dot(*v) < 0.999999,
+                        "duplicated horizontal trunk at node {i}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn right_angle_is_a_tangent_circle_not_a_cut_corner() {
         let (p, r) = fillet(

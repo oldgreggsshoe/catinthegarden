@@ -10,7 +10,40 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 20 October: viable tunnel preference and orbital road traces.**
+**Current phase, 20 October: shared fork topology before curve fitting.**
+The photographed ramp in `road_network_village_fork` was two independently
+engineered copies of a connected horizontal trunk, not a legitimate overpass.
+A height-state route had distinct nodes22/56 at exactly the same direction,
+both connected to node21; independent fillets left a112.09m duplicated prefix.
+The matched baseline is `1792500476-43335`; capture2 shows the upper piers
+blocking the lower deck. The real worker regression fails on duplicate spans.
+
+`road_network_align::share_prefixes` now coalesces only connected coincident
+outgoing arms BEFORE fillets and shared profile engineering. Equal-length
+copies merge endpoint states and onward branches; a longer arm starts at the
+end of its shared prefix. Terminal identities and seed indexing survive graph
+compaction. Unrelated coincident crossings are not globally welded. Former
+junctions becoming degree-two bends get the normal single fillet pass, avoiding
+the previous post-curve merge/refit and broad flat-apron experiment.
+No profile/apron,25% grade,0.005/m curvature,cover,solver budget,presentation or
+frame-rendering policy is changed. All work stays on the existing worker.
+Validation is in progress; the photographed worker check now passes with28
+nearby spans and22 actual unobstructing piers. General shared-junction surfaces,
+vehicle envelopes and arbitrary grade-separated support routing are not claimed.
+
+**Also 20 October (after the fork fix): night glow, thin-paint widening, offline precompute.**
+Road paint (colour 0.65,0.65,+-0.61) in `road.wgsl` shows the brighter of its lit colour and a
+green phosphor glow `PAINT_GLOW`; paint strips projecting under ~1.6px are widened in the vertex
+shader (paint's normal lane now carries the signed half-width vector; shader uses up as normal).
+Not yet re-captured by the user. `--road-network-precompute DIR [--road-precompute-threads N
+--road-precompute-limit N --road-precompute-box minlat,maxlat,minlon,maxlon --road-precompute-plans]`
+(`road_network_precompute.rs`) runs live `prepare_local` per retained region, resumable, one JSON per
+region plus `summary.json` (longest tunnel / longest undersea tunnel; per-region runs, pre-curve-fit
+profile). First 3-region run: one region failed (`PositiveX_8_0_21`, 7.8s) - cause not yet read.
+Stored plans are NOT yet loaded by the runtime. `road_network_live_village_neighbours_publish_one_complete_set`
+timed out (400s) in one loaded run; unresolved whether slowdown or contention.
+
+**Previous phase, 20 October: viable tunnel preference and orbital road traces.**
 R toggles road traces; off by default, PLANET_ROAD_LINES=1 starts enabled.
 Exact resident road/tunnel traces are green. Above50km, cached whole-planet
 SCHEMATIC region-centre/gateway connections are red until successfully prepared

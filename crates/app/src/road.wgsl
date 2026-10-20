@@ -57,8 +57,27 @@ fn project_vertex(input: Input) -> Output {
     if all(input.colour<vec3<f32>(0.0)) {output.network_kind=3.0;output.sheltered=0.0;}
     output.up = input.up;
     output.coverage = vec4<f32>(0.0);
+    // Road paint carries its signed half-width in the normal lane. A strip
+    // thinner than ~1.6px is widened so distant lines stay continuous
+    // instead of breaking into isolated pixels.
+    if all(abs(output.colour - vec3<f32>(0.65, 0.65, 0.61)) < vec3<f32>(0.004))
+        && output.network_kind < 0.5 && output.position.w > 0.05 {
+        let half = input.across.xyz * input.normal.x
+            + input.forward * input.normal.y + input.up * input.normal.z;
+        let viewport = max(vec2<f32>(input.origin.w, input.across.w), vec2<f32>(1.0));
+        let half_px = length(pixel_vector(half, output.position, viewport));
+        output.normal = input.up;
+        if half_px > 0.000001 && half_px < 0.8 {
+            let widened = relative + half * (min(0.8 / half_px, 60.0) - 1.0);
+            let view2 = vec3<f32>(dot(widened, camera.camera_right.xyz),
+                dot(widened, camera.camera_up.xyz), -dot(widened, camera.camera_forward.xyz));
+            output.position = camera.projection_matrix * vec4<f32>(view2, 1.0);
+        }
+    }
     return output;
 }
+
+const PAINT_GLOW = vec3<f32>(0.08, 0.60, 0.18);
 
 fn lit_colour(input: Output) -> vec3<f32> {
     let sun = normalize(camera.sun_direction.xyz);
@@ -70,7 +89,15 @@ fn lit_colour(input: Output) -> vec3<f32> {
     let vertical = dot(input.normal,input.up);
     let interior = (0.10 + 0.04*(1.0-abs(vertical)) + 0.12*max(vertical,0.0))
         * vec3<f32>(1.0,0.96,0.90);
-    return input.colour * mix(direct + ambient, interior, input.sheltered);
+    let lit = input.colour * mix(direct + ambient, interior, input.sheltered);
+    // White road paint (colour 0.65,0.65,0.61) also phosphoresces green;
+    // whichever of the lit paint and the glow is brighter is what shows.
+    let is_paint = all(abs(input.colour - vec3<f32>(0.65, 0.65, 0.61)) < vec3<f32>(0.004));
+    if is_paint {
+        let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
+        if dot(PAINT_GLOW, luma) > dot(lit, luma) { return PAINT_GLOW; }
+    }
+    return lit;
 }
 
 @vertex

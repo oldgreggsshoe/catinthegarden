@@ -22,3 +22,17 @@ The tunnel preference now passes a real geometry regression: the test ridge’s 
 Implemented and pushed: regional routing now favours viable tunnel shortcuts, with a safe fallback if engineering fails. The 25% gradient cap, smooth transitions and roof-cover requirements remain unchanged.
 
 85 road tests pass; the full suite retains six unrelated failures. R toggles the red planned / green generated road overlay. The unusable fork fix remains pending.
+
+I’ll reproduce the photographed fork, then fix where the branch separates from the main road so they share a drivable surface—not overlapping decks at different heights. I’ll inspect the alignment, height-profile and junction-mesh code, add a regression test, and check the village-network tests that rejected the earlier prototype.
+
+Reproduced: two road decks follow the same line at different heights, with upper-road piers blocking the lower road.
+
+I’m checking three possible causes, in order: duplicated shared routes before curve fitting; overlap introduced by independent curve fitting; and insufficient height matching across the fork mouth. The fix needs to remove the duplicate route, not just hide its supports.
+
+Found the cause: the height-aware router can give two branches separate height states at the exact same horizontal waypoint. Curve fitting then treats them as separate roads.
+
+I’ll merge those connected shared stretches before fitting curves and heights. That should produce one trunk and one real junction, without the broad flattening constraints that broke the previous attempt.
+
+The photographed-fork regression now passes: the duplicate trunk is gone, and all 22 nearby piers leave the carriageway clear. I’m checking the rendered views and the dense, mountain and undersea networks before calling it finished. The grade limits and frame-rendering path are unchanged.
+
+Road paint now glows green at night (brighter of lit paint and glow wins), thin distant paint strips are widened to ~1.6px so lines stay continuous, and a resumable offline road precompute tool (--road-network-precompute) writes per-region JSON plus tunnel-length summary. One precompute region failed in the first test run and one live neighbour test timed out; both are noted in HANDOFF.

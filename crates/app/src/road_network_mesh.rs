@@ -1122,6 +1122,20 @@ fn deck(
             let la = ribbon.sides[0].lerp(ribbon.sides[1], start) * width;
             let lb = ribbon.sides[0].lerp(ribbon.sides[1], end) * width;
             road::quad(mesh, [a - la, a + la, b + lb, b - lb], marking);
+            // Paint is flat, so its normal lane carries each corner's signed
+            // half-width instead; road.wgsl widens sub-pixel strips with it.
+            let n = mesh.len() - 6;
+            for (k, half) in [(0, -la), (1, la), (2, lb), (3, -lb)] {
+                let half = half.as_vec3().to_array();
+                for slot in match k {
+                    0 => vec![0, 3],
+                    1 => vec![1],
+                    2 => vec![2, 4],
+                    _ => vec![5],
+                } {
+                    mesh[n + slot].normal = half;
+                }
+            }
         };
     for offset in [-4.7, 4.7] {
         for (start, end) in exposed(ribbon, s, field, offset, 5.1) {

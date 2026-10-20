@@ -35,6 +35,7 @@ mod road_network;
 mod road_network_align;
 mod road_network_field;
 mod road_network_mesh;
+mod road_network_precompute;
 mod road_network_profile;
 mod road_network_render;
 mod road_network_route;
@@ -6666,6 +6667,17 @@ fn main() {
         }
         return;
     }
+    if let Some(precompute) = &launch_options.road_precompute {
+        let terrain::TerrainSource::Outmap(root) = &launch_options.terrain_source else {
+            eprintln!("road network precompute requires a baked outmap");
+            std::process::exit(1);
+        };
+        if let Err(error) = road_network_precompute::run(root, precompute) {
+            eprintln!("road network precompute failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // Both of these produce a picture that looks like a different, much worse
     // renderer, and neither used to say anything at all about why.
     if matches!(
@@ -7180,6 +7192,7 @@ impl ApplicationHandler for App {
 
 struct LaunchOptions {
     road_network_survey: Option<PathBuf>,
+    road_precompute: Option<road_network_precompute::Options>,
     scenario_name: Option<String>,
     profile_render: bool,
     /// GPU stage timings, which are a separate ask: see the feature request in
@@ -7219,6 +7232,7 @@ fn launch_options() -> Result<LaunchOptions, String> {
     let default_outmap = find_default_outmap();
     let mut options = LaunchOptions {
         road_network_survey: None,
+        road_precompute: None,
         scenario_name: None,
         profile_render: false,
         profile_gpu_timestamps: false,
@@ -7268,6 +7282,30 @@ fn launch_options() -> Result<LaunchOptions, String> {
                 options.road_network_survey = Some(PathBuf::from(arguments.next().ok_or_else(
                     || "--road-network-survey requires a new output file path".to_owned(),
                 )?));
+            }
+            "--road-network-precompute" => {
+                options.road_precompute = Some(road_network_precompute::Options::new(
+                    PathBuf::from(arguments.next().ok_or_else(|| {
+                        "--road-network-precompute requires an output directory".to_owned()
+                    })?),
+                ));
+            }
+            "--road-precompute-threads" | "--road-precompute-limit" | "--road-precompute-box" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| format!("{flag} requires a value"))?;
+                options
+                    .road_precompute
+                    .as_mut()
+                    .ok_or_else(|| format!("{flag} must follow --road-network-precompute"))?
+                    .set(&flag, &value)?;
+            }
+            "--road-precompute-plans" => {
+                options
+                    .road_precompute
+                    .as_mut()
+                    .ok_or_else(|| format!("{flag} must follow --road-network-precompute"))?
+                    .write_plans = true;
             }
             "--scenario" => {
                 options.scenario_name = Some(
@@ -7323,6 +7361,9 @@ fn launch_options() -> Result<LaunchOptions, String> {
             }
             _ => return Err(format!("unrecognized argument '{flag}'")),
         }
+    }
+    if options.road_precompute.is_some() && options.scenario_name.is_some() {
+        return Err("--road-network-precompute is headless and cannot run a --scenario".to_owned());
     }
     if options.road_network_survey.is_some() && options.scenario_name.is_some() {
         return Err("--road-network-survey is headless and cannot run a --scenario".to_owned());
