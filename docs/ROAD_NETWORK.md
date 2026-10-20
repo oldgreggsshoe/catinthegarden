@@ -25,8 +25,15 @@ physical road; unrelated crossings remain separate. Terminal identities and
 height-preference indexing survive compaction. This replaces the earlier
 post-fillet prototype, without expanding flat aprons or relaxing engineering.
 The original real-worker duplicate-span regression fails; the corrected worker
-checks28 nearby spans and22 unobstructing piers. Broader validation is pending.
-No changes to frame rendering, presentation or the25% grade limit.
+checks28 nearby spans and22 unobstructing piers. All four opened matched captures
+`1792500947-44571` pass: one continuous trunk and an actual side parking access.
+Post-Claude86 focused road /7 road Vulkan checks pass; full724 pass/same6
+unrelated failures. Dense-neighbour validation still times out at600s under the
+active seven-thread precompute load; regional offline files exist for all244
+villages, but a live residency/performance sign-off is NOT established. An
+unloaded comparison is pending user approval to pause precompute; see HANDOFF.
+No changes to frame rendering, presentation or the25% grade limit from the fork
+fix; Claude's separate paint glow/widening remains intact.
 
 ## Road traces and viable tunnel preference, 20 October
 

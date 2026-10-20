@@ -27,9 +27,32 @@ junctions becoming degree-two bends get the normal single fillet pass, avoiding
 the previous post-curve merge/refit and broad flat-apron experiment.
 No profile/apron,25% grade,0.005/m curvature,cover,solver budget,presentation or
 frame-rendering policy is changed. All work stays on the existing worker.
-Validation is in progress; the photographed worker check now passes with28
-nearby spans and22 actual unobstructing piers. General shared-junction surfaces,
-vehicle envelopes and arbitrary grade-separated support routing are not claimed.
+Validation: the original real-worker regression fails on duplicate horizontal
+spans; the corrected check passes with28 nearby spans and22 actual unobstructing
+piers. All four matched captures in `1792500947-44571` pass and were opened:
+side view2 has one sloping road instead of stacked decks and obstructing piers;
+view4 shows the parking access joining that trunk from the side. These captures
+precede Claude's paint-glow change and validate geometry, not its appearance.
+Post-Claude checks:86 focused road and7 road Vulkan tests pass; full suite724
+pass/same6 unrelated FOV/zoom/water/ship-label failures,63 ignored. The earlier
+broader GPU filter also reported two ocean failures outside this change.
+Seven of eight real worker checks passed in the initial loaded run; dense
+village residency hit its old90s deadline. Claude subsequently increased the
+deadline to600s and added timing. The post-Claude single-test recheck also hit
+that deadline (622.33s total including startup), alongside the user's seven-thread
+precompute. `test-runs/road-fork-dense-recheck.log` records it. An attached/detached
+stack sample (`road-fork-dense-stack.log`) finds the worker actively in
+`road_vertical::smooth` via `Profile::fit_seeded` and rerouting, not deadlocked.
+Do NOT keep raising the deadline or claim a complete network/performance pass.
+The nine corresponding offline regions (PositiveX,x42..44,y0..2) are all marked
+ok and sum to244 villages; this supports regional feasibility, not live residency
+completion. The user has been asked whether to pause precompute temporarily for
+an unloaded comparison; no approval received yet, and the job was not disturbed.
+Next: with approval, suspend only that precompute process, compare dense-worker
+baseline/fix with per-region/solver timings, and resume it reliably; otherwise
+leave this validation explicitly pending. No solver tuning has been shipped here.
+No matched FPS claim. General shared-junction surfaces,vehicle envelopes and
+arbitrary grade-separated support routing are not claimed.
 
 **Also 20 October (after the fork fix): night glow, thin-paint widening, offline precompute.**
 Road paint (colour 0.65,0.65,+-0.61) in `road.wgsl` shows the brighter of its lit colour and a
@@ -41,7 +64,8 @@ Not yet re-captured by the user. `--road-network-precompute DIR [--road-precompu
 region plus `summary.json` (longest tunnel / longest undersea tunnel; per-region runs, pre-curve-fit
 profile). First 3-region run: one region failed (`PositiveX_8_0_21`, 7.8s) - cause not yet read.
 Stored plans are NOT yet loaded by the runtime. `road_network_live_village_neighbours_publish_one_complete_set`
-timed out (400s) in one loaded run; unresolved whether slowdown or contention.
+timed out (400s) in one loaded run; the later600s recheck also timed out (details
+above). Unresolved whether planning slowdown or resource contention.
 
 **Previous phase, 20 October: viable tunnel preference and orbital road traces.**
 R toggles road traces; off by default, PLANET_ROAD_LINES=1 starts enabled.

@@ -36,3 +36,13 @@ I’ll merge those connected shared stretches before fitting curves and heights.
 The photographed-fork regression now passes: the duplicate trunk is gone, and all 22 nearby piers leave the carriageway clear. I’m checking the rendered views and the dense, mountain and undersea networks before calling it finished. The grade limits and frame-rendering path are unchanged.
 
 Road paint now glows green at night (brighter of lit paint and glow wins), thin distant paint strips are widened to ~1.6px so lines stay continuous, and a resumable offline road precompute tool (--road-network-precompute) writes per-region JSON plus tunnel-length summary. One precompute region failed in the first test run and one live neighbour test timed out; both are noted in HANDOFF.
+
+I’ve checked Claude’s commits: they include the fork fix and preserve the other road work. I won’t overwrite them or disturb the running precompute. I’ll finish reviewing the fork captures and the remaining dense-network validation.
+
+The matched screenshots now show one continuous road instead of stacked decks. All 86 road tests and seven road GPU checks pass. The last dense-network check is still running alongside the seven-thread precompute; I’m leaving that job untouched.
+
+The photographed fork is fixed, but I can’t sign off the dense-network check: it still timed out at 600 seconds. A stack sample shows it working in the height-profile solver, not deadlocked. I need an unloaded comparison to tell whether this is a planning regression or resource contention.
+
+Pending question: May I temporarily pause the seven-thread road precompute for an unloaded dense-network test, then resume it automatically? Pausing preserves its progress.
+
+The photographed fork is fixed and visually verified; Claude’s work is preserved. All 86 road tests and seven road GPU tests pass. Dense-network validation still times out under the precompute load, so that check remains open pending an unloaded comparison.
