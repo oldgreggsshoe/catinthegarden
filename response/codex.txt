@@ -146,3 +146,41 @@ The RTSP port is reachable now: I checked 192.168.1.50:8554/camera and received 
 That confirms the server is answering, but not that video is forwarding. Authentication is required before we can verify the stream.
 
 Understood—ignoring that message.
+
+I’ll check the latest screenshots and trace the terrain, ocean and tunnel surfaces at those positions. I’ll investigate the ocean-looking end wall and the shimmering spikes separately before changing anything.
+
+I can see moving wave/foam patterns on the blue-grey surface beside the portal, plus jagged patches along the cut bank.
+
+My ranked checks are:
+1. The excavated terrain is being shaded as ocean because its lowered height is near sea level.
+2. The generated bank mesh and cut terrain overlap, causing the shimmer.
+3. Tunnel-end clipping leaves a gap or unstable sliver.
+
+I’ll replay both photographed positions, including a small camera movement, and isolate those causes.
+
+Plan: add a replay of the two photographed views, then compare it with ocean and road drawing disabled. I’ll inspect road_network_mesh.rs, the cut lookup in road_cuts.wgsl, and the terrain/road fragment paths. Once the source of the holes and overlap is confirmed, I’ll change only the affected geometry or ownership rule and add regression checks.
+
+I’ll finish the wall/spike fix first, then add:
+- Double-sided tunnel boards about every 500 m, each face showing the distance to the exit in its direction, rounded to 500 m where appropriate.
+- An interactive driving mode with steering, speed control, gravity and damped suspension, usable off-road without the walking-camera bounce.
+Walking and flying will remain available. I’ll add a repeatable driving test too.
+
+The tests show the blue wall is terrain, not the ocean surface. The jagged patches disappear when I remove the overlapping bank meshes. I’m fixing that surface overlap and the cut-wall shading before adding the distance boards and driving mode.
+
+I’m putting the driving physics in a small separate module and reusing the existing road, terrain and tunnel collision queries. C will switch between driving and walking; G will still return to flight. The distance-board work stays on the road worker, with no route searches or text layout added to the frame loop.
+
+The boards are now readable from both directions—for example, the same board shows “EXIT 20.5 KM” going in and “EXIT 500 M” coming out. The driving replay is running inside the tunnel with gravity and suspension, not waypoint camera movement. I’m checking keyboard controls and off-road behaviour next.
+
+The tunnel run held roughly 1.39–1.40 m clearance above the road. Keyboard testing also caught two issues: rolling away while parked on a slope, and reverse being blocked by the walking movement helper. I’ve added auto-hold and a reverse regression test; I’m finishing the verification now.
+
+Added:
+- Double-sided tunnel exit boards every 500m, rounded appropriately.
+- Driving with gravity, damped suspension and off-road movement, plus driving/sign scenarios.
+
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_DRIVE=1 cargo run --release -p planet-app
+```
+
+W/S throttle/brake/reverse; A/D steer; Space brake; [/] speed; C walk; G fly.
+
+Also fixed the overlapping cut-bank surfaces. Committed and pushed. 743 tests passed; six pre-existing failures remain.

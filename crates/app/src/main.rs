@@ -9,6 +9,7 @@ mod birds_render;
 mod body;
 mod bubbles;
 mod debug;
+mod driving;
 mod flock_marker;
 mod forest;
 mod shadow_heights;
@@ -1007,6 +1008,7 @@ enum CameraMode {
     Orbit,
     LowFlight,
     Surface,
+    Driving,
     Boat,
 }
 
@@ -1016,6 +1018,9 @@ impl CameraMode {
             Self::Orbit => "orbit",
             Self::LowFlight => "fixed-speed WASD flight; altitude-scaled ([/]: scale, Shift: 4x)",
             Self::Surface => "surface walking/swimming; G: return to flight, Space: jump/thrust",
+            Self::Driving => {
+                "driving; W/S: accelerate/brake/reverse, A/D: steer, Space: brake, C: walk, G: fly"
+            }
             Self::Boat => "ship bridge; F4: detach to flight",
         }
     }
@@ -1042,7 +1047,7 @@ fn interactive_camera_delta_seconds(
 ) -> f64 {
     match camera_mode {
         CameraMode::Orbit => scene_delta_seconds,
-        CameraMode::LowFlight | CameraMode::Surface | CameraMode::Boat => {
+        CameraMode::LowFlight | CameraMode::Surface | CameraMode::Driving | CameraMode::Boat => {
             frame_delta_seconds.min(MAX_LOW_FLIGHT_FRAME_DELTA_SECONDS)
         }
     }
@@ -1126,7 +1131,8 @@ fn advance_surface_position_on_sphere(
     let radius = position.length();
     let radial = position / radius;
     let tangent = tangent_direction - radial * tangent_direction.dot(radial);
-    if tangent.length_squared() <= f64::EPSILON || distance_meters <= 0.0 {
+    // Walking supplies positive steps; the vehicle also supplies reverse.
+    if tangent.length_squared() <= f64::EPSILON || distance_meters == 0.0 {
         return position;
     }
     let axis = radial.cross(tangent.normalize()).normalize();
@@ -1575,6 +1581,8 @@ struct State {
     /// Simulated time the surface camera still owes, kept so it integrates
     /// whole steps and does not depend on where frame boundaries fell.
     surface_pending_seconds: f64,
+    car: driving::Car,
+    driving_brake: bool,
     /// Ocean-clock time the swimmer has been carried up to (NaN: not swimming).
     swimmer_carry_time_seconds: f64,
     /// The piece of sea (rest position, tangent-plane metres) the ship floats
@@ -2204,6 +2212,8 @@ impl State {
             surface_physics: surface_camera::SurfacePhysicsState::default(),
             surface_jump_requested: false,
             surface_pending_seconds: 0.0,
+            car: driving::Car::default(),
+            driving_brake: false,
             swimmer_carry_time_seconds: f64::NAN,
             ship_label: None,
             ship_distance_meters: f64::INFINITY,
@@ -2391,7 +2401,12 @@ impl State {
         self.previous_camera_world_position = self.camera.world_position();
         self.previous_camera_planet_frame_position = self.camera.world_position();
         self.camera_velocity_baseline_stale = true;
-        tracing::info!(target: "planet::startup", "interactive road free flight ready; G toggles walking");
+        if std::env::var("PLANET_ROAD_DRIVE")
+            .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "on"))
+        {
+            self.toggle_driving_mode();
+        }
+        tracing::info!(target: "planet::startup", "interactive road ready; C driving/walking, G walking/flight");
         true
     }
 
@@ -2527,7 +2542,7 @@ impl State {
         }
         if matches!(
             self.camera_mode,
-            CameraMode::LowFlight | CameraMode::Surface | CameraMode::Boat
+            CameraMode::LowFlight | CameraMode::Surface | CameraMode::Driving | CameraMode::Boat
         ) {
             let sensitivity = self.camera.look_sensitivity_scale();
             self.flight_look_yaw_radians += yaw_delta * sensitivity;
@@ -2559,6 +2574,7 @@ impl State {
             self.look_keys = [false; 4];
             self.look_release_times = [None; 4];
             self.surface_jump_requested = false;
+            self.driving_brake = false;
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
             self.mouse_captured = false;
@@ -2991,6 +3007,156 @@ impl State {
                 transport_flight_tangent(self.flight_local_tangent, before, after);
         }
         self.swimmer_carry_time_seconds = time;
+    }
+
+    fn driving_contacts(&self, position: glam::DVec3, forward: glam::DVec3) -> Option<[f64; 4]> {
+        let up = position.normalize();
+        let right = forward.cross(up).normalize();
+        let altitude = position.length() - planet::planet_radius_meters();
+        let mut heights = [0.0; 4];
+        for (i, (ahead, across)) in [(1.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (-1.0, 1.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let direction = (position
+                + forward * (ahead * driving::WHEELBASE * 0.5)
+                + right * (across * driving::TRACK * 0.5))
+                .normalize();
+            let ground = self
+                .terrain
+                .raster_surface_height_meters_at(direction, altitude)?;
+            heights[i] = self.road_camera_surface_height(direction, altitude, ground);
+        }
+        Some(heights)
+    }
+
+    fn initialise_car(&mut self) {
+        let up = self.flight_local_position.normalize();
+        let view = self.low_flight_view_direction(up);
+        let horizontal = view - up * view.dot(up);
+        if horizontal.length_squared() > 1e-8 {
+            self.flight_local_tangent = horizontal.normalize();
+        }
+        self.car = driving::Car::default();
+        self.driving_brake = false;
+        self.surface_pending_seconds = 0.0;
+        self.surface_jump_requested = false;
+        self.flight_look_yaw_radians = 0.0;
+        self.flight_look_pitch_radians = 0.0;
+        if let Some(heights) =
+            self.driving_contacts(self.flight_local_position, self.flight_local_tangent)
+        {
+            let height = heights.iter().sum::<f64>() * 0.25;
+            self.flight_local_position =
+                up * (planet::planet_radius_meters() + height + driving::EYE_HEIGHT);
+            self.flight_surface_height_meters = height;
+            self.car.grounded = true;
+        }
+    }
+
+    fn toggle_driving_mode(&mut self) {
+        if self.scenario.is_some() {
+            return;
+        }
+        if matches!(self.camera_mode, CameraMode::Orbit | CameraMode::Boat) {
+            self.toggle_camera_mode();
+        }
+        if self.camera_mode == CameraMode::Driving {
+            let up = self.flight_local_position.normalize();
+            let altitude = self.flight_local_position.length() - planet::planet_radius_meters();
+            if !self.settle_player_on_surface(up, altitude, self.scaled_clock_seconds) {
+                return;
+            }
+            self.camera_mode = CameraMode::Surface;
+        } else {
+            self.initialise_car();
+            self.camera_mode = CameraMode::Driving;
+        }
+        self.flight_movement = FlightMovementInput::default();
+        self.flight_speed = FlightSpeedState::default();
+        let rotation = planet::planet_rotation_radians(
+            self.interactive_planet_rotation_time(self.interactive_sim_time()),
+        );
+        if self.camera_mode == CameraMode::Driving {
+            self.sync_driving_camera_pose(rotation);
+        } else {
+            self.sync_surface_camera_pose(rotation);
+        }
+        self.previous_camera_world_position = self.camera.world_position();
+        self.camera_velocity_baseline_stale = true;
+        self.mark_hud_dirty();
+    }
+
+    fn sync_driving_camera_pose(&mut self, rotation: f64) {
+        if self.player_camera_is_suppressed() {
+            return;
+        }
+        let up = self.flight_local_position.normalize();
+        let heading = self.flight_local_tangent;
+        let right = heading.cross(up).normalize();
+        let forward = heading * self.car.pitch.cos() + up * self.car.pitch.sin();
+        let body_up =
+            glam::DQuat::from_axis_angle(forward, self.car.roll) * right.cross(forward).normalize();
+        let look = flight_view_direction(
+            body_up,
+            forward,
+            self.flight_look_yaw_radians,
+            self.flight_look_pitch_radians,
+        );
+        let to_world = glam::DQuat::from_rotation_y(rotation);
+        let eye = to_world * self.flight_local_position;
+        self.camera
+            .set_world_pose_with_up(eye, eye + to_world * look, to_world * body_up);
+    }
+
+    fn advance_driving_camera(&mut self, delta_seconds: f64, rotation: f64) {
+        self.surface_pending_seconds =
+            (self.surface_pending_seconds + delta_seconds.max(0.0)).min(0.25);
+        while self.surface_pending_seconds >= driving::STEP {
+            self.surface_pending_seconds -= driving::STEP;
+            let previous = self.flight_local_position;
+            let radial = previous.normalize();
+            let heading = self.flight_local_tangent;
+            let Some(old_ground) = self.driving_contacts(previous, heading) else {
+                self.car.speed = 0.0;
+                break;
+            };
+            let throttle = f64::from(self.flight_movement.forward as u8)
+                - f64::from(self.flight_movement.backward as u8);
+            let steer = f64::from(self.flight_movement.right as u8)
+                - f64::from(self.flight_movement.left as u8);
+            let (distance, yaw) =
+                self.car
+                    .travel(throttle, steer, self.driving_brake, self.flight_speed_scale);
+            let heading = glam::DQuat::from_axis_angle(radial, -yaw) * heading;
+            let candidate = advance_surface_position_on_sphere(previous, heading, distance);
+            let moved_radial = candidate.normalize();
+            let heading = transport_flight_tangent(heading, radial, moved_radial);
+            let Some(ground) = self.driving_contacts(candidate, heading) else {
+                self.car.speed = 0.0;
+                break;
+            };
+            // Do not climb vertical walls by snapping the body onto their top.
+            let rise = ground.iter().sum::<f64>() * 0.25 - old_ground.iter().sum::<f64>() * 0.25;
+            let constrained = self.road_constrain_motion(previous, candidate);
+            let (position, heights) =
+                if rise > 0.5 + distance.abs() * 0.8 || constrained.distance(candidate) > 0.01 {
+                    self.car.speed = 0.0;
+                    (previous, old_ground)
+                } else {
+                    self.flight_local_tangent = heading;
+                    (candidate, ground)
+                };
+            let height = self
+                .car
+                .support(position.length() - planet::planet_radius_meters(), heights);
+            let next = position.normalize() * (planet::planet_radius_meters() + height);
+            self.flight_local_position = self.road_constrain_motion(position, next);
+            self.flight_surface_height_meters = heights.iter().sum::<f64>() * 0.25;
+        }
+        self.flight_speed.speed_meters_per_second = self.car.speed.abs();
+        self.flight_travel_direction = self.flight_local_tangent * self.car.speed.signum();
+        self.sync_driving_camera_pose(rotation);
     }
 
     fn advance_surface_camera(
@@ -3925,7 +4091,7 @@ impl State {
         if !self.flock_watch_enabled
             || !matches!(
                 self.camera_mode,
-                CameraMode::LowFlight | CameraMode::Surface
+                CameraMode::LowFlight | CameraMode::Surface | CameraMode::Driving
             )
         {
             return;
@@ -4152,7 +4318,7 @@ impl State {
                 );
                 self.sync_surface_camera_pose(planet_rotation_radians);
             }
-            CameraMode::Surface => {
+            CameraMode::Surface | CameraMode::Driving => {
                 self.surface_physics = surface_camera::SurfacePhysicsState::default();
                 self.surface_jump_requested = false;
                 self.flight_speed = FlightSpeedState::default();
@@ -4253,7 +4419,7 @@ impl State {
                     self.scaled_clock_seconds,
                 );
             }
-            CameraMode::LowFlight | CameraMode::Surface => {
+            CameraMode::LowFlight | CameraMode::Surface | CameraMode::Driving => {
                 if let Some((position, direction, vertical_fov_degrees)) =
                     self.saved_orbit_camera_pose.take()
                 {
@@ -4809,6 +4975,8 @@ impl State {
                             ui.label(format!(
                                 "Flight speed: {flight_speed_meters_per_second:.0} m/s  |  scale {flight_speed_scale:.5}x  ([ / ])"
                             ));
+                        } else if camera_mode == CameraMode::Driving {
+                            ui.label(format!("Driving: {:.0} km/h  |  [ / ]: maximum speed scale", flight_speed_meters_per_second * 3.6));
                         } else if camera_mode == CameraMode::Surface {
                             ui.label(format!(
                                 "Surface speed: {flight_speed_meters_per_second:.2} m/s  |  vertical {surface_vertical_speed:+.2} m/s  |  {}  |  scale {flight_speed_scale:.5}x  ([ / ])",
@@ -4873,7 +5041,7 @@ impl State {
                         ui.label(format!("Bird watch: {bird_watch}"));
                         ui.label(format!("Villages: {village_beams}"));
                         ui.label(
-                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface camera  |  WASD: move  |  Q/E: turn  |  Z/X: look up/down  |  Space: jump/swim thrust  |  [ / ]: speed  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  V: village beams  |  R: road lines  |  F6: anti-aliasing  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
+                            "F: fullscreen  |  F3: overlay  |  , / .: time speed  |  F4: orbit/flight  |  G: surface/flight  |  C: drive/walk  |  WASD: move  |  Q/E: turn  |  Z/X: look up/down  |  Space: jump/swim thrust  |  [ / ]: speed  |  O: triangle outlines  |  B: ride a bird  |  N: watch birds that are down  |  M: track the nearest flock from here  |  V: village beams  |  R: road lines  |  F6: anti-aliasing  |  F7: bloom  |  F8: HDR  |  6: exposure  |  7: weather field  |  9: weather step  |  F9: composition  |  F10: freeze  |  F12: capture PNG",
                         );
                         ui.label("Default: fullscreen, HUD hidden, auto-orbit  |  Mouse: free look  |  Wheel: optical zoom  |  Esc twice: quit");
                     });
@@ -5200,6 +5368,13 @@ impl State {
                 self.camera_mode = if self
                     .scenario
                     .as_ref()
+                    .is_some_and(scenario::ScenarioRunner::replays_driving)
+                {
+                    self.initialise_car();
+                    CameraMode::Driving
+                } else if self
+                    .scenario
+                    .as_ref()
                     .is_some_and(scenario::ScenarioRunner::replays_surface_walk)
                 {
                     CameraMode::Surface
@@ -5214,7 +5389,9 @@ impl State {
                 forward: forward_held,
                 ..FlightMovementInput::default()
             };
-            if self.camera_mode == CameraMode::Surface {
+            if self.camera_mode == CameraMode::Driving {
+                self.advance_driving_camera(scene_delta_seconds, planet_rotation_radians);
+            } else if self.camera_mode == CameraMode::Surface {
                 self.advance_surface_camera(
                     scene_delta_seconds,
                     planet_rotation_radians,
@@ -5261,6 +5438,9 @@ impl State {
                     planet_rotation_radians,
                     ocean_time_seconds,
                 ),
+                CameraMode::Driving => {
+                    self.advance_driving_camera(camera_delta_seconds, planet_rotation_radians)
+                }
                 CameraMode::Surface => self.advance_surface_camera(
                     camera_delta_seconds,
                     planet_rotation_radians,
@@ -5396,6 +5576,9 @@ impl State {
                     planet_rotation_radians,
                     ocean_time_seconds,
                 ),
+                // Suspension owns the driving height; a walking clamp here
+                // would reintroduce frame-rate-dependent ground snapping.
+                CameraMode::Driving => false,
                 CameraMode::Orbit => false,
                 CameraMode::Boat => false,
             };
@@ -5425,7 +5608,7 @@ impl State {
         let camera_altitude = if self.scenario.is_none()
             && matches!(
                 self.camera_mode,
-                CameraMode::LowFlight | CameraMode::Surface
+                CameraMode::LowFlight | CameraMode::Surface | CameraMode::Driving
             ) {
             camera_radius - planet::planet_radius_meters() - self.flight_surface_height_meters
         } else {
@@ -6844,11 +7027,12 @@ impl ApplicationHandler for App {
             window.request_redraw();
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
-            && event.state.is_pressed()
-            && !event.repeat
             && event.physical_key == PhysicalKey::Code(KeyCode::Space)
         {
-            state.request_surface_jump();
+            state.driving_brake = event.state.is_pressed();
+            if event.state.is_pressed() && !event.repeat {
+                state.request_surface_jump();
+            }
             window.request_redraw();
         }
         let egui_response = state.egui_state.on_window_event(window, &event);
@@ -6971,6 +7155,14 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::F4) =>
                 {
                     state.toggle_camera_mode();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyC) =>
+                {
+                    state.toggle_driving_mode();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }
@@ -7517,6 +7709,19 @@ mod tests {
         swept_flight_clearance_lift, transport_flight_tangent, waterline_scenario_pose,
     };
     use crate::planet::{PLANET_ROTATION_PERIOD_SECONDS, geographic_longitude_degrees};
+
+    #[test]
+    fn driving_reverse_moves_backwards_on_the_sphere_and_preserves_radius() {
+        let position = DVec3::X * (crate::planet::planet_radius_meters() + 10.0);
+        let reverse = super::advance_surface_position_on_sphere(position, DVec3::Z, -10.0);
+        assert!(
+            reverse.z < -9.99,
+            "negative vehicle distance must not be ignored"
+        );
+        assert!((reverse.length() - position.length()).abs() < 1e-8);
+        let returned = super::advance_surface_position_on_sphere(reverse, DVec3::Z, 10.0);
+        assert!(returned.distance(position) < 1e-8);
+    }
 
     #[test]
     fn a_swimmer_is_carried_by_the_waters_horizontal_velocity_and_nothing_else() {

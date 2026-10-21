@@ -597,6 +597,7 @@ fn gpu_shallow_approaches_remove_terrain_intruding_through_the_deck() {
             (4.5, 100.1, true),
             (0.0, 99.6, true),
             (8.0, 100.1, false),
+            (15.0, 125.0, false), // displaced terrain alone owns open banks
             (0.0, 98.0, false),
         ];
         let cases: Vec<_> = fixtures

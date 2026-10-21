@@ -5434,7 +5434,17 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("raster terrain fragment path is present");
-        assert!(fragment.contains("let terrain_normal = input.world_normal;"));
+        // Only excavated steep walls use the actual triangle normal. Snow
+        // and all other untouched land retain their smoothed displaced normal.
+        assert!(fragment.contains("let cut_wall = excavated *"));
+        assert!(
+            fragment
+                .contains("let terrain_normal = mix(input.world_normal, cut_normal, cut_wall);")
+        );
+        assert!(fragment.contains("(1.0 - excavated) * select(0.0, 1.0, BODY_HAS_OCEAN"));
+        assert!(
+            fragment.contains("input.detail_spacing_and_face_normal.x > 0.0 && excavated < 0.01")
+        );
         // The smoothed vertex normal is what lights the surface, so it has to
         // be the normal the irradiance is taken against. The lighting normal is
         // that normal unless an enabled feature tilts it, so both halves are

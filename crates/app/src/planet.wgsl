@@ -2605,8 +2605,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             camera.camera_planet_direction_view_altitude.w,PLANET_RADIUS_METERS);
     }
     if road_tunnel_void(direction, bore_height) > 0.0 { discard; }
-    // Cached network banks author narrow cuts the terrain grid can miss.
-    if road_network_open_cut_owns(direction,input.surface_height_and_fog_color.x) { discard; }
+    // Cached decks and court banks own their actual raster surface.
+    if road_network_open_cut_owns(direction,bore_height) { discard; }
     // Render baked bathymetry into the opaque snapshot for surface refraction.
     // A submerged eye sees it directly through the same 100m water medium.
     // This branch adds no geometry, and fetches only for its caustics: macro
@@ -2746,12 +2746,20 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // Snow and ice lowland takes no shoreline sand. Weighted by the blended
     // snow share: gating on the nearest biome stamped orange texel staircases
     // into low ground inside the ice.
-    let ocean_coverage = select(0.0, 1.0, BODY_HAS_OCEAN && outmap)
+    let excavated = select(0.0, smoothstep(0.3, 2.0,
+        input.outmap_and_macro_height.y + input.terrain_detail_meters_and_fog_amount.x
+            - input.surface_height_and_fog_color.x), ROAD_CUTS_ENABLED);
+    let ocean_coverage = (1.0 - excavated) * select(0.0, 1.0, BODY_HAS_OCEAN && outmap)
         * (1.0 - biome_blend_snow_share(biome_blend))
         * (1.0 - smoothstep(0.0, 220.0, shoreline_height));
     let moisture = sample_moisture(input.source_uv);
     let base_biome_color = blended_biome_color(biome_blend);
-    let terrain_normal = input.world_normal;
+    // A cut's longitudinal end can be near vertical even though its
+    // interpolated terrain/analytic bank normals still point skywards.
+    // Shade the actual cut triangle, not the pre-excavation beach.
+    let cut_normal = flat_triangle_normal(input.camera_relative_view_position, input.world_normal);
+    let cut_wall = excavated * (1.0 - smoothstep(0.55, 0.85, dot(cut_normal, direction)));
+    let terrain_normal = mix(input.world_normal, cut_normal, cut_wall);
     // Crevasses tilt the *shading* normal only. The material decisions below
     // read `terrain_normal`, and they must keep reading it: a wall steep enough
     // to shed snow would otherwise turn the inside of a crevasse into rock.
@@ -2999,7 +3007,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // Re-light the triangle normal by the finer-than-mesh detail ratio. The
     // offset keeps the divisor away from zero at the terminator and stops
     // grazing light exploding into white speckle.
-    if input.detail_spacing_and_face_normal.x > 0.0 {
+    if input.detail_spacing_and_face_normal.x > 0.0 && excavated < 0.01 {
         // Rebuild the vertex's cutoff from this pixel's own camera distance,
         // using the same expression vs_main used. Both are continuous in
         // distance, so the handover slides smoothly instead of stepping.

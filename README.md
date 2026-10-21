@@ -100,6 +100,27 @@ open cuts; trees over covered tunnels remain.
 env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-app
 ```
 
+For the lightweight driving camera, add `PLANET_ROAD_DRIVE=1` to start in the
+car, or press **C** during normal exploration. **W/S** accelerate, brake and
+reverse; **A/D** steer; **Space** brakes; **[ / ]** change the maximum speed
+(default108km/h, reverse capped at29km/h). Mouse/Q/E look independently of
+steering. **C** gets out to walk; **G** returns to flight. The car can leave the
+road: gravity, four ground contacts and damped suspension replace the walking
+height clamp. Auto-hold keeps the stationary car parked on gradients. This is a test controller, not a rendered vehicle or full chassis,
+parapet/tyre collision simulation. Existing tunnel wall/roof sweeps remain.
+
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_DRIVE=1 cargo run --release -p planet-app
+```
+
+Interior overhead boards are spaced 500m along the engineered bore, with a
+separate remaining-exit distance on each face (normally rounded to500m).
+Distances cross region/residency boundaries; portal headers remain. Automated
+checks: `road_network_driving` exercises the real controller, while
+`road_network_tunnel_distances` reads both faces and the following marker.
+Use `PLANET_ROAD_NETWORK_SITE=longest_undersea PLANET_ROAD_SIGNS_WAIT=1` with
+those replays so they wait for signs, not an arbitrary frame count.
+
 Omit `--scenario` for ordinary walking/free flight. Mouse/WASD and **G** work as
 below. The default interactive start is on the **dry landward approach** to the
 undersea tunnel containing the longest sea section recorded so far (about19 km

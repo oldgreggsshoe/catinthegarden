@@ -1,0 +1,56 @@
+{
+  "name": "road_network_driving",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 32,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    1,
+    12,
+    24,
+    32
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3863784.6629554885,
+        737608.5306640359,
+        -725931.9733827021
+      ],
+      "look_at": [
+        3863784.7626490374,
+        737573.1942814661,
+        -725967.3475276115
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.9,
+        0.3,
+        0.2
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4,
+    "min_camera_clearance_m": 0.9
+  },
+  "drive_on_surface": true,
+  "forward_flight_start_time_seconds": 1
+}

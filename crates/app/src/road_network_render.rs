@@ -19,6 +19,13 @@ pub fn initial_position(interactive: bool) -> DVec3 {
     )
 }
 fn initial_position_for_site(site: Option<&str>, interactive: bool) -> DVec3 {
+    if site == Some("coastal_exit") {
+        return DVec3::new(
+            0.9659268192718296,
+            0.18088239257812766,
+            -0.18511331628658895,
+        ) * (crate::planet::planet_radius_meters() + 19.954);
+    }
     if site == Some("longest_undersea") || (site.is_none() && interactive) {
         return longest_undersea_start_position();
     }

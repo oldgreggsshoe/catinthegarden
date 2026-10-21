@@ -270,6 +270,8 @@ fn road_network_open_cut_owns(direction: vec3<f32>, height: f32) -> bool {
         // beyond the actual mesh at a polygon edge.
         let deck_radius=select(5.1,NETWORK_PARKING_RADIUS*0.99879546,parking);
         if offset<=deck_radius && p.z>centre.z-0.75 { return true; }
+        // Only parking courts retain an explicit surrounding bank mesh.
+        if !parking { continue; }
         let floor_depth=select(select(6.0,-b.w-1.0,b.w<0.0),-b.w-32.0,parking);
         let flat_radius=select(9.0,NETWORK_PARKING_CUT_RADIUS,parking);
         let cap=centre.z-floor_depth+max(offset-flat_radius,0.0);

@@ -55,6 +55,7 @@ pub struct Destination {
     pub name: String,
     pub metres: f64,
     pub branched: bool,
+    pub exit_position: Option<DVec3>,
 }
 #[derive(Clone)]
 pub struct Edge {
@@ -348,6 +349,7 @@ impl Navigator {
                         name: "TUNNEL".into(),
                         metres: q.cost,
                         branched,
+                        exit_position: Some(node.position),
                     }));
                 }
                 branched |= node.edges.iter().filter(|e| e.tunnel).count() > 2;
@@ -356,6 +358,7 @@ impl Navigator {
                     name,
                     metres: q.cost + crate::road_parking::OFFSET,
                     branched: false,
+                    exit_position: None,
                 }));
             }
             let mut next: Vec<_> = node
@@ -392,6 +395,7 @@ pub enum Kind {
     Tunnel,
     Branch,
 }
+#[derive(Clone)]
 pub struct Board {
     pub kind: Kind,
     pub centre: DVec3,
@@ -411,6 +415,63 @@ pub fn distance(metres: f64) -> String {
         format!("{:.0} KM", metres / 1000.0)
     }
 }
+/// Both faces share one station; distances follow the engineered bore to real
+/// exits, including unloaded regions. Anchor stations to an exit's 500m marks,
+/// rather than restarting the spacing at every regional gateway.
+fn tunnel_boards(edge: &Edge, ahead: &Destination, behind: &Destination) -> Vec<Board> {
+    let total_ahead = edge.length + ahead.metres;
+    // A canonical real exit keeps the phase stable even when regional
+    // edge order reverses. A branched bore uses its two directed next exits.
+    let anchor_ahead = match (ahead.exit_position, behind.exit_position) {
+        (Some(a), Some(b)) => point(a) >= point(b),
+        _ => true,
+    };
+    let mut station = if anchor_ahead {
+        total_ahead
+    } else {
+        -behind.metres
+    }
+    .rem_euclid(500.0);
+    if station < 0.01 || station > 499.99 {
+        station = 0.0;
+    }
+    let mut boards = Vec::new();
+    while station <= edge.length + 0.01 {
+        let forward_left = total_ahead - station;
+        let backward_left = behind.metres + station;
+        // Portal headers already cover the first/last few metres.
+        if forward_left >= 75.0 && backward_left >= 75.0 {
+            let (at, forward) = edge.at(station);
+            let up = at.normalize();
+            for (direction, left) in [(forward, forward_left), (-forward, backward_left)] {
+                boards.push(Board {
+                    kind: Kind::Tunnel,
+                    centre: at - direction * 0.08 + up * 6.7,
+                    right: direction.cross(up).normalize(),
+                    up,
+                    lines: vec![format!("EXIT {}", tunnel_distance(left))],
+                    width: 5.5,
+                    village: false,
+                    support: None,
+                });
+            }
+        }
+        station += 500.0;
+    }
+    boards
+}
+fn tunnel_distance(metres: f64) -> String {
+    if metres < 500.0 {
+        return distance(metres);
+    }
+    let rounded = (metres / 500.0).round().max(1.0) * 500.0;
+    if rounded < 1000.0 {
+        "500 M".into()
+    } else {
+        format!("{:.1} KM", rounded / 1000.0)
+    }
+}
+
 fn roadside(p: DVec3, forward: DVec3, lines: Vec<String>, inside: bool, village: bool) -> Board {
     let up = p.normalize();
     let right = forward.cross(up).normalize();
@@ -491,6 +552,7 @@ pub fn boards(
     let mut seen = HashSet::new();
     let mut boards = Vec::new();
     let mut failures = 0;
+    let mut tunnel_stations = HashSet::new();
     for id in ids {
         if terrain.cancelled() {
             return Err("road generation superseded".into());
@@ -603,6 +665,26 @@ pub fn boards(
             if point(p) >= point(nav.position(e.to)) {
                 continue;
             }
+            if e.tunnel {
+                let ahead = nav.next(e.to, p, true, backbone, radius, terrain);
+                let behind = nav.next(id, nav.position(e.to), true, backbone, radius, terrain);
+                match (ahead, behind) {
+                    (Ok(Some(a)), Ok(Some(b))) => {
+                        let paired = tunnel_boards(e, &a, &b);
+                        for pair in paired.chunks_exact(2) {
+                            let centre = (pair[0].centre + pair[1].centre) * 0.5;
+                            if centre.distance(eye) < 1800.0
+                                && tunnel_stations.insert(point(centre))
+                            {
+                                boards.extend(pair.iter().cloned());
+                            }
+                        }
+                    }
+                    (Err(_), _) | (_, Err(_)) => failures += 1,
+                    _ => {}
+                }
+                continue;
+            }
             let mut station = 1000.0;
             while station < e.length - 150.0 {
                 let (at, forward) = e.at(station);
@@ -647,6 +729,148 @@ pub fn boards(
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "asset-backed undersea distance boards; no window/GPU"]
+    fn road_network_undersea_distance_boards_show_both_real_exits() {
+        struct Coast(crate::road_network_survey::Surface);
+        impl Survey for Coast {
+            fn ground(&self, d: DVec3) -> Result<road_network::Ground, String> {
+                self.0.engineering_ground(d)
+            }
+            fn villages(&self, key: TileKey) -> Result<Vec<DVec3>, String> {
+                self.0.villages(key)
+            }
+            fn village_access_height(&self, g: road_network::Ground) -> f64 {
+                g.height + 0.25
+            }
+            fn settlement_core_at(&self, d: DVec3) -> Result<bool, String> {
+                self.0.settlement_core_at(d)
+            }
+        }
+        let coast = Coast(
+            crate::road_network_survey::Surface::load(&crate::find_default_outmap().unwrap())
+                .unwrap(),
+        );
+        let backbone = coast.0.backbone().unwrap();
+        let eye = crate::road_network_render::longest_undersea_start_position();
+        let radius = crate::planet::planet_radius_meters();
+        let plan = Arc::new(
+            crate::road_network_mesh::prepare_local(
+                &backbone,
+                backbone.region_key(eye),
+                radius,
+                &coast,
+            )
+            .unwrap(),
+        );
+        let boards = boards(
+            &mut Navigator::default(),
+            &[plan],
+            eye,
+            radius,
+            &backbone,
+            &coast,
+        )
+        .unwrap();
+        let internal: Vec<_> = boards
+            .iter()
+            .filter(|b| b.kind == Kind::Tunnel && b.lines[0].starts_with("EXIT "))
+            .collect();
+        assert!(
+            internal.len() >= 4,
+            "must include paired internal boards, not just portal headers"
+        );
+        for pair in internal.chunks_exact(2) {
+            assert!(pair[0].centre.distance(pair[1].centre) < 0.2);
+            assert!(pair[0].right.dot(pair[1].right) < -0.999);
+            for b in pair {
+                let forward = b.up.cross(b.right).normalize();
+                let eye = b.centre - forward * 18.0 - b.up * 5.3;
+                let target = b.centre;
+                eprintln!("tunnel board {:?}, eye={eye:?}, target={target:?}", b.lines);
+            }
+        }
+    }
+    #[test]
+    fn tunnel_boards_are_paired_and_keep_exit_anchored_spacing_across_gateways() {
+        let radius = 4e6;
+        let edge = Edge {
+            to: (
+                TileKey {
+                    face: planet_coretypes::CubeFace::PositiveX,
+                    level: 0,
+                    x: 0,
+                    y: 0,
+                },
+                0,
+            ),
+            path: Arc::new(vec![
+                DVec3::new(radius, 0.0, 0.0),
+                DVec3::new(radius, 1600.0, 0.0),
+            ]),
+            length: 1600.0,
+            tunnel: true,
+        };
+        let d = |metres| Destination {
+            name: "TUNNEL".into(),
+            metres,
+            branched: false,
+            exit_position: None,
+        };
+        let boards = tunnel_boards(&edge, &d(900.0), &d(1250.0));
+        assert_eq!(boards.len(), 8);
+        for (pair, station) in boards.chunks_exact(2).zip([0.0, 500.0, 1000.0, 1500.0]) {
+            assert!((pair[0].right.dot(pair[1].right) + 1.0).abs() < 1e-10);
+            assert_eq!(
+                pair[0].lines,
+                vec![format!("EXIT {}", tunnel_distance(2500.0 - station))]
+            );
+            assert_eq!(
+                pair[1].lines,
+                vec![format!("EXIT {}", tunnel_distance(1250.0 + station))]
+            );
+            assert!(((pair[0].centre + pair[1].centre) * 0.5).y > station - 0.1);
+        }
+        // Reversing regional edge order must not shift the 500m stations.
+        let mut ahead = d(900.0);
+        ahead.exit_position = Some(DVec3::new(radius, 5000.0, 0.0));
+        let mut behind = d(1250.0);
+        behind.exit_position = Some(DVec3::new(radius, -5000.0, 0.0));
+        let reverse = Edge {
+            path: Arc::new(edge.path.iter().copied().rev().collect()),
+            ..edge.clone()
+        };
+        let centres = |boards: Vec<Board>| -> std::collections::BTreeSet<Point> {
+            boards
+                .chunks_exact(2)
+                .map(|p| point((p[0].centre + p[1].centre) * 0.5))
+                .collect()
+        };
+        let original = centres(tunnel_boards(&edge, &ahead, &behind));
+        assert_eq!(original, centres(tunnel_boards(&reverse, &behind, &ahead)));
+        // A station exactly on a gateway is retained (the caller de-duplicates).
+        let split_a = Edge {
+            path: Arc::new(vec![edge.path[0], DVec3::new(radius, 1000.0, 0.0)]),
+            length: 1000.0,
+            ..edge.clone()
+        };
+        let split_b = Edge {
+            path: Arc::new(vec![DVec3::new(radius, 1000.0, 0.0), edge.path[1]]),
+            length: 600.0,
+            ..edge.clone()
+        };
+        let mut rest_a = ahead.clone();
+        rest_a.metres += 600.0;
+        let mut rest_b = behind.clone();
+        rest_b.metres += 1000.0;
+        let mut split = centres(tunnel_boards(&split_a, &rest_a, &behind));
+        split.extend(centres(tunnel_boards(&split_b, &ahead, &rest_b)));
+        assert_eq!(original, split);
+        assert_eq!(tunnel_distance(19_500.0), "19.5 KM");
+        assert_eq!(tunnel_distance(250.0), "250 M");
+        assert_eq!(tunnel_distance(500.0), "500 M");
+    }
+
+    #[test]
     fn village_nameplate_is_outside_the_parking_circle_and_approach() {
         let access = DVec3::Z * 4e6;
         let toward_road = DVec3::Y;
@@ -689,6 +913,7 @@ mod tests {
         };
         let d = Destination {
             name: "OAKFORD".into(),
+            exit_position: None,
             metres: 15.0,
             branched: false,
         };

@@ -14,6 +14,72 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Interior distance markers and driving, 21 October
+
+`road_navigation` now stations paired ceiling boards every500m, anchored to a
+canonical real exit so reversed edge ordering and regional gateways do not
+restart the phase. Coincident gateway stations are de-duplicated. Each face
+uses the true engineered distance in its own direction to a real exit, even
+beyond residency; branched bores use the nearest directed exit. Values>=500m
+round to500m (including half-kilometres above10km); shorter remainders keep10m
+precision, never0. Headers cover the last75m near mouths. This replaces the
+1km village-reassurance boards inside tunnels, not the village boards outside.
+The existing single cached atlas batch is retained; navigation/layout stays
+on the cancellable worker. Test board:20.5km inward,500m outward; next inward
+marker20.0km. Both faces and the next marker opened in final1792592187-23337.
+
+`driving.rs` is a deliberately small first-person test car. `PLANET_ROAD_DRIVE=1`
+starts it at the usual road entrance; C enters/exits during normal exploration,
+G returns to flight. W/S throttle/brake/reverse, A/D steer, Space brakes,
+mouse/Q/E look, brackets set the speed cap (30m/s default,8m/s reverse).
+The120Hz bounded controller samples four wheels on the same raster terrain/
+exact road floors as walking. A critically damped suspension includes gravity,
+limited compression, ballistic falls and low-pass pitch/roll; relative support
+velocity follows sustained grades without compression-stop snapping. Stationary auto-hold prevents rolling away during startup. Bicycle
+steering has a slew limit and4m/s^2 lateral-acceleration cap. There is no road
+adhesion or artificial bob. Existing bore wall/roof sweeps remain; this is NOT
+full tyre/chassis/parapet collision, an autopilot, or a rendered car. Unknown
+terrain stops travel rather than integrating against an invented floor. No
+extra routing, I/O or render pass is added to a movement frame.
+
+The32s `road_network_driving` replay runs the actual controller, not interpolated
+waypoints. Its first draft extrapolated a flat pose90m into an uphill section
+below the deck and was rejected (1792591476-20904). The corrected real in-bore
+pose passes65 finite spatial samples and four captures with1.391935..1.400057m
+road clearance (final current-binary1792592907-26831, all4 opened). Five physics tests cover stillness, free fall,
+roughness filtering,25% sustained grade and speed/steering/reverse/parked limits;
+a signed spherical-step regression also pins actual reverse movement;
+canonical/reversed/split gateway marker and actual sea-region checks pass.
+Final actual keyboard run1792592740-26600 (all5 opened) confirms parked startup,
+S reverse, D steering off pavement onto cut terrain beneath the legs, Space
+braking, W forward, C walking and G flight. Grounded driving clearance~1.38..1.41m;
+~3.80m during the off-road fall, then1.7m walking. Signed planet-frame motion
+confirms actual reverse, rather than mistaking planet rotation for travel.
+Full serial suite743 pass/same6 unrelated failures/66 ignored; all7 road Vulkan
+checks pass. No FPS improvement claimed. See HANDOFF for final interactive
+and cut-wall capture evidence.
+
+## Single-owner excavation banks, 21 October
+
+The photographed jagged moving patches came from wide cached offset bank
+strips folding over bends and competing with the displaced terrain. Open road
+banks now belong solely to the existing cut terrain; decks and court-specific
+banks retain their own ownership masks, evaluated at actual raster height.
+No vertex-cut bypass is used. Removed the redundant road bank generator; court
+geometry, excavation profiles, roof cover,25% grades and collision floors are
+unchanged. The production Vulkan apron test also retains high bank fragments
+outside the pavement instead of discarding them for a removed mesh.
+
+The blue portal wall is opaque terrain (water disabled gives the same wall;
+categorical material/height probe has no ocean or below-zero ownership flags).
+Excavated steep faces now use the actual triangle normal, exposed-earth rather
+than shoreline coating, and no unrelated finer-than-mesh terrain relighting.
+Untouched land retains its original smoothed normal and material path. This
+addresses misleading cut-wall shading rather than changing the ocean colour.
+The two manual poses and35cm camera movement are retained as
+`road_network_cut_walls` and `road_network_cut_walls_exit`; the latter uses
+`PLANET_ROAD_NETWORK_SITE=coastal_exit` to load its real opposite endpoint.
+
 ## Coastal tunnel mouths, 21 October
 
 Undersea approaches now remain covered beneath low coastal ground, rather than

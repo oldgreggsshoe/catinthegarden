@@ -777,9 +777,9 @@ pub fn snapshot(
                     road.portal_b,
                 );
             }
-            if road.near && !s.tunnel {
-                banks(&mut structures, s, road.ribbon.sides, &field, terrain)?;
-            }
+            // The displaced terrain is the sole open-bank surface. Wide
+            // offset strips fold over tight bends and compete with that
+            // terrain, producing moving slivers and depth interference.
         }
         vertices += near.len() + far.len() + structures.len();
         if vertices > MAX_VERTICES {
@@ -1380,61 +1380,6 @@ fn liner(
         ],
         colour,
     );
-}
-
-fn banks(
-    mesh: &mut Vec<Vertex>,
-    s: Segment,
-    sides: [DVec3; 2],
-    field: &Field,
-    terrain: &impl Survey,
-) -> Result<(), String> {
-    let offsets = [
-        -s.reach, -48.0, -32.0, -24.0, -16.0, -9.0, 0.0, 9.0, 16.0, 24.0, 32.0, 48.0, s.reach,
-    ];
-    let mut strips = Vec::new();
-    let mut any_cut = false;
-    for offset in offsets {
-        let mut pair = [(DVec3::ZERO, 0.0_f64); 2];
-        for (i, base) in [s.a, s.b].into_iter().enumerate() {
-            let p = base + sides[i] * offset;
-            let direction = field.frame.world(p).normalize();
-            let h = terrain.ground(direction)?.height;
-            let cut = field.height(direction, h);
-            any_cut |= h - cut > 0.25;
-            pair[i] = (
-                field
-                    .frame
-                    .local(direction * (field.frame.radius + cut + s.floor_depth.min(0.15))),
-                (h - cut).max(0.0),
-            );
-        }
-        strips.push(pair);
-    }
-    if any_cut {
-        for p in strips.windows(2) {
-            let points = [p[0][0], p[1][0], p[1][1], p[0][1]];
-            if points.iter().all(|p| p.1 <= 0.25) {
-                continue;
-            }
-            let normal = (points[1].0 - points[0].0)
-                .cross(points[2].0 - points[0].0)
-                .normalize()
-                .as_vec3()
-                .to_array();
-            for i in [0, 1, 2, 0, 2, 3] {
-                // Green magnitude carries interpolated excavation, without a
-                // larger vertex stride or painting untouched ground brown.
-                let (point, removed) = points[i];
-                mesh.push(Vertex {
-                    position: point.as_vec3().to_array(),
-                    normal,
-                    colour: [0.24, -(0.19 + removed.min(64.0) as f32 / 64.0), 0.13],
-                });
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

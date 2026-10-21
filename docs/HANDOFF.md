@@ -10,7 +10,78 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 21 October: dry inland coastal bore approaches.**
+**Current phase, 21 October: overhead tunnel distances, driving, cut-wall ownership.**
+
+- Interior tunnel boards now occur at500m stations anchored to a canonical real
+  exit, not regional edge order. Paired faces show their own directed real-exit
+  distance;500m rounding retains half-kilometres above10km. Coincident gateway
+  stations are de-duplicated; no village reassurance boards inside bores. All
+  navigation and atlas work stays on the existing cancellable worker.
+- New `CameraMode::Driving`/`driving.rs`: C drive/walk, G fly, W/S throttle/
+  brake/reverse, A/D steer, Space brakes, brackets change speed limit. Mouse/
+  Q/E look independently. `PLANET_ROAD_DRIVE=1` starts driving at the normal road
+  entrance; ordinary launch without it keeps flight. A bounded120Hz model uses
+  four raster/exact-road contacts, gravity, critically damped suspension,
+  slope-relative support velocity, filtered pitch/roll, bicycle steering slew
+  and4m/s^2 lateral limit. Auto-hold parks a stationary car on grades. No road
+  adhesion, per-frame routing/I/O, new render pass, vehicle mesh, full tyre/
+  chassis/parapet collision or autopilot. Existing bore wall/roof sweep remains.
+- `road_network_driving` is a32s real-controller replay. The first draft
+  extrapolated a flat pose90m below an uphill deck and was rejected
+  (1792591476-20904). Corrected actual in-bore pose and final current-binary
+  1792592907-26831 pass all four opened captures/65 finite samples,
+  1.391935..1.400057m road clearance.
+  Final opened `road_network_tunnel_distances/1792592187-23337` reads20.5km
+  inward/500m outward on one board and20.0km on the following board. Run with
+  `PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=longest_undersea
+  PLANET_ROAD_SIGNS_WAIT=1` so captures wait for the actual worker/atlas.
+- Keyboard testing caught parked drift and signed reverse being rejected by
+  the walking geodesic helper. Auto-hold and a signed spherical-step regression
+  now pass; flight's separate movement helper is unchanged. The early keyboard
+  runs1792592020-23123,1792592303-23603,1792592495-25112 test C/G/mouse and
+  steering/braking, but are NOT accepted off-road/reverse evidence. Final live
+  `manual/1792592740-26600` (all5 opened) confirms stationary entrance startup,
+  S reverse, D steering off the paved deck onto cut ground beneath the viaduct,
+  Space braking, W forward, C walking and G flight. Planet-frame displacement
+  confirms real reverse travel, not planet rotation. Driving ground clearance
+  is~1.38..1.41m when supported, rising to~3.80m during the off-road fall; parked
+  startup remains1.4m. Walking restores1.7m, then flight. Harness only addresses
+  its own PID/window, then closes it. No full chassis/pier collision claim.
+- The user’s wall screenshots are in `manual/1792588979-4771` (all five opened).
+  Exact poses were recovered from GPU probes at the actual1280x800 aspect1.6,
+  not16:9. Probes/reconstruction/isolations are in `test-runs/cut-wall-diagnosis`.
+  Water-off leaves the opaque blue wall; categorical shader ownership/height
+  diagnostic flags neither ocean nor below-zero authoring/raster height there.
+  Cached bank strips, not the terrain alone, author the jagged competing patches.
+  Open banks now use ONLY displaced cut terrain; court banks/decks keep their
+  masks (evaluated at actual raster height). Removed the redundant bank generator,
+  no vertex-cut bypass. Cut steep faces use the drawn triangle normal, not the
+  old sky-facing beach normal; shoreline coating/finer terrain relighting yield
+  to exposed cut soil. Outside cuts the smoothed normal/material path is intact.
+  Final opened first/35cm-shift captures1792592153-23273 and opposite-end
+  1792592169-23309 pass. Terrain-grid faceting/vertical material streaks remain;
+  this is not a rebuilt terrain mesher or a prettier-concrete-material claim.
+- Added `road_network_cut_walls`, `road_network_cut_walls_exit` (use
+  `PLANET_ROAD_NETWORK_SITE=coastal_exit` to prepare the real opposite end),
+  `road_network_tunnel_distances`, `road_network_driving`. Removed all temporary
+  bank/material diagnostic toggles. Shader regressions preserve smoothed snow
+  outside cuts and assert cut material/normal separation; production Vulkan
+  apron regression retains bank fragments outside the pavement. Seven road
+  Vulkan checks, real sea-marker endpoint checks, canonical/reversed/split
+  station tests and five suspension/steering/parked checks pass. Full serial
+  final suite is743 pass/6 baseline fail/66 ignored in
+  `test-runs/tunnel-driving/all-accepted.log`; failures remain the same optical
+  zoom/FOV/turquoise/water-counter ones. Cargo check/release build and7 focused
+  driving/controller/reverse checks pass. Final32s current-binary replay
+  1792592907-26831 passes; see `test-runs/tunnel-driving/drive-accepted.log`.
+- No presentation change or FPS gain is claimed. All user roadnet artifact
+  folders/precompute jobs left untouched. Source fingerprint changes make old
+  results stale on resume. Unrelated Claude route-budget changes retained.
+  `response/codex.txt` was already externally replaced by a short resume note at
+  this turn's start; current responses were appended, not a log rewrite. Only
+  the appended responses are staged; the pre-existing replacement remains local.
+
+**Previous phase, 21 October: dry inland coastal bore approaches.**
 The user's manual captures1792574866-1150670 show the water underside directly
 outside the old below-sea mouth. Shared profile samples now require real roof
 cover in the low coastal strip (canonical 8-direction probes at8/125/250m;

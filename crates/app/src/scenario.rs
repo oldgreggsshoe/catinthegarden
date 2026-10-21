@@ -215,6 +215,9 @@ pub struct ScenarioDefinition {
     /// Exercise the real walking physics instead of free flight in a W replay.
     #[serde(default)]
     pub walk_on_surface: bool,
+    /// Exercise the same suspension and steering controller as interactive C.
+    #[serde(default)]
+    pub drive_on_surface: bool,
     /// Keep unrelated bird ground sampling out of focused camera replays.
     #[serde(default)]
     pub skip_birds: bool,
@@ -361,6 +364,10 @@ scenarios! {
     "mountain_ground" => "../scenarios/mountain_ground.json",
     "road_network_trial" => "../scenarios/road_network_trial.json",
     "road_network_coastal_portal" => "../scenarios/road_network_coastal_portal.json",
+    "road_network_tunnel_distances" => "../scenarios/road_network_tunnel_distances.json",
+    "road_network_driving" => "../scenarios/road_network_driving.json",
+    "road_network_cut_walls" => "../scenarios/road_network_cut_walls.json",
+    "road_network_cut_walls_exit" => "../scenarios/road_network_cut_walls_exit.json",
     "road_network_overview" => "../scenarios/road_network_overview.json",
     "road_network_walk" => "../scenarios/road_network_walk.json",
     "road_network_parking" => "../scenarios/road_network_parking.json",
@@ -562,6 +569,12 @@ impl ScenarioRunner {
                     .to_owned(),
             );
         }
+        if definition.drive_on_surface
+            && (definition.walk_on_surface
+                || definition.forward_flight_start_time_seconds.is_none())
+        {
+            return Err("driving requires forward input and cannot also enable walking".into());
+        }
         if !definition.sun_waypoints.is_empty()
             && (definition.sun_waypoints.iter().any(|waypoint| {
                 !waypoint.time_s.is_finite()
@@ -758,6 +771,10 @@ impl ScenarioRunner {
         self.definition
             .surface_probe_max_distance_meters
             .unwrap_or(crate::probe::MAX_COMPARISON_DISTANCE_METERS)
+    }
+
+    pub fn replays_driving(&self) -> bool {
+        self.definition.drive_on_surface
     }
 
     pub fn replays_surface_walk(&self) -> bool {
@@ -1159,11 +1176,20 @@ mod tests {
 
     use super::SCENARIO_NAMES;
 
+    #[test]
+    fn road_driving_replay_runs_the_controller_not_waypoint_interpolation() {
+        let replay = ScenarioRunner::load("road_network_driving").unwrap();
+        assert!(replay.replays_driving() && replay.replays_forward_flight());
+        assert!(!replay.replays_surface_walk());
+        assert_eq!(replay.definition.waypoints.len(), 1);
+        assert_eq!(replay.expected_screenshots(), 4);
+    }
+
     /// The table is the only list, so a name cannot be loadable but unlisted,
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 140);
+        assert_eq!(SCENARIO_NAMES.len(), 144);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
