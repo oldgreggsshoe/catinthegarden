@@ -140,3 +140,7 @@ Continuing with the tunnel fix. The shoreline and nine-region undersea checks no
 Fixed: the test entrance is now about 450 m inland. The tunnel goes underground before passing beneath the beach and sea, retaining the 25% grade limit.
 
 Verified in flight/walking and screenshots. 97 road checks and 7 GPU tests pass; six existing unrelated suite failures remain.
+
+The RTSP port is reachable now: I checked 192.168.1.50:8554/camera and received 401 Unauthorized.
+
+That confirms the server is answering, but not that video is forwarding. Authentication is required before we can verify the stream.
