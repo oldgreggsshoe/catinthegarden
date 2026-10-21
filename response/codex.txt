@@ -144,3 +144,5 @@ Verified in flight/walking and screenshots. 97 road checks and 7 GPU tests pass;
 The RTSP port is reachable now: I checked 192.168.1.50:8554/camera and received 401 Unauthorized.
 
 That confirms the server is answering, but not that video is forwarding. Authentication is required before we can verify the stream.
+
+Understood—ignoring that message.
