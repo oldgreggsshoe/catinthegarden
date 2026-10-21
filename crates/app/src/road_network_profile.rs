@@ -25,6 +25,18 @@ const PIER_CAP: f64 = 32.0;
 const UNDERSEA_CROWN: f64 = 9.0;
 const UNDERSEA_COVER: f64 = 5.0;
 const UNDERSEA_DECK_DEPTH: f64 = 20.0;
+// Keep sea bores beneath the beach, with room for a genuinely dry landward
+// portal. The radial stencil is canonical, including at regional gateways.
+pub(crate) const COAST_SETBACK: f64 = 250.0;
+pub(crate) const COAST_MIN_DECK: f64 = 5.0;
+// An exposed cliff mouth above the supported 30m swell plus bore crown is not
+// a submerged beach approach. It does not need the low-shore setback guard.
+pub(crate) const COAST_HIGH_DECK: f64 = 40.0;
+const COAST_COVER_MARGIN: f64 = 0.5;
+// High cliff portals already stand well above the water; avoid extra shoreline
+// probes throughout mountain/inland routing. Low beaches get the guard below.
+pub(crate) const COAST_SURVEY_HEIGHT: f64 = 80.0;
+const COAST_LOW_GROUND: f64 = UNDERSEA_CROWN + UNDERSEA_COVER + 2.0 * COAST_MIN_DECK + GRADE * STEP;
 
 #[derive(Serialize)]
 pub struct Profile {
@@ -105,6 +117,68 @@ pub(crate) struct Sample {
     pub ground: crate::road_network::Ground,
     pub cap: f64,
     pub anchor: f64,
+    pub coastal: bool,
+}
+
+fn roof_ground(
+    d: DVec3,
+    radius: f64,
+    terrain: &impl Survey,
+    ground: crate::road_network::Ground,
+) -> Result<f64, String> {
+    let mut bed = ground.height;
+    let reference = if d.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
+    let u = d.cross(reference).normalize();
+    let v = d.cross(u);
+    // Land-side bores can run diagonally across a steep shore bank. Four
+    // cardinal taps alone miss the lowest shoulder, producing false portals.
+    let offsets = [
+        u,
+        -u,
+        v,
+        -v,
+        (u + v).normalize(),
+        (u - v).normalize(),
+        (-u + v).normalize(),
+        (-u - v).normalize(),
+    ];
+    for &offset in offsets.iter().take(if ground.ocean { 4 } else { 8 }) {
+        let g = terrain.ground((d + offset * (8.0 / radius)).normalize())?;
+        if !g.height.is_finite() {
+            return Err("non-finite tunnel cover".into());
+        }
+        bed = bed.min(g.height);
+    }
+    Ok(bed)
+}
+
+pub(crate) fn near_coast(d: DVec3, radius: f64, terrain: &impl Survey) -> Result<bool, String> {
+    let reference = if d.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
+    let u = d.cross(reference).normalize();
+    let v = d.cross(u);
+    // Include the shoulders, and an inner ring for narrow inlets. The outer
+    // ring leaves margin for the 20m station spacing and angular sampling.
+    for r in [8.0, COAST_SETBACK * 0.5, COAST_SETBACK] {
+        for offset in [
+            u,
+            -u,
+            v,
+            -v,
+            (u + v).normalize(),
+            (u - v).normalize(),
+            (-u + v).normalize(),
+            (-u - v).normalize(),
+        ] {
+            let g = terrain.ground((d + offset * (r / radius)).normalize())?;
+            if !g.height.is_finite() {
+                return Err("non-finite coastal terrain".into());
+            }
+            if g.ocean {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn anchor_height(g: crate::road_network::Ground, cap: f64) -> f64 {
@@ -121,23 +195,19 @@ pub(crate) fn sample_at(d: DVec3, radius: f64, terrain: &impl Survey) -> Result<
         return Err("non-finite profile terrain".into());
     }
     let protected = terrain.settlement_core_at(d)?;
-    let cap = if ground.ocean || protected {
+    let coastal =
+        ground.ocean || (ground.height < COAST_SURVEY_HEIGHT && near_coast(d, radius, terrain)?);
+    let cap = if coastal || protected {
         // Canonical radial stencil: shared gateway height on both regions/faces.
-        let reference = if d.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
-        let u = d.cross(reference).normalize();
-        let v = d.cross(u);
-        let mut bed = ground.height;
-        for offset in [u, -u, v, -v] {
-            let g = terrain.ground((d + offset * (8.0 / radius)).normalize())?;
-            if !g.height.is_finite() {
-                return Err("non-finite tunnel cover".into());
-            }
-            bed = bed.min(g.height);
-        }
+        let bed = roof_ground(d, radius, terrain, ground)?;
         bed - if protected {
             20.0
         } else {
             UNDERSEA_CROWN + UNDERSEA_COVER
+        } - if coastal && !ground.ocean {
+            COAST_COVER_MARGIN
+        } else {
+            0.0
         }
     } else {
         ground.height + PIER_CAP
@@ -146,6 +216,7 @@ pub(crate) fn sample_at(d: DVec3, radius: f64, terrain: &impl Survey) -> Result<
         ground,
         cap,
         anchor: anchor_height(ground, cap),
+        coastal,
     })
 }
 
@@ -278,10 +349,43 @@ impl Profile {
         }
         let mut ground = Vec::with_capacity(dirs.len());
         let mut caps = Vec::with_capacity(dirs.len());
+        let mut coastal = Vec::with_capacity(dirs.len());
         for &d in &dirs {
             let sample = sample_at(d, radius, terrain)?;
             ground.push(sample.ground);
             caps.push(sample.cap);
+            coastal.push(sample.coastal);
+        }
+        // A long, low beach must not acquire another flooded mouth merely at
+        // the edge of the setback stencil. Extend real roof constraints along
+        // connected low ground until there is enough elevation to emerge dry.
+        // Never move a fixed terminal to conceal an infeasible approach.
+        let mut links = vec![Vec::new(); dirs.len()];
+        for &[a, b] in &segments {
+            links[a].push(b);
+            links[b].push(a);
+        }
+        let mut stack: Vec<_> = coastal
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &c)| c.then_some(i))
+            .collect();
+        while let Some(i) = stack.pop() {
+            if terrain.cancelled() {
+                return Err("road generation superseded".into());
+            }
+            for &j in &links[i] {
+                if !coastal[j] && ground[j].height < COAST_LOW_GROUND {
+                    coastal[j] = true;
+                    caps[j] = caps[j].min(
+                        roof_ground(dirs[j], radius, terrain, ground[j])?
+                            - UNDERSEA_CROWN
+                            - UNDERSEA_COVER
+                            - COAST_COVER_MARGIN,
+                    );
+                    stack.push(j);
+                }
+            }
         }
         // Envelope edge lengths use a conservative lower radius. Heights
         // cannot fall below the lowest cap minus this anchor allowance, so
@@ -473,6 +577,102 @@ mod tests {
     use super::*;
     use crate::road_network::{Ground, Node, RoadEdge, Terminal, TerminalKind};
     use planet_coretypes::{CubeFace, TileKey};
+
+    #[test]
+    fn road_network_coastal_roof_covers_diagonal_shoulders() {
+        struct Bank;
+        impl Survey for Bank {
+            fn ground(&self, d: DVec3) -> Result<Ground, String> {
+                let x = d.y / d.x * 4e6;
+                let y = d.z / d.x * 4e6;
+                let ocean = x > 150.0 || y > 150.0;
+                Ok(Ground {
+                    height: if ocean { -10.0 } else { 40.0 + 0.2 * (x + y) },
+                    ocean,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(vec![])
+            }
+        }
+        let sample = sample_at(DVec3::X, 4e6, &Bank).unwrap();
+        assert!(sample.coastal);
+        for a in 0..360 {
+            let angle = (a as f64).to_radians();
+            let d = direction(8.0 * angle.cos(), 8.0 * angle.sin());
+            assert!(
+                Bank.ground(d).unwrap().height - sample.cap >= 14.0,
+                "the actual road shoulder needs cover between cardinal taps too"
+            );
+        }
+    }
+
+    struct Beach;
+    impl Survey for Beach {
+        fn ground(&self, d: DVec3) -> Result<Ground, String> {
+            let x = d.y / d.x * 4e6;
+            Ok(Ground {
+                height: x * 0.05,
+                ocean: x <= 0.0,
+            })
+        }
+        fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+            Ok(vec![])
+        }
+    }
+
+    #[test]
+    fn road_network_coastal_caps_are_canonical_and_leave_inland_roads_unchanged() {
+        let d = direction(180.0, 0.0);
+        let a = sample_at(d, 4e6, &Beach).unwrap();
+        assert!(a.coastal && a.cap <= a.ground.height - 14.0);
+        let terminal = Terminal {
+            direction: d.to_array(),
+            kind: TerminalKind::Gateway { link: 0 },
+        };
+        let b = terminal_sample(&terminal, 4e6, &Beach).unwrap();
+        assert_eq!(
+            a.anchor, b.anchor,
+            "both regions must pin the same gateway height"
+        );
+        let inland = sample_at(direction(1800.0, 0.0), 4e6, &Beach).unwrap();
+        assert!(!inland.coastal);
+        assert_eq!(inland.cap, inland.ground.height + PIER_CAP);
+        assert_eq!(inland.anchor, inland.ground.height + CLEARANCE);
+    }
+
+    #[test]
+    fn road_network_coastal_profile_stays_buried_across_a_long_low_beach() {
+        let mut r = tree();
+        r.nodes.truncate(2);
+        r.nodes[0].direction = direction(-400.0, 0.0).to_array();
+        r.nodes[1].direction = direction(2000.0, 0.0).to_array();
+        r.terminals = r
+            .nodes
+            .iter()
+            .map(|n| Terminal {
+                direction: n.direction,
+                kind: TerminalKind::Gateway { link: 0 },
+            })
+            .collect();
+        r.terminal_nodes = vec![0, 1];
+        r.edges.truncate(1);
+        let p = Profile::fit(&r, 4e6, &Beach).unwrap().unwrap();
+        for (d, &h) in p.directions.iter().zip(&p.heights_meters) {
+            let d = DVec3::from_array(*d);
+            let x = d.y / d.x * 4e6;
+            if x < 550.0 {
+                assert!(
+                    Beach.ground(d).unwrap().height - h >= 14.0 - 1e-6,
+                    "a low beach must remain covered past the coastal stencil: x={x}, deck={h}"
+                );
+            }
+        }
+        assert!(p.maximum_grade <= 0.25);
+        assert!(
+            p.maximum_grade_change_per_meter <= crate::road_vertical::MAX_GRADE_CHANGE_PER_METER
+        );
+    }
 
     #[test]
     fn road_network_vertical_curves_keep_acute_junction_overlaps_flat() {

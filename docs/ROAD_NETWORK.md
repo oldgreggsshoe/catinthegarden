@@ -14,17 +14,43 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
-## Interactive entrance start, 20 October
+## Coastal tunnel mouths, 21 October
+
+Undersea approaches now remain covered beneath low coastal ground, rather than
+emerging at the first land-labelled sample. Canonical shoulder/125m/250m radial
+shore probes impose the existing9m crown+5m roof cover, also on shared gateway
+samples. Along long low beaches those caps extend through connected ground
+until a dry emergence is possible. High ground (>=80m) avoids the extra coast
+survey. Mouths below5m deck, or low mouths inside the sampled shoreline guard, are
+rejected, never disguised with extra lining/water masks. Cliff decks>=40m are
+already above the supported swell and need no low-shore setback. Land roofs
+include diagonal taps and0.5m coastal cover margin. Infeasible fixed
+anchors remain rejected rather than disconnected or moved. This conservative
+rule also keeps low coastal cuts covered; it is not an exact coastline-distance
+field or a guarantee that all planetary regions are feasible.
+
+The selected start has moved~450m inland: deck+10.252m, eye+14.896m on its real
+open approach; the opposite sea exit is+19.954m. Grade25% and vertical-rate
+0.005/m limits remain unchanged. Opened final replay1792578084-1166275 shows dry land/sky out of the mouth
+and a solid ceiling at the old water-exposed location. Actual flight/walking
+1792577953-1165113 retain2.0/1.7m clearance. Both real sea endpoints, shared
+gateway, legacy sea/mountain/village workers and7 Vulkan road checks pass.
+Full serial suite735 pass/same6 unrelated failures,65 ignored. Replay: PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=longest_undersea
+with --scenario road_network_coastal_portal. No per-frame surveying or FPS claim.
+Old precompute geometry/statistics describe old engineering; the existing source
+fingerprint invalidates them on a new run. User artifact folders are untouched.
+
+## Previous interactive entrance start, 20 October
 
 Ordinary road-experiment startup now uses the verified mouth of the largest
 recorded regional undersea component (19.14km in PositiveX152/152). Tracing its
 unbranched continuation through152/151 yields20.06km to the opposite real exit,
 not merely a cache boundary. The site is pinned to the current survey; it does
 not assert that the unfinished whole-planet survey has found its global maximum.
-The camera stands3m inside the dry mouth, looking along the road. Both current
-mouths are below sea level; an outside pose floated to the sea and was rejected.
-Their exposed approaches remain an engineering defect, not repaired by spawning
-inside. Opened actual flight/walking captures1792536909-130927 retain2.0/1.7m
+The camera stands3m inside the dry mouth, looking along the road. At that stage both
+mouths were below sea level; an outside pose floated to the sea and was rejected.
+Their exposed approaches were an engineering defect, not repaired by spawning
+inside; the coastal phase above supersedes that workaround. Opened actual flight/walking captures1792536909-130927 retain2.0/1.7m
 floor clearance. Legacy site overrides and default scenario starts are retained.
 No per-frame work or routing/grade/cover change. See HANDOFF for tests/evidence.
 

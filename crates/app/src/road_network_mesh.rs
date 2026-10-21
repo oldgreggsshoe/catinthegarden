@@ -442,7 +442,15 @@ fn classify_tunnels(
                 continue;
             }
             visited[i] = true;
-            sea |= ocean[i] || terrain.settlement_core_at(DVec3::from_array(p.directions[i]))?;
+            sea = sea
+                || ocean[i]
+                || (ground[i] < crate::road_network_profile::COAST_SURVEY_HEIGHT
+                    && crate::road_network_profile::near_coast(
+                        DVec3::from_array(p.directions[i]),
+                        radius,
+                        terrain,
+                    )?)
+                || terrain.settlement_core_at(DVec3::from_array(p.directions[i]))?;
             for &e in &edge_adjacency[i] {
                 if edges.insert(e) {
                     let [a, b] = p.segments[e];
@@ -458,6 +466,36 @@ fn classify_tunnels(
         if sea || deep_length >= crate::road_tunnel::MIN_LENGTH {
             for e in edges {
                 tunnel[e] = true;
+            }
+        }
+    }
+    // A cap/route which cannot provide a dry inland mouth is infeasible, not
+    // permission to open a submerged excavation or extend a fake tunnel void.
+    let mut mouths = vec![(false, false); points.len()];
+    for (e, &[a, b]) in p.segments.iter().enumerate() {
+        for i in [a, b] {
+            if tunnel[e] {
+                mouths[i].0 = true;
+            } else {
+                mouths[i].1 = true;
+            }
+        }
+    }
+    for (i, &(covered, open)) in mouths.iter().enumerate() {
+        if covered && open {
+            if p.heights_meters[i] < crate::road_network_profile::COAST_MIN_DECK
+                || ocean[i]
+                || (p.heights_meters[i] < crate::road_network_profile::COAST_HIGH_DECK
+                    && crate::road_network_profile::near_coast(
+                        DVec3::from_array(p.directions[i]),
+                        radius,
+                        terrain,
+                    )?)
+            {
+                return Err(format!(
+                    "tunnel mouth needs a dry inland approach clear of the shoreline: {key:?} node {i}, deck {:.3}m, ground {:.3}m",
+                    p.heights_meters[i], ground[i]
+                ));
             }
         }
     }
@@ -1402,6 +1440,237 @@ fn banks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn road_network_coastal_caps_remain_bores_without_local_ocean_nodes() {
+        struct Beach;
+        impl Survey for Beach {
+            fn ground(&self, d: DVec3) -> Result<Ground, String> {
+                let ocean = d.z * 4e6 > 100.0;
+                Ok(Ground {
+                    height: if ocean { -10.0 } else { 10.0 },
+                    ocean,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(vec![])
+            }
+        }
+        let p = Profile {
+            directions: [-100.0, 0.0, 100.0]
+                .map(|x| DVec3::new(4e6, x, 0.0).normalize().to_array())
+                .to_vec(),
+            heights_meters: vec![-4.5; 3],
+            segments: vec![[0, 1], [1, 2]],
+            maximum_grade: 0.0,
+            maximum_grade_change_per_meter: 0.0,
+            maximum_deck_above_ground_meters: 0.0,
+            minimum_sampled_undersea_roof_cover_meters: None,
+            undersea_segments: 0,
+        };
+        let key = TileKey {
+            face: CubeFace::PositiveX,
+            level: 8,
+            x: 128,
+            y: 128,
+        };
+        assert_eq!(
+            classify_tunnels(&p, key, 4e6, &Beach).unwrap(),
+            [true, true]
+        );
+    }
+
+    #[test]
+    fn road_network_rejects_a_flooded_tunnel_mouth_instead_of_faking_cover() {
+        struct Shore;
+        impl Survey for Shore {
+            fn ground(&self, d: DVec3) -> Result<Ground, String> {
+                Ok(Ground {
+                    height: if d.y < 0.0 { -10.0 } else { 10.0 },
+                    ocean: d.y < 0.0,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(vec![])
+            }
+        }
+        let p = Profile {
+            directions: [-400.0, -200.0, 0.0, 200.0]
+                .map(|x| DVec3::new(4e6, x, 0.0).normalize().to_array())
+                .to_vec(),
+            heights_meters: vec![-40.0, -40.0, -40.0, 0.0],
+            segments: vec![[0, 1], [1, 2], [2, 3]],
+            maximum_grade: 0.2,
+            maximum_grade_change_per_meter: 0.001,
+            maximum_deck_above_ground_meters: 0.0,
+            minimum_sampled_undersea_roof_cover_meters: Some(21.0),
+            undersea_segments: 2,
+        };
+        let key = TileKey {
+            face: CubeFace::PositiveX,
+            level: 8,
+            x: 128,
+            y: 128,
+        };
+        assert!(
+            classify_tunnels(&p, key, 4e6, &Shore)
+                .unwrap_err()
+                .contains("dry inland approach")
+        );
+    }
+
+    #[test]
+    fn road_network_high_cliff_mouth_is_not_a_submerged_beach_approach() {
+        struct Cliff;
+        impl Survey for Cliff {
+            fn ground(&self, d: DVec3) -> Result<Ground, String> {
+                let ocean = d.z * 4e6 > 50.0;
+                Ok(Ground {
+                    height: if ocean {
+                        -10.0
+                    } else if d.y * 4e6 < -100.0 {
+                        100.0
+                    } else if d.y * 4e6 < 100.0 {
+                        66.422
+                    } else {
+                        60.0
+                    },
+                    ocean,
+                })
+            }
+            fn villages(&self, _: TileKey) -> Result<Vec<DVec3>, String> {
+                Ok(vec![])
+            }
+        }
+        let p = Profile {
+            directions: [-400.0, -200.0, 0.0, 200.0]
+                .map(|x| DVec3::new(4e6, x, 0.0).normalize().to_array())
+                .to_vec(),
+            heights_meters: vec![48.0; 4],
+            segments: vec![[0, 1], [1, 2], [2, 3]],
+            maximum_grade: 0.0,
+            maximum_grade_change_per_meter: 0.0,
+            maximum_deck_above_ground_meters: 8.0,
+            minimum_sampled_undersea_roof_cover_meters: None,
+            undersea_segments: 0,
+        };
+        let key = TileKey {
+            face: CubeFace::PositiveX,
+            level: 8,
+            x: 128,
+            y: 128,
+        };
+        assert!(crate::road_network_profile::near_coast(DVec3::X, 4e6, &Cliff).unwrap());
+        assert_eq!(
+            classify_tunnels(&p, key, 4e6, &Cliff).unwrap(),
+            [true, true, false]
+        );
+    }
+
+    #[test]
+    #[ignore = "asset-backed coastal portals at both ends of the long sea bore; no GPU"]
+    fn road_network_coastal_portals_are_inland_and_above_water() {
+        struct Fine(crate::road_network_survey::Surface);
+        impl Survey for Fine {
+            fn ground(&self, d: DVec3) -> Result<Ground, String> {
+                self.0.engineering_ground(d)
+            }
+            fn villages(&self, k: TileKey) -> Result<Vec<DVec3>, String> {
+                self.0.villages(k)
+            }
+            fn settlement_core_at(&self, d: DVec3) -> Result<bool, String> {
+                self.0.settlement_core_at(d)
+            }
+            fn village_access_height(&self, g: Ground) -> f64 {
+                g.height + 0.25
+            }
+        }
+        let terrain = Fine(
+            crate::road_network_survey::Surface::load(&crate::find_default_outmap().unwrap())
+                .unwrap(),
+        );
+        let backbone = terrain.0.backbone().unwrap();
+        let mut portals = 0;
+        let mut gateways: Vec<(DVec3, f64, bool)> = Vec::new();
+        for y in [152, 151] {
+            let key = TileKey {
+                face: CubeFace::PositiveX,
+                level: 8,
+                x: 152,
+                y,
+            };
+            let plan = prepare_local(&backbone, key, 4e6, &terrain).unwrap();
+            let p = &plan.profile;
+            let mut status = vec![(false, false); p.directions.len()];
+            for (e, &[a, b]) in p.segments.iter().enumerate() {
+                for i in [a, b] {
+                    if plan.tunnels[e] {
+                        status[i].0 = true;
+                    } else {
+                        status[i].1 = true;
+                    }
+                }
+            }
+            for (t, &i) in plan
+                .region
+                .terminals
+                .iter()
+                .zip(&plan.region.terminal_nodes)
+            {
+                if matches!(t.kind, TerminalKind::Gateway { .. }) {
+                    let d = DVec3::from_array(p.directions[i]);
+                    for &(other, h, covered) in &gateways {
+                        if d.distance_squared(other) < 1e-20 {
+                            assert!(
+                                (p.heights_meters[i] - h).abs() < 1e-6,
+                                "shared sea gateway height"
+                            );
+                            assert!(
+                                status[i].0 && !status[i].1 && covered,
+                                "bore must continue through the gateway"
+                            );
+                        }
+                    }
+                    gateways.push((d, p.heights_meters[i], status[i].0 && !status[i].1));
+                }
+            }
+            for (i, &(covered, open)) in status.iter().enumerate() {
+                if !covered || !open {
+                    continue;
+                }
+                let d = DVec3::from_array(p.directions[i]);
+                let h = p.heights_meters[i];
+                eprintln!(
+                    "coastal portal {key:?}/{i}: deck={h:.3} ground={:.3} direction={d:?}",
+                    terrain.ground(d).unwrap().height
+                );
+                // Keep the entire mouth and approach clear of the shoreline,
+                // not merely the centreline point on the landward side.
+                let u = d.cross(DVec3::Z).normalize();
+                let v = d.cross(u);
+                let mut wet = false;
+                for r in [25.0, 50.0, 100.0, 150.0] {
+                    for a in 0..72 {
+                        let angle = a as f64 * std::f64::consts::TAU / 72.0;
+                        let q = (d + (u * angle.cos() + v * angle.sin()) * (r / 4e6)).normalize();
+                        wet |= terrain.ground(q).unwrap().ocean;
+                    }
+                }
+                assert!(
+                    h >= 5.0 && !wet,
+                    "coastal portal is flooded or too close to water"
+                );
+                portals += 1;
+            }
+            assert!(p.maximum_grade <= 0.25);
+            assert!(
+                p.maximum_grade_change_per_meter
+                    <= crate::road_vertical::MAX_GRADE_CHANGE_PER_METER
+            );
+            assert!(plan.tunnels.iter().any(|&t| t));
+        }
+        assert!(portals >= 2);
+    }
+
     #[test]
     fn road_tunnel_preference_budget_preserves_survey_contract_and_stops_speculation() {
         struct Flat;

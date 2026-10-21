@@ -95,3 +95,48 @@ Both ends currently have below-sea-level mouths. I’ll put the start 3 metres i
 The new start is verified in both flight and walking modes: it stays on the road, 3 metres inside the mouth, facing into the tunnel. Tracing across the neighbouring region gives a 20.06 km entrance-to-exit route. Existing site overrides and scripted starts still work.
 
 Changed and pushed. PLANET_ROAD_EXPERIMENT=1 now starts 3 metres inside that tunnel’s mouth, facing in. Verified in both flight and walking modes; the usual launch flag is unchanged.
+
+Checked whether precompute was resumed overnight and its progress.
+
+Started small box precompute (lat 8-13.5, lon 8-13.5) into /home/dad/roadnet-box, log /home/dad/roadnet-box.log, task bx2mkg678.
+
+Box precompute done: 87 regions, longest tunnel and longest undersea 19,145 m in PositiveX_8_152_152, 8 failed.
+
+Villages=0 on failed regions: precompute default on failure; retry with real villages(key) still 0, so those 8 are village-free transit regions (gateway terminals only).
+
+Route search now retries an exhausted budget at 4x then 10x (400k base). Box: 6 of 8 failed regions now succeed; 150_149 (no graded route) and 158_146 (vertical-curve fit rejected) remain.
+
+I’ll inspect the screenshots and trace how coastal portals are placed. Then I’ll change the engineering rules so the road enters covered ground inland of the beach, rather than opening beside the water. I’ll keep the 25% grade and smooth-transition limits, and test the geometry—not just move the camera.
+
+The screenshots show the tunnel opening directly beneath the water surface.
+
+I’m checking three possible causes:
+1. Seabed-cover rules stop at the shoreline, letting the mouth emerge below sea level.
+2. The portal has no minimum inland setback.
+3. Centreline checks miss water beside the road.
+
+The fix needs to keep the bore covered beneath the beach and bring its approach out on dry land.
+
+The current rules require cover beneath the seabed but stop requiring it on the land side of the shoreline. That allows a below-sea-level mouth.
+
+Plan: update the shared profile constraints and tunnel validation, add coastal regressions, then regenerate and inspect both ends of this tunnel. I’ll also update the test start to the relocated entrance. Routing limits, grade limits and rendering settings will stay unchanged.
+
+Both ends now pass the geometry check: the mouths have moved inland and their road decks are about 7 m and 20 m above sea level, rather than 14 m below it.
+
+I’m adding a rejection check for unsafe mouths, then I’ll verify the new entrance and upward view in the renderer.
+
+Spawn/test follow-up: road_network_render.rs will pin the new inland mouth; road_network_stream.rs will check a dry open-road start rather than the old below-sea interior workaround. No camera clearance or rendering rules are being changed.
+
+Visual regression plan: add road_network_coastal_portal.json and register it in scenario.rs. Capture the dry approach, a back/upward view just inside, and the original photographed mouth location (which should now be buried). The geometry check covers the opposite exit too.
+
+The new captures show dry land and sky when looking back/up through the entrance. The old mouth is now inside the covered tunnel, with a solid ceiling where the water was visible.
+
+The test entrance moved about 412 m inland. Flight and walking starts both stay on its dry approach. I’m finishing regression checks before committing and pushing.
+
+One regression check caught a second shoreline case: the roof checks missed part of a diagonal side slope. I’m tightening that sampling so the fix works there too, not just at the photographed entrance.
+
+Continuing with the tunnel fix. The shoreline and nine-region undersea checks now pass. I’m updating the final test views and verifying the relocated start before committing and pushing.
+
+Fixed: the test entrance is now about 450 m inland. The tunnel goes underground before passing beneath the beach and sea, retaining the 25% grade limit.
+
+Verified in flight/walking and screenshots. 97 road checks and 7 GPU tests pass; six existing unrelated suite failures remain.

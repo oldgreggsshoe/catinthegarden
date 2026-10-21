@@ -38,12 +38,12 @@ fn initial_position_for_site(site: Option<&str>, interactive: bool) -> DVec3 {
     direction * (crate::planet::planet_radius_meters() + 10_000.0)
 }
 /// Entrance to the longest completed regional sea component in the current
-/// survey (PositiveX 8/152/152, 19,144.74m over sea; terrain version
-/// 11553600317892695948). Pinned, not a per-launch scan or a global length claim.
-/// The worker re-finds the portal/floor. This eye is 3m inside the dry mouth;
-/// its exposed approach is below sea level and cannot be used as an outdoor spawn.
+/// survey (PositiveX 8/152/152, formerly 19,144.74m over sea). Pinned, not a
+/// per-launch scan or a global length claim. Coastal engineering now carries
+/// the bore inland beneath the beach. The worker finds its actual dry approach.
 pub(crate) fn longest_undersea_start_position() -> DVec3 {
-    DVec3::new(3863787.3709397693, 737621.9152840758, -725919.6145042669)
+    DVec3::new(0.965931572796729, 0.18451645492986005, -0.1814659046062214)
+        * (crate::planet::planet_radius_meters() + 10.252)
 }
 
 pub(crate) fn undersea_start_position() -> DVec3 {

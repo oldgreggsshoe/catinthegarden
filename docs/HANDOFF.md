@@ -10,7 +10,50 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 20 October: verified interactive longest-recorded undersea start.**
+**Current phase, 21 October: dry inland coastal bore approaches.**
+The user's manual captures1792574866-1150670 show the water underside directly
+outside the old below-sea mouth. Shared profile samples now require real roof
+cover in the low coastal strip (canonical 8-direction probes at8/125/250m;
+above80m ground avoids this extra survey). Connected low beach stations retain
+cover beyond that strip until the terrain can support a dry emergence. Existing
+25% grade,0.005/m vertical-rate, fixed gateways/villages and solver budgets stay.
+Classification rejects mouths below5m and low mouths still inside the sampled
+coastal guard (high cliff decks>=40m are already above the supported swell);
+it does not extend a fictitious dry void. This conservative coastal rule
+also favours covered rather than open-cut low shoreline alignments.
+
+The two real-region check moved the selected mouth about450m inland, from
+-14.60m to+10.252m deck; opposite end is+19.954m. Both pass dense radial dry-land
+checks to150m. The default seed follows the relocated mouth; real worker puts
+the eye18m along its dry approach at+14.895641m, facing inside. Legacy starts
+and scripted defaults remain unchanged. New scenario road_network_coastal_portal
+checks the approach, back/up view, and original mouth location. Final opened
+replay1792578084-1166275 passes all3 captures: dry cut/portal, sky and land out
+of the mouth, solid roof at the original water-exposed location (0 blue/cyan
+pixels). Opened views are not a matched-pose performance comparison. Actual
+interactive1792577953-1165113 retains+14.895641m/2.001670m clearance in flight
+and+14.593971m/1.7m walking after real G; only the test PID was controlled.
+The capture helper needed one verified-own-window F12 retry during startup.
+New real-region portal/seam check, real startup,9-region/76-village legacy sea,
+9-region/15-village mountain,39-village startup and7 road Vulkan tests pass.
+97 focused road checks pass; full serial suite735 pass/same6 unrelated failures/65 ignored. A parallel run
+also tripped the ocean FFT timing assertion under concurrent compilation;
+serial rerun passes it. Release/check pass. Logs: coastal-serial-suite.log,
+coastal-complete-regressions.log, coastal-seam-complete.log, coastal-verified-*,
+coastal-final-{mountain,village,gpu,road}.log under test-runs/.
+Land-side roof stencils now include diagonals and0.5m coastal margin: the
+legacy cube-seam regression exposed a diagonal bank that four taps missed.
+Coastal covered components are retained as bores even in a region with no
+local ocean node; otherwise the required beach roof became an open cut again.
+No frame-loop/render/presentation changes or FPS claim.
+
+Precompute artifacts from the old engineering are stale. Surface::version()
+already hashes profile/route/mesh sources, so a new invocation rejects mismatched
+records; do not merge old statistics with newly engineered results. User output
+folders were not modified by this work; fresh probes are in
+`test-runs/coastal-final-plans/`.
+
+**Previous phase, 20 October: verified interactive longest-recorded undersea start.**
 `PLANET_ROAD_EXPERIMENT=1` without a scenario/site override now starts3m inside
 the dry mouth of the tunnel containing the largest completed regional sea
 component: PositiveX8/152/152,19,144.74m. A second saved plan in152/151 proves
@@ -53,7 +96,8 @@ as regional connected covered components (including branches). Three pure Rust
 resume checks and four standard-library Python tests pass. Future launches retry
 failed/malformed/incomplete/different-terrain records, and stats-only records when
 --road-precompute-plans is requested. Complete compatible legacy successes stay.
-No planner-revision fingerprint: use a fresh folder after engineering changes.
+The source version includes profile/route/mesh code; use a fresh folder to
+preserve an earlier survey when engineering changes.
 Live audit:19,090 files/145,422,18,387 successes/703 failures,0 with plans;43 regional
 components have sea portions,31 wholly sea. Largest regional sea portion19,144.74m
 in PositiveX_8_152_152. Stats-only files cannot be loaded as road geometry.

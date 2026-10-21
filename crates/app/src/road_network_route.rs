@@ -891,6 +891,7 @@ mod tests {
             },
             cap,
             anchor: 5688.0,
+            coastal: false,
         };
         let span = Span {
             length: 200.0,

@@ -302,16 +302,18 @@ mod tests {
         let initial = crate::road_network_render::longest_undersea_start_position();
         let (_worker, snapshot) = Worker::start(crate::find_default_outmap().unwrap(), initial).unwrap();
         let (eye, target) = snapshot.inspection.expect("entrance pose");
-        assert!(eye.distance(initial) < 0.05, "must not relocate to the village: {eye:?}");
+        assert!(eye.distance(initial) < 32.0, "must use the inland mouth, not the village: {eye:?}");
         let field = &snapshot.field;
         let local = field.frame.local(eye);
         let target = field.frame.local(target);
-        let approach = field.segments.iter().filter(|s| s.tunnel)
+        let approach = field.segments.iter().filter(|s| !s.tunnel)
             .min_by(|a,b| a.nearest(local.truncate()).1.total_cmp(&b.nearest(local.truncate()).1)).unwrap();
-        assert!(field.tunnel_void(eye.normalize(), eye.length() - field.frame.radius) > 0.0,
-            "the dry volume must protect this below-sea-level spawn from sea clearance");
+        assert!(eye.length() - field.frame.radius >= 7.0,
+            "start on the dry landward approach above sea level");
+        assert!(!crate::road_network_survey::Surface::load(&crate::find_default_outmap().unwrap())
+            .unwrap().engineering_ground(eye.normalize()).unwrap().ocean);
         let (floor, across) = approach.nearest(local.truncate());
-        assert!(across < 0.01 && (local.z - floor.z - 2.0).abs() < 0.05, "eye must be on the covered road at the mouth");
+        assert!(across < 0.01 && (local.z - floor.z - 2.0).abs() < 0.05, "eye must be on the open approach at the mouth");
         let covered = field.segments.iter().filter(|s| s.tunnel)
             .min_by(|a,b| a.nearest(target.truncate()).1.total_cmp(&b.nearest(target.truncate()).1)).unwrap();
         let (floor, across) = covered.nearest(target.truncate());

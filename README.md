@@ -101,12 +101,12 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-ap
 ```
 
 Omit `--scenario` for ordinary walking/free flight. Mouse/WASD and **G** work as
-below. The default interactive start is **3 m inside the entrance** of the
-undersea tunnel containing the longest sea section in the completed survey so
-far (19.14 km in one region; traced entrance-to-exit route about20.06 km).
-Its exposed approach is below sea level, so the dry-mouth placement avoids
-snapping the camera onto the sea surface. This is a pinned verified location,
-not an automatically updated global maximum as the survey continues.
+below. The default interactive start is on the **dry landward approach** to the
+undersea tunnel containing the longest sea section recorded so far (about19 km
+in one region). Its entrance is now about450m farther inland; the road enters
+covered ground before passing beneath the beach and sea. This is a pinned
+verified candidate, not an automatically updated global maximum as the survey
+continues. Coastal engineering has changed the old entrance-to-exit length.
 `PLANET_ROAD_NETWORK_SITE=mountain`, `village` or `undersea` keeps the legacy
 inspection sites; `longest_undersea` explicitly selects the new entrance.
 Unset this variable to use the new default. Scripted replay starts are unchanged. `road_network_trial`,
@@ -147,11 +147,12 @@ The status script is read-only and works before `summary.json` exists; add
 include failures, not just buildable roads. Lengths/counts are **regional covered
 components**, possibly branched or split at gateways, not unique global tunnels.
 
-New launches reuse parseable successful records for the same region/terrain
+New launches reuse parseable successful records for the same region/source
 version; failed, incomplete and mismatched records are retried. This upgrade
 does not change an already-running process. Existing files stay in place until
-an atomic replacement is ready. Planner revisions are not fingerprinted: use a
-new output folder when changing routing/engineering rules.
+an atomic replacement is ready. The source version includes the profile/route/
+mesh code, so changes to those engineering rules invalidate old records on
+resume. A fresh output folder is useful when preserving the previous survey.
 
 The default command stores statistics only. `--road-precompute-plans` additionally
 saves the engineered geometry data; adding it later recomputes stats-only
