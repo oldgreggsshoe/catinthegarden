@@ -214,6 +214,8 @@ fn process(
         Err(error) => {
             file.status = "failed".into();
             file.error = Some(error);
+            // Planning produced no counts; report the region's real villages.
+            file.villages = survey.villages(key).map_or(0, |v| v.len());
         }
     }
     file.seconds = started.elapsed().as_secs_f64();
