@@ -79,6 +79,7 @@ struct Instance {
 }
 struct Scene {
     snapshot: Snapshot,
+    lighting: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     visible: Vec<(bool, bool)>,
 }
@@ -93,7 +94,6 @@ pub struct NetworkRenderer {
     pending: Option<Upload>,
     pipeline: wgpu::RenderPipeline,
     far_pipeline: wgpu::RenderPipeline,
-    empty: wgpu::BindGroup,
     instance: wgpu::Buffer,
     inspection: Option<(DVec3, DVec3)>,
     signs: crate::road_signs::Renderer,
@@ -133,15 +133,6 @@ impl NetworkRenderer {
             terrain.shared_bind_group_layout(),
             true,
         );
-        let empty_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("road empty layout"),
-            entries: &[],
-        });
-        let empty = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("road empty group"),
-            layout: &empty_layout,
-            entries: &[],
-        });
         let instance = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("network camera-relative frame"),
             size: 64,
@@ -178,7 +169,6 @@ impl NetworkRenderer {
             pending: None,
             pipeline,
             far_pipeline,
-            empty,
             instance,
             inspection,
         };
@@ -205,7 +195,9 @@ impl NetworkRenderer {
             mapped_at_creation: false,
         });
         let visible = vec![(false, false); snapshot.chunks.len()];
+        let lighting = crate::road_lighting::binding(device, &snapshot.lighting);
         Scene {
+            lighting,
             snapshot,
             vertices,
             visible,
@@ -213,6 +205,23 @@ impl NetworkRenderer {
     }
     pub fn plan(&self) -> &Arc<Field> {
         &self.active.snapshot.field
+    }
+    pub fn enclosed_view(
+        &self,
+        eye: DVec3,
+        forward: DVec3,
+        up: DVec3,
+        fov: f64,
+        aspect: f64,
+    ) -> bool {
+        self.active.snapshot.visibility.enclosed(
+            &self.active.snapshot.field,
+            eye,
+            forward,
+            up,
+            fov,
+            aspect,
+        )
     }
     pub fn inspection_pose(&self) -> Option<(DVec3, DVec3)> {
         self.inspection
@@ -390,7 +399,7 @@ impl NetworkRenderer {
             &self.pipeline
         });
         pass.set_bind_group(0, camera, &[]);
-        pass.set_bind_group(1, &self.empty, &[]);
+        pass.set_bind_group(1, &self.active.lighting, &[]);
         pass.set_bind_group(2, shared, &[]);
         pass.set_vertex_buffer(0, self.active.vertices.slice(..));
         pass.set_vertex_buffer(1, self.instance.slice(..));

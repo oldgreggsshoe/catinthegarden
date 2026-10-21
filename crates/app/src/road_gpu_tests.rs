@@ -298,6 +298,8 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
+    let lighting =
+        crate::road_lighting::binding(&device, &[[0.0; 4]; crate::road_lighting::MAX_LIGHTS + 1]);
     let render = |angle: f64, phase: f32, clear_depth: f32, camera_plane: bool| {
         let tangent = DVec3::new(angle.sin(), angle.cos(), 0.0);
         let mut vertices = Vec::new();
@@ -361,6 +363,7 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &group, &[]);
+            pass.set_bind_group(1, &lighting, &[]);
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.set_vertex_buffer(1, frame.slice(..));
             pass.draw(0..vertices.len() as u32, 0..1);

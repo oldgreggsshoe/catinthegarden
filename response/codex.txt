@@ -186,3 +186,30 @@ W/S throttle/brake/reverse; A/D steer; Space brake; [/] speed; C walk; G fly.
 Also fixed the overlapping cut-bank surfaces. Committed and pushed. 743 tests passed; six pre-existing failures remain.
 
 Press **[** to lower the car’s maximum speed, and **]** to raise it. **W/S** still control acceleration, braking and reverse. The slash was just a separator—not another key.
+
+I’ll inspect the screenshots and tunnel shading first to find what’s causing the light/dark flips. Then I’ll add staggered wall lights with soft falloff and check which outdoor rendering work can safely stop when the outside is fully hidden. I’ll compare frame times at the same tunnel position before and after.
+
+The screenshots show one clear brightness change: exposure is 4× in the bright captures and fixed at 1× in the dark ones. The tunnel lining shader itself currently has no cloud-shadow input.
+
+I’ll test exposure first, then check whether outdoor lighting is leaking onto the road or signs, and whether overlapping surfaces change as you move.
+
+Plan: add cached alternating wall fixtures and nearby-light data in the road mesh/shader, give tunnel signs independent lighting, and stabilise automatic exposure inside bores. I’ll also add a conservative visibility check before skipping outdoor passes—visible entrances and uncertain cases will keep normal rendering.
+
+I’ll first capture a repeatable baseline, then test deep views, bends, junctions and exits. World time will keep advancing so leaving a tunnel doesn’t produce a simulation jump.
+
+The staggered wall fixtures and soft local lighting are implemented, along with a conservative check for when the outside is completely hidden. I’m testing those now—especially bends and entrances, where switching outdoor rendering off too early would cause visible holes. I haven’t confirmed the FPS improvement yet.
+
+The first matched deep-tunnel test is promising: roughly 40.8ms → 6.5ms per frame at 640×400, with pixel-identical images when outdoor culling is on versus off. The new wall lights are visible and staggered correctly. I’m checking the entrance/exit transitions and the larger resolution before wrapping up.
+
+The 1280×800 comparison also improves from about 22 to 148 FPS in the deep tunnel. The culled and unculled images match exactly, including the entrance/sky checks. Sun-direction changes no longer alter the held interior views, and the driving replay passes. I’m finishing the real-network regressions and commit.
+
+
+Done and pushed.
+
+- Warm wall lights every 20m, alternating sides, with soft falloff.
+- Stable interior exposure and independent tunnel lighting.
+- Hidden outdoor rendering skipped when no entrance is visible.
+
+Final 1280×800 X11/Immediate test: **~21 → 144FPS**, with pixel-identical culling comparisons.
+
+750 tests passed; 6 known unrelated failures remain. Dense-village planning is still slow and was not changed.

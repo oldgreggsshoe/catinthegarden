@@ -59,6 +59,7 @@ pub struct RoadRenderer {
     far_pipeline: wgpu::RenderPipeline,
     vertices: wgpu::Buffer,
     instance: wgpu::Buffer,
+    lighting: wgpu::BindGroup,
     chunks: Vec<DrawChunk>,
 }
 
@@ -178,6 +179,10 @@ impl RoadRenderer {
             far_pipeline,
             vertices,
             instance,
+            lighting: crate::road_lighting::binding(
+                device,
+                &[[0.0; 4]; crate::road_lighting::MAX_LIGHTS + 1],
+            ),
             chunks,
         }
     }
@@ -220,6 +225,7 @@ impl RoadRenderer {
         {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, camera, &[]);
+            pass.set_bind_group(1, &self.lighting, &[]);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instance.slice(..));
             for chunk in self
@@ -254,6 +260,7 @@ impl RoadRenderer {
                 &self.pipeline
             });
             pass.set_bind_group(0, camera, &[]);
+            pass.set_bind_group(1, &self.lighting, &[]);
             pass.set_vertex_buffer(0, self.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instance.slice(..));
             for range in draw_ranges(&self.chunks, distant) {
@@ -317,22 +324,19 @@ fn create_pipeline_inner(
         label: Some("cached road shader"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
-    let empty = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("road unused group"),
-        entries: &[],
-    });
+    let lights = crate::road_lighting::layout(device);
     let layouts = if let Some(shared) = shared {
-        vec![Some(camera_layout), Some(&empty), Some(shared)]
+        vec![Some(camera_layout), Some(&lights), Some(shared)]
     } else {
-        vec![Some(camera_layout)]
+        vec![Some(camera_layout), Some(&lights)]
     };
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("viaduct pipeline layout"),
         bind_group_layouts: &layouts,
         immediate_size: 0,
     });
-    const VERTEX: [wgpu::VertexAttribute; 3] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3];
+    const VERTEX: [wgpu::VertexAttribute; 4] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 8 => Uint32];
     const FRAME: [wgpu::VertexAttribute; 4] = [
         wgpu::VertexAttribute {
             format: wgpu::VertexFormat::Float32x4,
@@ -455,6 +459,7 @@ mod tests {
         .unwrap();
         assert_eq!(size_of::<super::Instance>(), 64);
         assert_eq!(std::mem::offset_of!(super::Instance, up), 48);
-        assert_eq!(size_of::<crate::road::Vertex>(), 36);
+        assert_eq!(size_of::<crate::road::Vertex>(), 40);
+        assert_eq!(std::mem::offset_of!(crate::road::Vertex, lighting), 36);
     }
 }

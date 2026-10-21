@@ -1,0 +1,50 @@
+{
+  "name": "road_network_tunnel_performance",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 8,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    8
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3863696.4975448498,
+        734880.6111227062,
+        -728622.4573314737
+      ],
+      "look_at": [
+        3863694.1384945754,
+        734844.7305360103,
+        -728657.1995011937
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        -0.3209614071484258,
+        0.397776994021848,
+        0.8595098825192442
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1
+  }
+}

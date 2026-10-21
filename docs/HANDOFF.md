@@ -10,7 +10,39 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 21 October: overhead tunnel distances, driving, cut-wall ownership.**
+**Current phase, 21 October: independent tunnel lighting and enclosed-view scheduling.**
+
+- Added cached warm wall fixtures at20m intervals, alternating left/right, soft
+  local attenuation and backlit tunnel boards. Complete source-alignment
+  stationing prevents residency rejoining from moving lamps; regional phase
+  can reset at gateways. At most24 connected lamps/span, one immutable GPU
+  list, existing road draw. Detailed network bores use actual lamps; covered
+  far decks retain indoor fill; legacy pilot fill remains unchanged.
+- Auto exposure eases to1 inside bores, without luminance readback/metering
+  passing lights. In the user's six screenshots1792602903-1012989 the bright
+  frames are4x auto and dark frames1x fixed. Old lining itself did not read
+  cloud shadows. Do not claim that explains every possible moving-camera flash.
+- Worker-built conservative portal/overlap beams prove the entire current view
+  enclosed before skipping outdoor terrain LOD/rendering, sky/atmosphere/sun/
+  moon, ocean FFT/foam/spray, vegetation and weather draws. Same active snapshot
+  as mesh/field; real/unknown mouths, clipping uncertainty, budgets and distance
+  limits fail open. Actual roof/wall core clearance guards near-clipped walls;
+  longitudinal joins retain overlap. Opaque lining remains at far deck LOD.
+  World/weather/ship clocks and controller physics continue, not frozen time.
+  `PLANET_TUNNEL_CULL=0` disables culling; `planet::tunnel` logs classifications.
+- Matched X11/Immediate deep-view medians:640x40040.836ms off versus6.537ms on;
+  1280x80047.131ms off versus6.927ms on (~21 to144FPS). Both cull pairs are
+  pixel-identical. Before new lighting640x400 was40.510ms; this is a measured
+  enclosed-view win, not an outdoor/all-network FPS claim. New scenario
+  `road_network_tunnel_lighting` captures both manual poses with changing sun
+  directions and stable auto exposure; both held-pose sun pairs are identical.
+- Final regular suite750 pass/same6 unrelated failures/66ignored;7 Vulkan road
+  checks and conservative frustum/near-mouth/junction/near-wall tests pass.
+  Evidence and exact commands are appended below and in ROAD_NETWORK.
+  Road routing,25% grades, vertical-rate/roof-cover budgets and presentation
+  synchronization policy are unchanged.
+
+**Previous phase, 21 October: overhead tunnel distances, driving, cut-wall ownership.**
 
 - Interior tunnel boards now occur at500m stations anchored to a canonical real
   exit, not regional edge order. Paired faces show their own directed real-exit
@@ -13405,3 +13437,69 @@ Matched before/after benchmark: `/home/dad/raybench/bench.py`, 13 scenarios x 3 
 640x360, Immediate present, X11; steady-state FPS unchanged within noise (see AGENTS.md
 entry for the table). Baseline binary was built from HEAD 5f6710b plus the then-uncommitted
 tree. Note /tmp is a 1.8G partition: use /home for CARGO_TARGET_DIR and TMPDIR.
+
+## 21 October — staggered tunnel lighting and hidden-outdoor work
+
+User evidence: all six `manual/1792602903-1012989` captures were opened. Their
+bright/dark difference includes4x auto versus1x fixed exposure, not a cloud
+shadow binding on the lining. Two poses were reconstructed from pre-road GPU
+surface probes at the real1280x800 aspect1.6; residual~4e-6m, scripts/poses in
+`test-runs/tunnel-lighting`. The new replay captures those positions, not an
+invented nearby tunnel. The first held-pose comparison originally moved~4m on
+a frame just after4s; extending the hold to4.2s fixes the test, not the renderer.
+
+Implementation: `road_lighting.rs` builds actual fixtures and bounded connected
+light lists; `tunnel_visibility.rs` builds overestimating portal beams. Both
+publish with the existing snapshot/field. Twenty-metre alternating wall lights
+have a34m soft cutoff, warm diffuse/reflected fill, no sun/cloud input. Tunnel
+boards are independently backlit. Auto exposure smoothly targets1 indoors;
+manual controls remain. Cut/routing/grade/roof profiles and synchronization
+policy are untouched. Source alignment stations, not cropped draw-graph
+stations, prevent lamp phase changes on residency updates. This is local
+regional phase, not a new global lamp-routing search. An extra actual-core
+clearance check fails open near walls that might be clipped by the near plane;
+its longitudinal planes retain the existing join overlap.
+
+Baseline `road_network_tunnel_performance/1792605950-1041247`:40.510ms median
+at640x400. Initial lights but no effective cull:40.836ms in1792607378-1044140.
+First portal proof wrongly treated4km deck LOD as missing lining. Liners/floors
+are actually drawn at every deck LOD, so proof now retains them up to a
+conservative24km boundary before the25km chunk cutoff; unknown ends still fail
+open. Corrected640x4001792607469-1044529:6.537ms,17/17 enclosed samples.
+Matched1280x800 cull off/on1792607717-1046074 /1792607740-1046121:
+46.444 /6.767ms (~22 /148FPS),12 settled timing samples/run. Both resolution
+pairs are pixel-identical (max channel error0), including distant road pixels.
+All timings are X11/Immediate, CPU profile with normal GPU-completion/present
+sync, excluding startup<2s and capture readbacks; no GPU timestamp query used.
+This is a deep-view result, not an outdoor/all-network speed guarantee.
+
+Opened all four `road_network_tunnel_lighting/1792607754-1046149` captures:
+changed sun directions give identical pixel pairs1/2 and3/4 with auto exposure
+fixed near1 by the scenario assertion. All three opened coastal views in
+1792607807-1046269 are pixel-identical to cull-disabled1792607768-1046193:
+looking out preserves sky, looking fully up into the closed roof enables the
+optimisation. Classification changes from false to true at~8s without image
+changes. Final driving1792607840-1046329 passes65 finite samples, all four
+opened captures,1.391935..1.400057m clearance,65/65 enclosed samples. Ceiling
+EXIT20.5KM remains readable; no physics change or full chassis-collision claim.
+
+Regular serial suite:750 pass,66ignored, same6 established unrelated failures
+(three optical-zoom expectations, scenario FOV bound, shallow-water shader
+string, flooded/sinking label). Focused conservative visibility/near-wall tests,
+layout validation and all7 Vulkan road regressions pass. Worker checks and the
+final safety-guard replay are recorded below. Diagnostics/scripts/logs remain
+under `test-runs/tunnel-lighting`; use `PLANET_TUNNEL_CULL=0` for comparisons.
+
+Final safety guard: all4 visibility tests (including near-wall cases), the40byte
+vertex layout and all7 Vulkan checks pass on the final code. Mountain15-village
+and legacy undersea76-village real neighbour checks pass. The optional dense
+244-village neighbour check was still generating after more than3minutes and
+was stopped by this task, not reported as a pass. Its earlier600s planning
+bottleneck remains unresolved; this phase does not sign off dense generation
+performance. Only the task-owned test process was stopped, not a user app or
+precompute job. Release was rebuilt afterward.
+Final near-wall-safe1280x800 off/on replay1792608165-1046854 /
+1792608188-1046896 passes both manifests,17/17 enclosed samples in the on run,
+and pixel-identical images (max error0). Settled medians47.131 /6.927ms
+(~21 /144FPS); captures opened. This final rerun supersedes the earlier148FPS
+headline, with the same large improvement and no outdoor visibility loss.

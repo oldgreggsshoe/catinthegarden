@@ -17,8 +17,9 @@ struct Output {
     let relative=v.origin.xyz+v.across.xyz*v.position.x+v.forward.xyz*v.position.y+v.up.xyz*v.position.z;
     let view=vec3<f32>(dot(relative,camera.camera_right.xyz),dot(relative,camera.camera_up.xyz),-dot(relative,camera.camera_forward.xyz));
     let normal=normalize(v.across.xyz*v.normal.x+v.forward.xyz*v.normal.y+v.up.xyz*v.normal.z);
-    var out:Output;out.position=camera.projection_matrix*vec4<f32>(view,1.0);out.uv=v.uv;out.colour=v.colour;
+    var out:Output;out.position=camera.projection_matrix*vec4<f32>(view,1.0);out.uv=v.uv;out.colour=abs(v.colour);
     out.light=0.40+1.4*max(dot(normal,normalize(camera.sun_direction.xyz)),0.0)*max(dot(v.up.xyz,normalize(camera.sun_direction.xyz)),0.0);
+    if v.colour.z<0.0 {out.light=1.0;}
     return out;
 }
 @fragment fn fs_main(v:Output)->@location(0) vec4<f32> {

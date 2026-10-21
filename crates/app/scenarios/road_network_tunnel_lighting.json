@@ -1,0 +1,111 @@
+{
+  "name": "road_network_tunnel_lighting",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 10,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": false,
+  "screenshot_times_seconds": [
+    2,
+    4,
+    7,
+    10
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3863696.4975448498,
+        734880.6111227062,
+        -728622.4573314737
+      ],
+      "look_at": [
+        3863694.1384945754,
+        734844.7305360103,
+        -728657.1995011937
+      ]
+    },
+    {
+      "time_s": 4.2,
+      "position": [
+        3863696.4975448498,
+        734880.6111227062,
+        -728622.4573314737
+      ],
+      "look_at": [
+        3863694.1384945754,
+        734844.7305360103,
+        -728657.1995011937
+      ]
+    },
+    {
+      "time_s": 6.2,
+      "position": [
+        3863696.822224269,
+        734694.8423592997,
+        -728811.674699231
+      ],
+      "look_at": [
+        3863694.4916623514,
+        734658.8900516303,
+        -728846.3445714965
+      ]
+    },
+    {
+      "time_s": 10,
+      "position": [
+        3863696.822224269,
+        734694.8423592997,
+        -728811.674699231
+      ],
+      "look_at": [
+        3863694.4916623514,
+        734658.8900516303,
+        -728846.3445714965
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        -0.3209614071484258,
+        0.397776994021848,
+        0.8595098825192442
+      ]
+    },
+    {
+      "time_s": 5,
+      "direction": [
+        -0.9,
+        -0.3,
+        -0.2
+      ]
+    },
+    {
+      "time_s": 10,
+      "direction": [
+        -0.3209614071484258,
+        0.397776994021848,
+        0.8595098825192442
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4,
+    "min_exposure": 0.9999,
+    "max_exposure": 1.0001,
+    "max_exposure_delta_per_frame": 0.0001
+  }
+}

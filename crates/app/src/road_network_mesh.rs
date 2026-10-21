@@ -519,6 +519,8 @@ pub struct DrawChunk {
 }
 pub struct Snapshot {
     pub vertices: Vec<Vertex>,
+    pub lighting: Vec<[f32; 4]>,
+    pub visibility: crate::tunnel_visibility::Visibility,
     pub lines: Vec<crate::road_overlay::Line>,
     pub overview: Arc<Vec<crate::road_overlay::Line>>,
     pub field: Arc<Field>,
@@ -532,6 +534,7 @@ pub struct Snapshot {
 }
 
 struct Road {
+    light_station: [f64; 2],
     segment: Segment,
     piers: bool,
     near: bool,
@@ -565,6 +568,7 @@ pub fn snapshot(
             .zip(&p.heights_meters)
             .map(|(d, h)| frame.local(DVec3::from_array(*d) * (radius + h)))
             .collect();
+        let lamp_stations = crate::road_lighting::stations(&points, &p.segments);
         let mut adjacent = vec![Vec::new(); points.len()];
         for &[a, b] in &p.segments {
             adjacent[a].push(b);
@@ -701,6 +705,7 @@ pub fn snapshot(
                 inspection = Some((p + p.normalize() * 2.0, q + q.normalize() * 2.0));
             }
             roads.push(Road {
+                light_station: lamp_stations[index],
                 segment,
                 piers: index % 2 == 0,
                 near: distance < NEAR_RADIUS,
@@ -745,6 +750,25 @@ pub fn snapshot(
             .collect(),
     )?;
     field.set_geometry_window(eye.truncate(), NEAR_RADIUS - 500.0);
+    let visibility = crate::tunnel_visibility::Visibility::build(
+        frame,
+        &roads
+            .iter()
+            // Liners are drawn for every bore, independently of deck LOD.
+            .map(|r| (r.segment, [r.portal_a, r.portal_b], true))
+            .collect::<Vec<_>>(),
+    );
+    let spans: Vec<_> = roads
+        .iter()
+        .filter(|r| r.near && r.segment.tunnel)
+        .map(|r| crate::road_lighting::Span {
+            segment: r.segment,
+            sides: r.ribbon.sides,
+            station: r.light_station,
+        })
+        .collect();
+    let mut lighting = crate::road_lighting::Lighting::build(&spans, &field);
+    let mut light_group = 0;
     let mut chunks = Vec::new();
     let mut vertices = 0;
     // Small cached chunks cull cheaply, without one pipeline/object per road.
@@ -763,7 +787,15 @@ pub fn snapshot(
                 .ribbon
                 .sides
                 .map(|side| DVec3::new(-side.y, side.x, grade) * road::HALF_WIDTH);
+            let far_start = far.len();
             road::far_segment(&mut far, s.a, s.b, tangents[0], tangents[1]);
+            if s.tunnel {
+                for v in &mut far[far_start..] {
+                    v.colour[2] = -v.colour[2];
+                }
+            }
+            let near_start = near.len();
+            let structure_start = structures.len();
             if road.near {
                 deck(&mut near, s, road.ribbon, &field, terrain, road.piers)?;
             }
@@ -776,6 +808,22 @@ pub fn snapshot(
                     road.portal_a,
                     road.portal_b,
                 );
+            }
+            if road.near && s.tunnel {
+                structures.append(&mut lighting.fixtures[light_group]);
+                light_group += 1;
+                for v in &mut far[far_start..] {
+                    v.lighting = light_group as u32;
+                }
+                for v in near[near_start..]
+                    .iter_mut()
+                    .chain(&mut structures[structure_start..])
+                {
+                    // Only the interior shell/deck, never the outdoor shell.
+                    if !v.colour.iter().all(|&c| c < 0.0) && v.colour[0] >= 0.0 {
+                        v.lighting = light_group as u32;
+                    }
+                }
             }
             // The displaced terrain is the sole open-bank surface. Wide
             // offset strips fold over tight bends and compete with that
@@ -858,6 +906,8 @@ pub fn snapshot(
         draw.structures.end += structure_base;
     }
     Ok(Snapshot {
+        lighting: lighting.data,
+        visibility,
         overview: Arc::new(Vec::new()),
         lines: roads
             .iter()
@@ -1361,6 +1411,7 @@ fn liner(
                         .normalize();
                     for p in points {
                         mesh.push(Vertex {
+                            lighting: 0,
                             position: p.as_vec3().to_array(),
                             normal: normal.as_vec3().to_array(),
                             colour,
@@ -1687,6 +1738,7 @@ mod tests {
             junction_b: false,
         };
         Road {
+            light_station: [0.0, (b - a).length()],
             segment,
             piers: false,
             near: true,
@@ -1957,6 +2009,7 @@ mod tests {
     #[test]
     fn network_batches_stop_at_spatial_jumps_and_near_cache_boundaries() {
         let road = |x: f64, near| Road {
+            light_station: [0.0, 10.0],
             segment: Segment {
                 a: DVec3::new(x, 0.0, 1000.0),
                 b: DVec3::new(x + 20.0, 0.0, 1000.0),

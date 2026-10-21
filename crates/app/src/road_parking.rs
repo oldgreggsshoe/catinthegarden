@@ -76,6 +76,7 @@ pub fn mesh(
     for i in 0..SECTORS {
         for point in [s.a, p(i, RADIUS), p(i + 1, RADIUS)] {
             mesh.push(Vertex {
+                lighting: 0,
                 position: point.as_vec3().to_array(),
                 normal: [0.0, 0.0, 1.0],
                 colour: [0.045, 0.048, 0.05],
@@ -116,6 +117,7 @@ pub fn mesh(
                     .to_array();
                 for j in [0, 1, 2, 0, 2, 3] {
                     mesh.push(Vertex {
+                        lighting: 0,
                         position: q[j].0.as_vec3().to_array(),
                         normal,
                         colour: [0.24, -(0.19 + q[j].1.min(64.0) as f32 / 64.0), 0.13],

@@ -650,6 +650,7 @@ pub(crate) fn far_segment(
         (b, tangent_b, -1.0),
     ] {
         mesh.push(Vertex {
+            lighting: 0,
             position: position.as_vec3().to_array(),
             normal: tangent.as_vec3().to_array(),
             colour: [side * 0.045, 0.048, 0.05],
@@ -663,6 +664,7 @@ pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub colour: [f32; 3],
+    pub lighting: u32,
 }
 
 pub(crate) fn quad(mesh: &mut Vec<Vertex>, points: [DVec3; 4], colour: [f32; 3]) {
@@ -672,6 +674,7 @@ pub(crate) fn quad(mesh: &mut Vec<Vertex>, points: [DVec3; 4], colour: [f32; 3])
         .as_vec3();
     for i in [0, 1, 2, 0, 2, 3] {
         mesh.push(Vertex {
+            lighting: 0,
             position: points[i].as_vec3().to_array(),
             normal: normal.to_array(),
             colour,

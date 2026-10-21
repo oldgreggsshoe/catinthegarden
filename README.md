@@ -121,6 +121,17 @@ checks: `road_network_driving` exercises the real controller, while
 Use `PLANET_ROAD_NETWORK_SITE=longest_undersea PLANET_ROAD_SIGNS_WAIT=1` with
 those replays so they wait for signs, not an arbitrary frame count.
 
+Network bores have warm wall lights every20m, alternating left/right (40m per
+wall), with soft distance falloff. Their surfaces and exit boards do not use
+daylight/cloud lighting. Automatic exposure settles to a fixed interior target
+rather than pumping as lamps or signs pass the camera.
+When conservative portal visibility proves the entire view enclosed, outdoor
+terrain, sky, ocean/FFT/spray, weather and vegetation rendering are skipped.
+Visible/uncertain mouths keep the normal path; simulation time keeps advancing.
+`PLANET_TUNNEL_CULL=0` disables this optimisation for matched comparisons.
+`road_network_tunnel_performance` and `road_network_tunnel_lighting` replay a
+deep view and the user's two interior positions with changing sun directions.
+
 Omit `--scenario` for ordinary walking/free flight. Mouse/WASD and **G** work as
 below. The default interactive start is on the **dry landward approach** to the
 undersea tunnel containing the longest sea section recorded so far (about19 km

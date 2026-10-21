@@ -28,6 +28,7 @@ mod probe;
 mod rain;
 mod road;
 mod road_construction;
+mod road_lighting;
 mod road_navigation;
 mod road_signs;
 #[cfg(test)]
@@ -64,6 +65,7 @@ mod surface_camera;
 mod system_flight;
 mod terrain;
 mod thunder_clips;
+mod tunnel_visibility;
 mod village;
 mod village_render;
 mod weather;
@@ -5537,7 +5539,29 @@ impl State {
             .camera
             .planet_frame_direction_dvec3(planet_rotation_radians);
         let mut camera_planet_frame_up = self.camera.planet_frame_view_up(planet_rotation_radians);
-        self.terrain_stats = if solid_color_screen {
+        let tunnel_interior = self.in_road_tunnel(
+            camera_planet_frame_position.normalize(),
+            camera_planet_frame_position.length() - planet::planet_radius_meters(),
+        );
+        let tunnel_enclosed = !solid_color_screen
+            && subsystem_enabled("roads")
+            && subsystem_enabled("road_cuts")
+            && self.render_debug_mode == planet::RenderDebugMode::Final
+            && std::env::var("PLANET_TUNNEL_CULL").as_deref() != Ok("0")
+            && self.road_network.as_ref().is_some_and(|roads| {
+                roads.enclosed_view(
+                    camera_planet_frame_position,
+                    camera_planet_frame_direction,
+                    camera_planet_frame_up,
+                    self.camera.vertical_fov_radians(),
+                    self.size.width as f64 / self.size.height as f64,
+                )
+            });
+        if write_log {
+            tracing::info!(target: "planet::tunnel", sim_time, tunnel_interior, tunnel_enclosed,
+                "tunnel visibility");
+        }
+        self.terrain_stats = if solid_color_screen || tunnel_enclosed {
             terrain::TerrainStats::default()
         } else {
             self.terrain
@@ -5557,7 +5581,7 @@ impl State {
         // patches actually drawn at the destination. Clamp once more against
         // those patches before presenting the frame, then rebuild their
         // camera-relative anchors if the correction moved the camera.
-        if !solid_color_screen {
+        if !solid_color_screen && !tunnel_enclosed {
             let camera_corrected = match self.camera_mode {
                 CameraMode::LowFlight => {
                     let minimum_clearance_meters =
@@ -5636,6 +5660,7 @@ impl State {
         self.previous_camera_planet_frame_position = camera_planet_frame_position;
         self.previous_camera_world_position = camera_world_position;
         self.previous_sim_time = sim_time;
+        self.hdr.set_tunnel_interior(tunnel_interior);
         let auto_exposure_enabled = self.hdr.auto_exposure_enabled();
         if auto_exposure_enabled {
             self.hdr.collect_completed_luminance(&self.device);
@@ -5782,7 +5807,7 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("render encoder"),
             });
-        if !solid_color_screen {
+        if !solid_color_screen && !tunnel_enclosed {
             self.forest
                 .encode_gpu_generation(&mut encoder, &self.camera_bind_group, &self.terrain);
         }
@@ -5913,34 +5938,36 @@ impl State {
         let forest_camera_up = forest_camera_right
             .cross(forest_camera_forward)
             .normalize_or_zero();
-        self.forest.update_patch(
-            &self.queue,
-            &self.terrain,
-            camera_planet_frame_position,
-            forest_camera_forward,
-            forest_camera_up,
-            camera_sea_level_altitude_meters,
-            [self.size.width, self.size.height],
-            self.camera.vertical_fov_radians(),
-            presentation_time,
-        );
-        // Houses and beams are placed in the planet's own (rotating) local
-        // frame, the one the terrain and its camera basis live in, so the
-        // camera position they are differenced against must be the planet-frame
-        // one. `camera_world_position` is the inertial frame: identical while
-        // the planet is stopped (F10, the interactive default), but it made
-        // every village and beam swing with the planet's spin once time ran.
-        // Villages are sited from the dense outmap level, not from whatever
-        // the LOD selector has streamed, so those tiles have to be in hand
-        // before the visible set is rebuilt.
-        self.terrain
-            .prepare_village_siting_tiles(camera_planet_frame_position.normalize_or_zero());
-        self.villages.update(
-            &self.queue,
-            &self.terrain,
-            camera_planet_frame_position,
-            camera_sea_level_altitude_meters,
-        );
+        if !tunnel_enclosed {
+            self.forest.update_patch(
+                &self.queue,
+                &self.terrain,
+                camera_planet_frame_position,
+                forest_camera_forward,
+                forest_camera_up,
+                camera_sea_level_altitude_meters,
+                [self.size.width, self.size.height],
+                self.camera.vertical_fov_radians(),
+                presentation_time,
+            );
+            // Houses and beams are placed in the planet's own (rotating) local
+            // frame, the one the terrain and its camera basis live in, so the
+            // camera position they are differenced against must be the planet-frame
+            // one. `camera_world_position` is the inertial frame: identical while
+            // the planet is stopped (F10, the interactive default), but it made
+            // every village and beam swing with the planet's spin once time ran.
+            // Villages are sited from the dense outmap level, not from whatever
+            // the LOD selector has streamed, so those tiles have to be in hand
+            // before the visible set is rebuilt.
+            self.terrain
+                .prepare_village_siting_tiles(camera_planet_frame_position.normalize_or_zero());
+            self.villages.update(
+                &self.queue,
+                &self.terrain,
+                camera_planet_frame_position,
+                camera_sea_level_altitude_meters,
+            );
+        }
         if let Some(roads) = &mut self.road_network {
             roads.update_camera(
                 &self.queue,
@@ -6085,12 +6112,13 @@ impl State {
         let vertex_rebase_ms = 0.0;
         let vertex_upload_ms = upload_started.elapsed().as_secs_f32() * 1_000.0;
         let transmit_ocean = !solid_color_screen
+            && !tunnel_enclosed
             && self.terrain.has_ocean_draws()
             && self.render_debug_mode != planet::RenderDebugMode::FlatTriangles
             && self.render_debug_mode != planet::RenderDebugMode::SkyOnly;
         let encode_started = Instant::now();
         // The FFT field must be current before the foam atlas reads it.
-        if !solid_color_screen {
+        if !solid_color_screen && !tunnel_enclosed {
             self.terrain.update_ocean_fft(
                 &mut encoder,
                 camera_planet_frame_position,
@@ -6099,6 +6127,7 @@ impl State {
             );
         }
         if !solid_color_screen
+            && !tunnel_enclosed
             && self.terrain.has_ocean_draws()
             && self.render_debug_mode != planet::RenderDebugMode::SkyOnly
         {
@@ -6120,13 +6149,13 @@ impl State {
                 &self.gust,
             );
         }
-        if !solid_color_screen {
+        if !solid_color_screen && !tunnel_enclosed {
             self.atmosphere
                 .update(&mut encoder, &self.camera_bind_group);
         }
         // The sun's own visibility test, before the scene: caustics fade as
         // cloud and storm fog hide the sun they focus.
-        if body::has_atmosphere() {
+        if body::has_atmosphere() && !tunnel_enclosed {
             self.sun.encode_visibility(
                 &mut encoder,
                 &self.camera_bind_group,
@@ -6134,7 +6163,7 @@ impl State {
                 self.terrain.sun_visibility_buffer(),
             );
         }
-        if let Some(moon) = &mut self.sky_moon {
+        if !tunnel_enclosed && let Some(moon) = &mut self.sky_moon {
             moon.encode(&mut encoder, self.weather_clouds.field_bind_group());
         }
         {
@@ -6145,7 +6174,11 @@ impl State {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(CLEAR_COLOR),
+                        load: wgpu::LoadOp::Clear(if tunnel_enclosed {
+                            wgpu::Color::BLACK
+                        } else {
+                            CLEAR_COLOR
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -6168,7 +6201,7 @@ impl State {
                 }),
                 multiview_mask: None,
             });
-            if !solid_color_screen {
+            if !solid_color_screen && !tunnel_enclosed {
                 if self.render_debug_mode != planet::RenderDebugMode::SkyOnly {
                     if self.render_debug_mode == planet::RenderDebugMode::FlatTriangles {
                         if subsystem_enabled("terrain") {
@@ -6196,10 +6229,10 @@ impl State {
                 // it computes -- `BODY_HAS_ATMOSPHERE` makes it vacuum.
                 // The moon writes its depth here, so the sky below leaves it
                 // alone; stars, clouds and the sun disc depth-test against it.
-                if let Some(moon) = &self.sky_moon {
+                if !tunnel_enclosed && let Some(moon) = &self.sky_moon {
                     moon.draw_composite(&mut render_pass, &self.camera_bind_group);
                 }
-                if subsystem_enabled("sky") {
+                if !tunnel_enclosed && subsystem_enabled("sky") {
                     self.atmosphere
                         .draw(&mut render_pass, &self.camera_bind_group);
                 }
@@ -6307,14 +6340,14 @@ impl State {
             });
             // Sky objects use empty reversed-Z depth after either terrain
             // path, before clouds/ships/trees and before exposure metering.
-            if subsystem_enabled("stars") {
+            if !tunnel_enclosed && subsystem_enabled("stars") {
                 self.stars.draw(
                     &mut render_pass,
                     &self.camera_bind_group,
                     self.weather_clouds.field_bind_group(),
                 );
             }
-            if subsystem_enabled("ship") {
+            if !tunnel_enclosed && subsystem_enabled("ship") {
                 self.ship_renderer.draw(
                     &mut render_pass,
                     &self.camera_bind_group,
@@ -6328,14 +6361,14 @@ impl State {
                     );
                 }
             }
-            if BIRDS_ENABLED && subsystem_enabled("birds") {
+            if !tunnel_enclosed && BIRDS_ENABLED && subsystem_enabled("birds") {
                 self.bird_renderer
                     .draw(&mut render_pass, &self.camera_bind_group);
             }
             // Vacuum holds no cloud, no rain and no shafts of light. These are
             // the weather passes; the atmosphere pass itself still runs, since
             // it is what paints space black behind the stars.
-            if body::has_atmosphere() && subsystem_enabled("clouds") {
+            if !tunnel_enclosed && body::has_atmosphere() && subsystem_enabled("clouds") {
                 self.weather_clouds
                     .draw(&mut render_pass, &self.camera_bind_group);
             }
@@ -6354,7 +6387,7 @@ impl State {
                     false,
                 );
             }
-            if subsystem_enabled("forest") {
+            if !tunnel_enclosed && subsystem_enabled("forest") {
                 self.forest.draw(
                     &mut render_pass,
                     &self.camera_bind_group,
@@ -6362,7 +6395,7 @@ impl State {
                     camera_sea_level_altitude_meters,
                 );
             }
-            if subsystem_enabled("villages") {
+            if !tunnel_enclosed && subsystem_enabled("villages") {
                 self.villages.draw(
                     &mut render_pass,
                     &self.camera_bind_group,
@@ -6384,7 +6417,7 @@ impl State {
                     true,
                 );
             }
-            if body::has_atmosphere() {
+            if body::has_atmosphere() && !tunnel_enclosed {
                 if subsystem_enabled("cloud_impostors") {
                     self.local_cloud_impostors.draw(
                         &mut render_pass,
@@ -6400,7 +6433,7 @@ impl State {
                     );
                 }
             }
-            if subsystem_enabled("bubbles") {
+            if !tunnel_enclosed && subsystem_enabled("bubbles") {
                 self.bubbles.draw(
                     &mut render_pass,
                     &self.camera_bind_group,
@@ -6413,7 +6446,7 @@ impl State {
             // Last in the pass, so the reticle sits over the finished scene.
             // It is not depth-tested, but it can still be painted over by
             // anything that draws after it.
-            if BIRDS_ENABLED {
+            if BIRDS_ENABLED && !tunnel_enclosed {
                 self.flock_marker
                     .draw(&mut render_pass, &self.camera_bind_group);
             }
@@ -6440,13 +6473,13 @@ impl State {
                 .slots[slot_index]
                 .query_set
         });
-        if auto_exposure_enabled {
+        if auto_exposure_enabled && !tunnel_interior {
             self.hdr.encode_luminance(
                 &mut encoder,
                 timestamp_query_set.map(|query_set| (query_set, 2, 3)),
             );
         }
-        let hdr_luminance_readback_slot = auto_exposure_enabled
+        let hdr_luminance_readback_slot = (auto_exposure_enabled && !tunnel_interior)
             .then(|| self.hdr.encode_luminance_readback(&mut encoder))
             .flatten();
         // The disc and corona are a camera-only visual aid. Composite them
@@ -6457,6 +6490,7 @@ impl State {
         // keep its whole camera-response shape only while some disc is visible.
         // Both remain HDR input for bloom and tone mapping below.
         let draw_visual_sun = !solid_color_screen
+            && !tunnel_enclosed
             && self.render_debug_mode != planet::RenderDebugMode::SkyOnly;
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

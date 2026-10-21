@@ -13,6 +13,7 @@ struct Camera {
     flat_triangle_options: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> camera: Camera;
+@group(1) @binding(0) var<storage, read> tunnel_lights: array<vec4<f32>>;
 
 struct Input {
     @location(0) position: vec3<f32>,
@@ -22,6 +23,7 @@ struct Input {
     @location(4) across: vec4<f32>,
     @location(5) forward: vec3<f32>,
     @location(6) up: vec3<f32>,
+    @location(8) lighting: u32,
 }
 struct Output {
     @builtin(position) position: vec4<f32>,
@@ -33,6 +35,8 @@ struct Output {
     @location(5) local_position: vec3<f32>,
     @location(6) @interpolate(flat) network_kind: f32,
     @location(7) removed: f32,
+    @location(8) @interpolate(flat) lighting: u32,
+    @location(9) @interpolate(flat) normal_local: vec3<f32>,
 }
 
 fn project_vertex(input: Input) -> Output {
@@ -46,11 +50,13 @@ fn project_vertex(input: Input) -> Output {
         + input.forward * input.normal.y + input.up * input.normal.z);
     output.colour = abs(input.colour);
     output.local_position = input.position;
+    output.lighting = input.lighting;
+    output.normal_local = normalize(input.normal);
     output.network_kind = select(select(0.0, 1.0, input.colour.y<0.0 && input.colour.z<0.0),
         2.0, input.colour.y<0.0 && input.colour.z>=0.0);
     output.removed=max(0.0,(-input.colour.y-0.19)*64.0);
     if output.network_kind>1.5 {output.colour=vec3<f32>(0.24,0.19,0.13);}
-    // Signed colour lanes avoid increasing the cached vertex stride:
+    // Signed colour lanes retain the existing material tags:
     // negative blue = sheltered; negative red = emissive marker (near mesh).
     output.sheltered = select(select(0.0, 1.0, input.colour.z < 0.0), 2.0, input.colour.x < 0.0);
     // An outward-facing tunnel shell is lit outdoors, not an emissive marker.
@@ -67,6 +73,7 @@ fn project_vertex(input: Input) -> Output {
         let viewport = max(vec2<f32>(input.origin.w, input.across.w), vec2<f32>(1.0));
         let half_px = length(pixel_vector(half, output.position, viewport));
         output.normal = input.up;
+        output.normal_local = vec3<f32>(0.0,0.0,1.0);
         if half_px > 0.000001 && half_px < 0.8 {
             let widened = relative + half * (min(0.8 / half_px, 60.0) - 1.0);
             let view2 = vec3<f32>(dot(widened, camera.camera_right.xyz),
@@ -79,6 +86,24 @@ fn project_vertex(input: Input) -> Output {
 
 const PAINT_GLOW = vec3<f32>(0.08, 0.60, 0.18);
 
+// Immutable nearby fixtures, never a search through the planetary network.
+// The finite soft cutoff removes light smoothly, without a bright/dark step.
+fn tunnel_irradiance(input: Output) -> vec3<f32> {
+    let base=input.lighting*25u;
+    let count=min(u32(tunnel_lights[base].x),24u);
+    var light=vec3<f32>(0.065,0.062,0.056); // low reflected interior fill
+    for (var i=0u;i<count;i+=1u) {
+        let lamp=tunnel_lights[base+1u+i];
+        let delta=lamp.xyz-input.local_position;
+        let distance=length(delta);
+        let fade=1.0-smoothstep(24.0,34.0,distance);
+        let diffuse=max(dot(input.normal_local,delta/max(distance,0.05)),0.0);
+        light+=vec3<f32>(1.0,0.90,0.76)*lamp.w*fade*fade
+            *(0.12+0.88*diffuse)/(dot(delta,delta)+16.0);
+    }
+    return light;
+}
+
 fn lit_colour(input: Output) -> vec3<f32> {
     let sun = normalize(camera.sun_direction.xyz);
     let elevation = clamp(dot(sun, input.up), 0.0, 1.0);
@@ -89,7 +114,9 @@ fn lit_colour(input: Output) -> vec3<f32> {
     let vertical = dot(input.normal,input.up);
     let interior = (0.10 + 0.04*(1.0-abs(vertical)) + 0.12*max(vertical,0.0))
         * vec3<f32>(1.0,0.96,0.90);
-    let lit = input.colour * mix(direct + ambient, interior, input.sheltered);
+    var illumination=mix(direct + ambient, interior, input.sheltered);
+    if input.lighting>0u {illumination=tunnel_irradiance(input);}
+    let lit = input.colour * illumination;
     // White road paint (colour 0.65,0.65,0.61) also phosphoresces green;
     // whichever of the lit paint and the glow is brighter is what shows.
     let is_paint = all(abs(input.colour - vec3<f32>(0.65, 0.65, 0.61)) < vec3<f32>(0.004));
@@ -153,7 +180,8 @@ fn vs_far(input: Input) -> Output {
     }
     output.normal = normalize(cross(across, tangent));
     output.colour = abs(input.colour);
-    output.sheltered = 0.0;
+    output.normal_local = vec3<f32>(0.0,0.0,1.0);
+    output.sheltered = select(0.0,1.0,input.colour.z<0.0);
     return output;
 }
 

@@ -14,6 +14,52 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Tunnel lighting and enclosed views, 21 October
+
+Network snapshots now bake warm wall fixtures every20m, alternating sides
+(40m on each wall), at4.5m above the deck. Complete regional source alignments
+station them before residency cropping, so a joined-mesh rebuild cannot slide
+the lamps along the road. Regional phases can still reset at gateways. Missing
+junction walls suppress their fixtures. Worker-built local light lists contain
+at most24 nearby, topologically connected lamps per span, with smooth34m
+cutoff and softened inverse-square falloff; disconnected bores do not light
+through intervening rock. One immutable storage buffer joins the existing
+cached road draw, not a new pass or per-frame light search. The vertex stride
+is40bytes, with a flat light-group ID. Far covered decks retain independent
+interior fill; detailed decks/liners use actual nearby lamps. Tunnel information
+boards are backlit independently of sun/clouds. Legacy pilot fill is unchanged.
+
+Automatic exposure eases to1 inside the existing bore field instead of metering
+passing lamps, green paint or daylight beyond a mouth. Manual exposure controls
+remain available. The user's bright/dark captures in
+`manual/1792602903-1012989` show4x auto versus1x fixed exposure; the old lining
+shader itself had no cloud-shadow input. This does not prove that every reported
+in-motion brightness change had that same cause.
+
+`tunnel_visibility.rs` builds a conservative overlap/portal graph from inflated
+bore boxes in the same atomic snapshot as the mesh and collision/cut field.
+Screen-rectangle beams overestimate possible sightlines to every actual or
+unknown/cropped mouth. Visible mouths, invalid inputs, non-opaque/missing cells,
+construction/query budgets and distances approaching the25km draw cutoff fail
+open. Opaque lining/floors remain drawn independently of far deck LOD; treating
+4km deck LOD as absent lining was an over-conservative first draft and prevented
+the measured deep-view optimisation. This is not sparse ray sampling or a
+camera-distance-only darkness switch.
+
+Only a proven enclosed Final view skips terrain LOD/draw, forest/village siting
+and draws, sky/atmosphere/sun/moon, ocean FFT/foam/spray and outdoor weather
+rendering. Roads, lining, signs, controls, physics and postprocessing remain.
+World/weather/ship time still advances; this does not freeze the outside world.
+Debug modes, disabled road/cut subsystems and uncertain entrances keep the normal
+path. `PLANET_TUNNEL_CULL=0` is the matched A/B override. Periodic
+`planet::tunnel` logs report the classification; DEBUG
+`planet::tunnel_visibility` explains conservative failures.
+
+`road_network_tunnel_performance` reproduces a deep manual view with fixed
+exposure. `road_network_tunnel_lighting` changes the sun at two manual positions
+with automatic exposure constrained near1; captures wait inside pose holds so
+floating-point capture scheduling cannot move the eye before comparison.
+
 ## Interior distance markers and driving, 21 October
 
 `road_navigation` now stations paired ceiling boards every500m, anchored to a
@@ -716,3 +762,22 @@ and placeholder-source rejection. Binary SHA256:
    then paired X11/Immediate timings with identical poses, no GPU timestamps on
    the M1000M. Do not treat topology tests or a feasible sampled profile as
    rendered acceptance.
+
+### Enclosed-view validation, 21 October
+
+At the real deep manual pose, X11/Immediate1280x800 cull off/on final runs
+1792608165-1046854 /1792608188-1046896 measure47.131 /6.927ms median
+(~21 /144FPS), with pixel-identical images. The earlier640x400 pair measures
+40.836 /6.537ms, also identical. Both held-pose sun pairs in lighting replay
+1792607754-1046149 are identical at auto exposure1. All3 coastal pairs match
+with culling disabled/enabled; the visible sky is retained, while a closed-roof
+view enables culling. Driving1792607840-1046329 retains65 finite samples and
+1.391935..1.400057m clearance; all4 captures opened,65/65 enclosed samples.
+
+Regular tests:750 pass, same6 unrelated failures,66ignored. Four conservative
+visibility tests (including near-wall clipping), local-light/phase/exposure and
+vertex-layout checks,7 Vulkan checks and the real mountain/undersea neighbour
+checks pass. The optional dense244-village neighbour test was stopped after
+more than3minutes; its earlier planning timeout remains unresolved, not signed
+off by this lighting/rendering phase. No routing/grade/cover or presentation
+policy changes are included.

@@ -30,6 +30,14 @@ fn fixed_presentation_exposure() -> f32 {
     })
 }
 
+fn interior_exposure_target(luminance: f32, inside: bool) -> f32 {
+    if inside {
+        1.0
+    } else {
+        target_exposure(luminance)
+    }
+}
+
 fn presentation_exposure(metered_exposure: f32, auto_exposure_enabled: bool) -> f32 {
     if auto_exposure_enabled {
         metered_exposure
@@ -105,6 +113,7 @@ pub struct HdrRenderer {
     bloom_enabled: bool,
     hdr_effect_enabled: bool,
     auto_exposure_enabled: bool,
+    tunnel_interior: bool,
     /// Share of the displayed brightness the final pass takes away
     /// (`set_output_darkening`).
     output_darkening: f32,
@@ -369,6 +378,7 @@ impl HdrRenderer {
             bloom_enabled: BLOOM_ENABLED,
             hdr_effect_enabled: HDR_EFFECT_ENABLED,
             auto_exposure_enabled: AUTO_EXPOSURE_ENABLED,
+            tunnel_interior: false,
             output_darkening: 0.0,
             output_is_srgb: surface_format.is_srgb(),
         };
@@ -597,12 +607,17 @@ impl HdrRenderer {
         }
     }
 
+    pub fn set_tunnel_interior(&mut self, inside: bool) {
+        self.tunnel_interior = inside;
+    }
+
     pub fn update_exposure(&mut self, queue: &wgpu::Queue, delta_seconds: f64) {
         if !self.auto_exposure_enabled {
             return;
         }
         let delta_seconds = delta_seconds.clamp(0.0, 1.0) as f32;
-        self.target_exposure = target_exposure(self.average_luminance);
+        self.target_exposure =
+            interior_exposure_target(self.average_luminance, self.tunnel_interior);
         let interpolation = 1.0 - (-delta_seconds * EXPOSURE_ADAPT_SPEED).exp();
         self.exposure = (self.exposure + (self.target_exposure - self.exposure) * interpolation)
             .clamp(MINIMUM_EXPOSURE, MAXIMUM_EXPOSURE);
@@ -1036,6 +1051,16 @@ mod tests {
     use super::{f16_to_f32, presentation_exposure, target_exposure};
     use crate::planet::{AUTO_EXPOSURE_ENABLED, HDR_EFFECT_ENABLED};
 
+    #[test]
+    fn tunnel_exposure_does_not_follow_weather_or_passing_lamps() {
+        for luminance in [0.0, 0.01, 0.18, 1.0, 100.0] {
+            assert_eq!(super::interior_exposure_target(luminance, true), 1.0);
+            assert_eq!(
+                super::interior_exposure_target(luminance, false),
+                super::target_exposure(luminance)
+            );
+        }
+    }
     #[test]
     fn decodes_half_float_luminance_values() {
         assert_eq!(f16_to_f32(0x0000), 0.0);

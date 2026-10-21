@@ -74,6 +74,7 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
     let mut text = galleys.iter();
     let view = std::env::var("PLANET_ROAD_SIGN_VIEW").ok();
     for board in boards {
+        let first_vertex = mesh.vertices.len();
         mesh.counts[board.kind as usize] += 1;
         let normal = board.right.cross(board.up).normalize();
         let height = 0.30 + 0.62 * board.lines.len() as f64;
@@ -142,6 +143,12 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
                         ));
                     }
                 }
+            }
+        }
+        if board.kind == Kind::Tunnel {
+            // Backlit tunnel information is independent of sun and clouds.
+            for v in &mut mesh.vertices[first_vertex..] {
+                v.colour[2] = -v.colour[2].abs();
             }
         }
         let wanted = match view.as_deref() {
