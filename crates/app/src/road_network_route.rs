@@ -21,6 +21,7 @@ const HEIGHT_STEP: f64 = 10.0;
 // Reserve distance for flat, 20m junction/turn aprons in the dense verifier.
 const SEARCH_GRADE: f64 = 0.17;
 const MAX_STATES: usize = 400_000;
+const RETRY_SCALES: [usize; 2] = [4, 10];
 // Bounded weighted A*: engineering feasibility matters more than proving an
 // exact minimum of the construction proxy. Never relax any geometric bound.
 const HEURISTIC_WEIGHT: f64 = 2.0;
@@ -596,7 +597,18 @@ pub fn reroute(
     radius: f64,
     terrain: &impl Survey,
 ) -> Result<Result<Plan, Rejected>, String> {
-    reroute_with_limit(region, radius, terrain, MAX_STATES)
+    // Rough transit regions can need a far larger search than a village
+    // cluster. Only an exhausted budget is retried, with a wider one; a true
+    // "no graded route" is final, and no geometric bound is ever relaxed.
+    let mut result = reroute_with_limit(region, radius, terrain, MAX_STATES)?;
+    for scale in RETRY_SCALES {
+        let exhausted = matches!(&result, Err(r) if r.reason.contains("budget exceeded"));
+        if !exhausted {
+            break;
+        }
+        result = reroute_with_limit(region, radius, terrain, MAX_STATES * scale)?;
+    }
+    Ok(result)
 }
 fn reroute_with_limit(
     region: &Region,
