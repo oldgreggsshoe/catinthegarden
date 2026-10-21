@@ -184,3 +184,5 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_DRIVE=1 cargo run --
 W/S throttle/brake/reverse; A/D steer; Space brake; [/] speed; C walk; G fly.
 
 Also fixed the overlapping cut-bank surfaces. Committed and pushed. 743 tests passed; six pre-existing failures remain.
+
+Press **[** to lower the car’s maximum speed, and **]** to raise it. **W/S** still control acceleration, braking and reverse. The slash was just a separator—not another key.
