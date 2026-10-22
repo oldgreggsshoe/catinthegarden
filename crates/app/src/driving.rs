@@ -5,6 +5,7 @@ pub const WHEELBASE: f64 = 2.8;
 pub const TRACK: f64 = 1.6;
 pub const STEP: f64 = 1.0 / 120.0;
 const GRAVITY: f64 = 9.80665;
+const MAX_LATERAL_ACCELERATION: f64 = 6.5;
 
 /// Relative mouse motion acts as a bounded virtual steering wheel. Keyboard
 /// steering overrides/recentres it; free-look never changes wheel position.
@@ -47,6 +48,18 @@ pub struct Car {
     steering: f64,
 }
 impl Car {
+    fn steering_lock(&self) -> f64 {
+        (MAX_LATERAL_ACCELERATION * WHEELBASE / self.speed.powi(2).max(1.0))
+            .atan()
+            .min(0.5)
+    }
+
+    /// Actual wheel position relative to the available lock at this speed.
+    /// Positive is right, matching the mouse/keyboard steering convention.
+    pub fn steering_fraction(&self) -> f64 {
+        (self.steering / self.steering_lock()).clamp(-1.0, 1.0)
+    }
+
     /// W accelerates, S brakes then reverses; release coasts, Space brakes.
     /// Steering slew and speed-dependent lock bound lateral acceleration.
     pub fn travel(&mut self, throttle: f64, steer: f64, brake: bool, scale: f64) -> (f64, f64) {
@@ -57,9 +70,7 @@ impl Car {
         // Scale the whole usable input range with speed, not just the final
         // curvature. Otherwise tiny highway inputs already hit the safety
         // clamp and all larger inputs steer identically.
-        let lock = (4.0 * WHEELBASE / self.speed.powi(2).max(1.0))
-            .atan()
-            .min(0.5);
+        let lock = self.steering_lock();
         let target = steer.clamp(-1.0, 1.0) * lock;
         self.steering += (target - self.steering).clamp(-8.0 * STEP, 8.0 * STEP);
         let acceleration = if throttle * self.speed < -0.1 {
@@ -76,8 +87,8 @@ impl Car {
         let maximum = 30.0 * scale.clamp(0.1, 2.0);
         self.speed = self.speed.clamp(-8.0, maximum);
         let curvature = (self.steering.tan() / WHEELBASE).clamp(
-            -4.0 / self.speed.powi(2).max(1.0),
-            4.0 / self.speed.powi(2).max(1.0),
+            -MAX_LATERAL_ACCELERATION / self.speed.powi(2).max(1.0),
+            MAX_LATERAL_ACCELERATION / self.speed.powi(2).max(1.0),
         );
         let distance = self.speed * STEP;
         (
@@ -178,7 +189,7 @@ mod tests {
             rates[0]
         );
         assert!(
-            settled < 0.001,
+            settled < 0.002,
             "centre correction is too coarse: {settled}"
         );
         assert!(rates.windows(2).all(|v| v[1] >= v[0]));
@@ -211,7 +222,7 @@ mod tests {
             larger > small * 1.9 && larger < small * 2.1,
             "small highway inputs saturated: {small} / {larger}"
         );
-        assert!(small < 0.01, "excessive highway sensitivity: {small}");
+        assert!(small < 0.012, "excessive highway sensitivity: {small}");
     }
     #[test]
     fn opposite_mouse_corrections_reverse_the_turn_within_a_tenth_of_a_second() {
@@ -236,6 +247,34 @@ mod tests {
         }
     }
     #[test]
+    fn cornering_grip_reaches_50m_and_100m_bends_without_unlimited_highway_turns() {
+        let radius_at_lock = |speed| {
+            let mut car = Car {
+                grounded: true,
+                ..Car::default()
+            };
+            let mut radius = 0.0;
+            for _ in 0..120 {
+                car.speed = speed;
+                let (distance, yaw) = car.travel(0.0, 1.0, false, 1.0);
+                radius = distance / yaw;
+            }
+            radius
+        };
+        assert!(radius_at_lock(50.0 / 3.6) <= 50.0);
+        assert!(
+            radius_at_lock(90.0 / 3.6) <= 100.0,
+            "90km/h cannot reach a100m bend: {}",
+            radius_at_lock(90.0 / 3.6)
+        );
+        let highway = radius_at_lock(100.0 / 3.6);
+        assert!(
+            (118.0..120.0).contains(&highway),
+            "100km/h radius {highway}"
+        );
+        assert!(highway > 50.0, "tight bends still need braking");
+    }
+    #[test]
     fn engine_acceleration_is_six_metres_per_second_squared_in_both_directions() {
         for throttle in [-1.0, 1.0] {
             let mut car = Car {
@@ -248,6 +287,36 @@ mod tests {
                     < 1e-12
             );
         }
+    }
+    #[test]
+    fn steering_indicator_shows_the_actual_wheels_not_only_the_input_target() {
+        let mut car = Car {
+            speed: 10.0,
+            grounded: true,
+            ..Car::default()
+        };
+        assert_eq!(car.steering_fraction(), 0.0);
+        car.travel(0.0, 1.0, false, 1.0);
+        assert!(car.steering_fraction() > 0.0 && car.steering_fraction() < 1.0);
+        for _ in 0..120 {
+            car.travel(0.0, 1.0, false, 1.0);
+        }
+        assert!((0.99..=1.0).contains(&car.steering_fraction()));
+        car.travel(0.0, -1.0, false, 1.0);
+        assert!(
+            car.steering_fraction() > 0.0,
+            "show wheels while reversing, not the target"
+        );
+        for _ in 0..120 {
+            car.travel(0.0, -1.0, false, 1.0);
+        }
+        assert!((-1.0..=-0.99).contains(&car.steering_fraction()));
+        car.speed = 60.0;
+        assert_eq!(
+            car.steering_fraction(),
+            -1.0,
+            "speed changes cannot overflow the bar"
+        );
     }
     #[test]
     fn flat_road_is_stationary_and_not_bobbing() {
@@ -322,7 +391,7 @@ mod tests {
             let (d, yaw) = car.travel(1.0, 1.0, false, 1.0);
             assert!(yaw.abs() <= 0.02 && d >= 0.0);
             assert!(car.speed <= 30.0);
-            assert!(yaw.abs() / STEP * car.speed <= 4.00001);
+            assert!(yaw.abs() / STEP * car.speed <= MAX_LATERAL_ACCELERATION + 0.00001);
         }
         for _ in 0..2400 {
             car.travel(-1.0, 0.0, false, 1.0);

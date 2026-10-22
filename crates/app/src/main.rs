@@ -95,6 +95,7 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 const HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(100);
+const DRIVING_HUD_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
 /// How long a movement key stays held after its release. A remote desktop
 /// (Sunshine over Moonlight) delivers a held key as repeating press/release
 /// pairs rather than one long press, so clearing the key on its release stops
@@ -543,6 +544,40 @@ fn geographic_longitude_degrees_east_check() -> bool {
     let east = glam::DVec3::Y.cross(at);
     planet::geographic_longitude_degrees((at + east * 0.01).normalize())
         > planet::geographic_longitude_degrees(at)
+}
+
+/// A centred, non-interactive steering bar: actual wheels, not mouse motion.
+fn draw_steering_indicator(ui: &mut egui::Ui, steering: f64) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(96.0, 20.0), egui::Sense::hover());
+    response.on_hover_text("Steering: move the mouse back to centre, or tap A/D to reset it.");
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(150));
+    let mid = rect.center();
+    let left = rect.left() + 16.0;
+    let right = rect.right() - 16.0;
+    painter.line_segment(
+        [egui::pos2(left, mid.y), egui::pos2(right, mid.y)],
+        egui::Stroke::new(1.0, egui::Color32::GRAY),
+    );
+    painter.line_segment(
+        [mid - egui::vec2(0.0, 5.0), mid + egui::vec2(0.0, 5.0)],
+        egui::Stroke::new(1.0, egui::Color32::WHITE),
+    );
+    for (x, label) in [(rect.left() + 7.0, "L"), (rect.right() - 7.0, "R")] {
+        painter.text(
+            egui::pos2(x, mid.y),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(10.0),
+            egui::Color32::LIGHT_GRAY,
+        );
+    }
+    let x = egui::lerp(left..=right, (0.5 + 0.5 * steering.clamp(-1.0, 1.0)) as f32);
+    painter.circle_filled(
+        egui::pos2(x, mid.y),
+        3.5,
+        egui::Color32::from_rgb(255, 195, 100),
+    );
 }
 
 /// Draws the compass card: it turns so the heading is at the top under a
@@ -4835,6 +4870,7 @@ impl State {
         });
         let driving_speed =
             (self.camera_mode == CameraMode::Driving).then(|| driving_speed_text(self.car.speed));
+        let driving_steering = self.car.steering_fraction();
         self.compass_drawn_degrees = compass;
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
             if let Some(heading) = compass {
@@ -4848,6 +4884,7 @@ impl State {
                             ui.label(egui::RichText::new(speed).size(22.0).strong()
                                 .color(egui::Color32::WHITE)
                                 .background_color(egui::Color32::from_black_alpha(150)));
+                            draw_steering_indicator(ui, driving_steering);
                         }
                     });
             }
@@ -5771,7 +5808,10 @@ impl State {
                 ocean_storm_intensity: local_storm_intensity,
             });
         }
-        if refresh_egui && !self.debug_overlay_visible {
+        if refresh_egui && self.camera_mode == CameraMode::Driving {
+            // Steering feedback must update without mouse-look/HUD dirties.
+            self.next_hud_update = now + DRIVING_HUD_REFRESH_INTERVAL;
+        } else if refresh_egui && !self.debug_overlay_visible {
             // Only a counter to keep current: refresh it at a quarter of the
             // overlay's rate.
             self.next_hud_update = now + WATER_DISPLAY_REFRESH_INTERVAL;
@@ -5780,7 +5820,8 @@ impl State {
             let layout = self.sky_moon_pending_layout.take().unwrap();
             self.sky_moon = sky_moon::SkyMoon::new(self, &layout);
         }
-        if !self.debug_overlay_visible && !water_display {
+        if !self.debug_overlay_visible && !water_display && self.camera_mode != CameraMode::Driving
+        {
             self.hud_dirty = false;
             self.next_hud_update = now + HIDDEN_REFRESH_INTERVAL;
         }

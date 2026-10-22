@@ -113,7 +113,10 @@ road: gravity, four ground contacts and damped suspension replace the walking
 height clamp. Auto-hold keeps the stationary car parked on gradients. This is a test controller, not a rendered vehicle or full chassis,
 parapet/tyre collision simulation. Existing tunnel wall/roof sweeps remain.
 Driving speed (including reverse) is shown in km/h below the compass even
-with the debug overlay hidden. Swell/wind controls appear only over known
+with the debug overlay hidden; the L/R bar shows actual steering relative to
+the available lock at your speed. Cornering is capped at6.5m/s² (about0.66g),
+with speed-dependent lock and quick countersteering; tight bends still need
+braking. Swell/wind controls appear only over known
 open water, not on land, while driving or inside a bore.
 
 ```sh

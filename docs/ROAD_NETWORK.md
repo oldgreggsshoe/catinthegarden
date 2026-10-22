@@ -14,6 +14,25 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Cornering grip and steering feedback, 22 October
+
+The controller now uses one6.5m/s² lateral-acceleration limit for both the
+speed-dependent steering lock and the final curvature safety clamp. This
+replaces the previous4m/s² comfort-like limit: at100km/h the minimum radius
+is now~119m, not193m. A50m bend at50km/h and100m bend at90km/h are reachable;
+tighter bends still require braking. No road following or grip adhesion was
+added. Existing8rad/s wheel slew,15ms mouse filter, acceleration/braking,
+speed caps, gravity and four-contact suspension remain unchanged.
+
+The normal driving HUD adds a compact L/R bar below km/h, with a centre tick
+and amber marker for actual wheel angle divided by the current available
+lock. It is read-only, bounded during speed changes, and disappears outside
+driving. While driving it refreshes at most20Hz independently of mouse-look
+or the debug overlay, instead of postponing its deadline every hidden-HUD
+frame. It does not show only the latest mouse movement/target, which could
+hide delayed countersteering. Controller tests cover bend radii, proportional
+highway input, countersteering, indicator direction and speed/grip limits.
+
 ## Mouse driving, land HUD and lanterns, 22 October
 
 Horizontal captured mouse motion steers a bounded virtual wheel; moving back

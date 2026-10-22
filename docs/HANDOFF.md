@@ -10,7 +10,21 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 22 October: mouse driving, land/sea effects and amber lanterns.**
+**Current phase, 22 October: cornering grip and steering feedback.**
+
+- One6.5m/s² cornering limit now feeds both speed-dependent wheel lock and
+  curvature safety cap (was4). At100km/h full-lock radius~119m versus193m;
+  50m/50kmh and100m/90kmh bends are reachable. No auto-following/sliding or
+  geometry changes.8rad/s steering reversal and15ms input filtering retained;
+  existing6m/s² engine acceleration, braking/speed caps/suspension unchanged.
+- Compact normal driving HUD shows actual normalized steering, L/centre/R,
+  below km/h, not merely mouse input. Bounded if speed changes; driving only.
+- Focused/full/live validation appended at the end. Changes from ba3b967
+  (Claude's commit of prior controls, forest lighting, road shader/material
+  plumbing) are preserved; stale earlier handoff/response claims that engine
+  acceleration/materials had not started are contradicted by that source.
+
+**Previous phase, 22 October: mouse driving, land/sea effects and amber lanterns.**
 
 - Mouse horizontal motion is a bounded virtual steering wheel. A/D override/
   reset it. Hold RMB for free-look; release centres the view. Vertical mouse
@@ -13577,3 +13591,29 @@ headline, with the same large improvement and no outdoor visibility loss.
   out-of-range FOV scenario, shallow turquoise and water-aboard label.
   All seven production road Vulkan tests and the new production spray Vulkan
   test pass. Real-worker lantern-pose test and scenario registry pass.
+
+
+## 22 October — cornering grip and actual steering HUD validation
+
+- Red/green production controller regression: previous4m/s² cap cannot take
+  a100m bend at90km/h (minimum156.25m). New shared6.5 limit reaches96.154m;
+  full-lock radii50/90/100kmh are29.677/96.154/118.708m. The100kmh test
+  retains a finite118..120m limit:50m highway bends still require braking.
+- Existing mouse, proportional highway input, reversal, acceleration, speed,
+  gravity/suspension and parked-gradient checks retained. Actual steering
+  accessor tests show wheel slew rather than instant target changes, centre,
+  left/right and clamp during speed changes. Reversal measurements after a
+  full opposite mouse correction:66.67/25/16.67ms at2/10/30m/s.
+- Live own-PID XTest capture`manual/1792689680-1266996`: all6 PNGs opened.
+  Centre/right/left/reset at rest,16km/h straight driving with centred marker,
+  and C walking with no speed/bar. App exited cleanly. Bar is96x20 logical
+  pixels with centre tick and amber actual-wheel marker; normal cached egui
+  pass only. Driving refresh20Hz, not a deadline postponed each hidden frame.
+- Release builds (one existing unused-startup-helper warning).16 focused app
+  driving checks pass; full serial759 pass/6 same known failures/68 ignored.
+  Known failures remain three optical-zoom tests, FOV validation, shallow
+  turquoise source assertion and water-aboard SUNK label. No GPU shader,
+  road engineering, camera adhesion or presentation changes; no FPS claim.
+- A separate`PLANET_OCEAN_FFT_GATE` edit appeared in main.rs during this work.
+  It was preserved but explicitly excluded from the steering commit. Do not
+  attribute that change or its benchmark results to this phase.

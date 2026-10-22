@@ -8,3 +8,22 @@ In the tree:
 Still pending: the doubled engine acceleration and the procedural asphalt/concrete road materials. Not started, so not claimed.
 
 Next action: commit and push the above, then do the acceleration change and the materials. Say 'ok ready' to run a prompt from this file, or tell me the task.
+
+The main restriction I can see is the car’s **4 m/s² cornering limit**—about0.4g. At100km/h, that means a minimum turn radius of roughly193m, while our roads often bend more tightly. Turning the mouse further then cannot help.
+
+I’d fix it by:
+- Raising available grip to about6–7m/s², while retaining speed-dependent steering.
+- Keeping countersteering quick, without adding sluggish smoothing.
+- Showing a small steering indicator so you can see when the virtual wheel is still turned.
+
+Tight bends would still require braking—no invisible road-following. I’d test known bend radii at fixed speeds before tuning further, rather than just increasing mouse sensitivity.
+
+I’ll raise cornering grip to about 0.65g, keep the quick countersteering, and add a small steering indicator beside the speed readout. I’ll test turn radius, speed limits and steering reversals before committing.
+
+I’ll finish and test the steering changes first, then read the PDF and give you my assessment against the current renderer.
+
+Plan: modify driving.rs for one shared 6.5m/s² cornering limit, a read-only steering-position accessor and bend/reversal regressions; main.rs only for the compact steering bar. Then update README/HANDOFF/ROAD_NETWORK/AGENTS, run focused and full tests, inspect a live HUD capture, and commit/push. No road-routing, camera-following or renderer changes. The PDF review comes afterward.
+
+Steering is tested: the 100km/h minimum radius is now about119m instead of193m. Countersteering remains quick, and the live L/R bar correctly shows centre, right, left and reset, then disappears when walking. Sixteen focused driving checks pass; the full suite has759 passes and the same six unrelated failures.
+
+I’m committing that now, then reading the performance review. An unrelated FFT-gating edit appeared while I was working; I’m leaving it out of this commit.
