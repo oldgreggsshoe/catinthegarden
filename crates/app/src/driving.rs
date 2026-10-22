@@ -11,6 +11,7 @@ const GRAVITY: f64 = 9.80665;
 #[derive(Default)]
 pub struct MouseSteering {
     value: f64,
+    filtered: f64,
     pub free_look: bool,
 }
 impl MouseSteering {
@@ -19,12 +20,19 @@ impl MouseSteering {
             self.value = (self.value + pixels / 300.0).clamp(-1.0, 1.0);
         }
     }
+    /// Called at the fixed120Hz physics step, never once per render frame.
     pub fn input(&mut self, keyboard: f64) -> f64 {
         if keyboard != 0.0 {
             self.value = 0.0;
+            self.filtered = 0.0;
             keyboard
         } else {
-            self.value
+            // Fine corrections near centre without a dead zone; retain full
+            // lock for larger motions. Ease discrete device counts rather
+            // than snapping the tyres to each tiny input target.
+            let target = self.value * (0.5 + 0.5 * self.value * self.value);
+            self.filtered += (target - self.filtered) * (1.0 - (-STEP / 0.015).exp());
+            self.filtered
         }
     }
 }
@@ -46,12 +54,18 @@ impl Car {
         // the player is waiting for streaming or looking around. Release on
         // deliberate throttle; a moving car still coasts normally.
         let brake = brake || (throttle.abs() < 1e-6 && self.speed.abs() < 0.05);
-        let target = steer.clamp(-1.0, 1.0) * 0.5;
-        self.steering += (target - self.steering).clamp(-1.5 * STEP, 1.5 * STEP);
+        // Scale the whole usable input range with speed, not just the final
+        // curvature. Otherwise tiny highway inputs already hit the safety
+        // clamp and all larger inputs steer identically.
+        let lock = (4.0 * WHEELBASE / self.speed.powi(2).max(1.0))
+            .atan()
+            .min(0.5);
+        let target = steer.clamp(-1.0, 1.0) * lock;
+        self.steering += (target - self.steering).clamp(-8.0 * STEP, 8.0 * STEP);
         let acceleration = if throttle * self.speed < -0.1 {
             8.0
         } else {
-            3.0
+            6.0
         };
         if self.grounded {
             self.speed +=
@@ -122,17 +136,118 @@ mod tests {
             b.motion(10.0);
         }
         assert!((a.input(0.0) - b.input(0.0)).abs() < 1e-12);
-        assert_eq!(a.input(0.0), 0.5);
+        for _ in 0..120 {
+            a.input(0.0);
+        }
+        assert!((a.input(0.0) - 0.3125).abs() < 1e-6);
         a.free_look = true;
         a.motion(-300.0);
-        assert_eq!(a.input(0.0), 0.5);
+        assert_eq!(a.value, 0.5);
         a.free_look = false;
         a.motion(900.0);
-        assert_eq!(a.input(0.0), 1.0);
+        for _ in 0..240 {
+            a.input(0.0);
+        }
+        assert!((a.input(0.0) - 1.0).abs() < 1e-10);
         assert_eq!(a.input(-1.0), -1.0);
         assert_eq!(a.input(0.0), 0.0);
         a.motion(-900.0);
-        assert_eq!(a.input(0.0), -1.0);
+        for _ in 0..240 {
+            a.input(0.0);
+        }
+        assert!((a.input(0.0) + 1.0).abs() < 1e-10);
+    }
+    #[test]
+    fn tiny_mouse_corrections_ramp_smoothly_through_the_vehicle_controller() {
+        let mut mouse = MouseSteering::default();
+        let mut car = Car {
+            grounded: true,
+            ..Car::default()
+        };
+        mouse.motion(1.0);
+        let mut rates = Vec::new();
+        for _ in 0..120 {
+            car.speed = 10.0;
+            let (_, yaw) = car.travel(0.0, mouse.input(0.0), false, 1.0);
+            rates.push(yaw / STEP);
+        }
+        let settled = rates[119];
+        assert!(
+            rates[0] > 0.0 && rates[0] < settled * 0.6,
+            "one mouse count snaps immediately: first={} settled={settled}",
+            rates[0]
+        );
+        assert!(
+            settled < 0.001,
+            "centre correction is too coarse: {settled}"
+        );
+        assert!(rates.windows(2).all(|v| v[1] >= v[0]));
+        mouse.motion(-2.0);
+        car.speed = 10.0;
+        let (_, yaw) = car.travel(0.0, mouse.input(0.0), false, 1.0);
+        assert!(yaw > 0.0, "opposite correction must not snap across centre");
+        for _ in 0..120 {
+            mouse.input(0.0);
+        }
+        assert!(mouse.input(0.0) < 0.0);
+    }
+    #[test]
+    fn highway_steering_keeps_small_inputs_proportional_instead_of_saturating() {
+        let turn = |input| {
+            let mut car = Car {
+                grounded: true,
+                ..Car::default()
+            };
+            let mut rate = 0.0;
+            for _ in 0..120 {
+                car.speed = 30.0;
+                rate = car.travel(0.0, input, false, 1.0).1 / STEP;
+            }
+            rate
+        };
+        let small = turn(0.05);
+        let larger = turn(0.10);
+        assert!(
+            larger > small * 1.9 && larger < small * 2.1,
+            "small highway inputs saturated: {small} / {larger}"
+        );
+        assert!(small < 0.01, "excessive highway sensitivity: {small}");
+    }
+    #[test]
+    fn opposite_mouse_corrections_reverse_the_turn_within_a_tenth_of_a_second() {
+        for speed in [2.0, 10.0, 30.0] {
+            let mut mouse = MouseSteering::default();
+            let mut car = Car {
+                grounded: true,
+                ..Car::default()
+            };
+            mouse.motion(300.0);
+            for _ in 0..120 {
+                car.speed = speed;
+                car.travel(0.0, mouse.input(0.0), false, 1.0);
+            }
+            mouse.motion(-600.0);
+            let mut yaw = 0.0;
+            for _ in 0..12 {
+                car.speed = speed;
+                yaw = car.travel(0.0, mouse.input(0.0), false, 1.0).1;
+            }
+            assert!(yaw < 0.0, "countersteering still delayed at {speed} m/s");
+        }
+    }
+    #[test]
+    fn engine_acceleration_is_six_metres_per_second_squared_in_both_directions() {
+        for throttle in [-1.0, 1.0] {
+            let mut car = Car {
+                grounded: true,
+                ..Car::default()
+            };
+            car.travel(throttle, 0.0, false, 1.0);
+            assert!(
+                (car.speed - throttle * (6.0 - 0.35 - 0.0015 * (6.0 * STEP).powi(2)) * STEP).abs()
+                    < 1e-12
+            );
+        }
     }
     #[test]
     fn flat_road_is_stationary_and_not_bobbing() {

@@ -262,7 +262,7 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
     );
     let frame = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("road AA frame"),
-        size: 64,
+        size: 80,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -326,6 +326,7 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
                 [1.0, 0.0, 0.0, 64.0],
                 [0.0, 0.0, -1.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],
+                [0.0; 4],
             ]
         } else {
             [
@@ -333,6 +334,7 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
                 [1.0, 0.0, 0.0, 64.0],
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
+                [0.0; 4],
             ]
         };
         queue.write_buffer(&frame, 0, bytemuck::cast_slice(&data));

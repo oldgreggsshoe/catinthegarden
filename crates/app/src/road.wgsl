@@ -24,6 +24,7 @@ struct Input {
     @location(5) forward: vec3<f32>,
     @location(6) up: vec3<f32>,
     @location(8) lighting: u32,
+    @location(10) material_origin: vec3<f32>,
 }
 struct Output {
     @builtin(position) position: vec4<f32>,
@@ -37,6 +38,7 @@ struct Output {
     @location(7) removed: f32,
     @location(8) @interpolate(flat) lighting: u32,
     @location(9) @interpolate(flat) normal_local: vec3<f32>,
+    @location(10) material_position: vec3<f32>,
 }
 
 // Bounded, smooth irregular flame flutter, independently seeded in world
@@ -56,8 +58,9 @@ fn lantern_light(seed: f32) -> vec3<f32> {
     let time=max(camera.projection.z,0.0);
     let strength=0.80+0.16*lantern_noise(time*0.9+seed*23.0,key)
         +0.06*lantern_noise(time*2.7+seed*71.0,key^0x85ebca6bu);
-    let amber=mix(vec3<f32>(1.0,0.50,0.19),vec3<f32>(1.0,0.46,0.17),seed);
-    return amber*strength;
+    let amber=mix(vec3<f32>(1.0,0.33,0.12),vec3<f32>(1.0,0.29,0.10),seed);
+    // Shared by visible flames and their cast light: two halvings of the prior radiance.
+    return amber*strength*0.25;
 }
 
 fn project_vertex(input: Input) -> Output {
@@ -72,6 +75,10 @@ fn project_vertex(input: Input) -> Output {
     output.colour = abs(input.colour);
     if input.colour.x < -2.5 {output.colour=input.colour.z*lantern_light(input.colour.y);}
     output.local_position = input.position;
+    // CPU wraps only the frame origin in f64. Do not wrap vertices: that
+    // would interpolate across a tile boundary rather than through it.
+    output.material_position = input.material_origin + input.across.xyz * input.position.x
+        + input.forward * input.position.y + input.up * input.position.z;
     output.lighting = input.lighting;
     output.normal_local = normalize(input.normal);
     output.network_kind = select(select(0.0, 1.0, input.colour.y<0.0 && input.colour.z<0.0),
@@ -106,14 +113,14 @@ fn project_vertex(input: Input) -> Output {
     return output;
 }
 
-const PAINT_GLOW = vec3<f32>(0.08, 0.60, 0.18) * 0.60;
+const PAINT_GLOW = vec3<f32>(0.08, 0.60, 0.18) * 0.15;
 
 // Immutable nearby fixtures, never a search through the planetary network.
 // The finite soft cutoff removes light smoothly, without a bright/dark step.
 fn tunnel_irradiance(input: Output) -> vec3<f32> {
     let base=input.lighting*25u;
     let count=min(u32(tunnel_lights[base].x),24u);
-    var light=vec3<f32>(0.065,0.062,0.056); // low reflected interior fill
+    var light=vec3<f32>(0.0); // illumination comes from actual lanterns only
     for (var i=0u;i<count;i+=1u) {
         let lamp=tunnel_lights[base+1u+i];
         let delta=lamp.xyz-input.local_position;
@@ -127,7 +134,49 @@ fn tunnel_irradiance(input: Output) -> vec3<f32> {
     return light;
 }
 
+// Periodic, three-dimensional material field: continuous around edges and
+// across deck/junction batches, without UV stretching on tall piers. All
+// frequencies repeat after256m; unresolved detail tends to its mean, not noise.
+fn road_material_hash(cell: vec3<i32>, period: i32) -> f32 {
+    let q = vec3<u32>(((cell % period) + period) % period);
+    return lantern_hash(q.x * 0x9e3779b9u ^ q.y * 0x85ebca6bu ^ q.z * 0xc2b2ae35u);
+}
+fn road_material_grain(p: vec3<f32>, frequency: f32, footprint: f32) -> f32 {
+    let weight = 1.0 - smoothstep(0.3, 1.0, footprint * frequency);
+    if weight < 0.001 { return 0.0; }
+    let scaled = p * frequency;
+    let cell = vec3<i32>(floor(scaled));
+    let f = fract(scaled);
+    let t = f * f * (3.0 - 2.0 * f);
+    let period = i32(256.0 * frequency);
+    let a = mix(road_material_hash(cell, period), road_material_hash(cell+vec3<i32>(1,0,0),period),t.x);
+    let b = mix(road_material_hash(cell+vec3<i32>(0,1,0),period),road_material_hash(cell+vec3<i32>(1,1,0),period),t.x);
+    let c = mix(road_material_hash(cell+vec3<i32>(0,0,1),period),road_material_hash(cell+vec3<i32>(1,0,1),period),t.x);
+    let d = mix(road_material_hash(cell+vec3<i32>(0,1,1),period),road_material_hash(cell+vec3<i32>(1,1,1),period),t.x);
+    return (mix(mix(a,b,t.y),mix(c,d,t.y),t.z) - 0.5) * weight;
+}
+fn road_material_albedo(colour: vec3<f32>, p: vec3<f32>, footprint: f32) -> vec3<f32> {
+    let asphalt = all(abs(colour - vec3<f32>(0.045,0.048,0.05)) < vec3<f32>(0.0005));
+    let concrete = all(abs(colour - vec3<f32>(0.32,0.31,0.29)) < vec3<f32>(0.0005))
+        || all(abs(colour - vec3<f32>(0.24,0.235,0.22)) < vec3<f32>(0.0005));
+    // Paint, metal, soil and emissive fixtures retain their own materials.
+    if (!asphalt && !concrete) || footprint >= 2.0 { return colour; }
+    let broad = road_material_grain(p, 0.5, footprint);
+    let grain = road_material_grain(p, 8.0, footprint);
+    let fine = road_material_grain(p, 64.0, footprint);
+    var variation = 0.10*broad + 0.14*grain + 0.65*fine;
+    if concrete {
+        // Casting mottles, aggregate and sparse pores, not painted stripes.
+        let pores = smoothstep(0.22,0.40,-fine);
+        variation = 0.30*broad + 0.22*grain + 0.16*fine - 0.35*pores;
+    }
+    return colour * clamp(1.0 + variation,0.55,1.30);
+}
+
 fn lit_colour(input: Output) -> vec3<f32> {
+    // Derivatives outside material branches remain valid at primitive edges.
+    let width = fwidth(input.material_position);
+    let footprint = max(max(width.x,width.y),width.z);
     let sun = normalize(camera.sun_direction.xyz);
     let elevation = clamp(dot(sun, input.up), 0.0, 1.0);
     let direct = vec3<f32>(1.9, 1.78, 1.6) * elevation * max(dot(input.normal, sun), 0.0);
@@ -139,11 +188,11 @@ fn lit_colour(input: Output) -> vec3<f32> {
         * vec3<f32>(1.0,0.96,0.90);
     var illumination=mix(direct + ambient, interior, input.sheltered);
     if input.lighting>0u {illumination=tunnel_irradiance(input);}
-    let lit = input.colour * illumination;
+    let lit = road_material_albedo(input.colour,input.material_position,footprint) * illumination;
     // White road paint (colour 0.65,0.65,0.61) also phosphoresces green;
     // whichever of the lit paint and the glow is brighter is what shows.
     let is_paint = all(abs(input.colour - vec3<f32>(0.65, 0.65, 0.61)) < vec3<f32>(0.004));
-    if is_paint {
+    if is_paint && input.sheltered < 0.5 {
         let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
         if dot(PAINT_GLOW, luma) > dot(lit, luma) { return PAINT_GLOW; }
     }

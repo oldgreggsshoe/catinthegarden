@@ -50,6 +50,10 @@ struct WeatherRenderUniform {
 @group(2) @binding(3)
 var<uniform> weather: WeatherRenderUniform;
 
+@group(1) @binding(3) var atmosphere_transmittance_lut: texture_2d<f32>;
+@group(1) @binding(4) var atmosphere_surface_irradiance_lut: texture_2d<f32>;
+@group(1) @binding(5) var atmosphere_physical_sampler: sampler;
+
 struct VertexInput {
     @location(0) centre_and_height: vec4<f32>,
     @location(1) width_shade_kind_seed: vec4<f32>,
@@ -72,6 +76,8 @@ struct VertexOutput {
     @location(6) @interpolate(flat, first) cloud_visibility: f32,
     @location(7) @interpolate(flat, first) fog: vec4<f32>,
     @location(8) local_position: vec3<f32>,
+    @location(9) @interpolate(flat) sunlight: vec3<f32>,
+    @location(10) @interpolate(flat) skylight: vec3<f32>,
 }
 
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
@@ -411,6 +417,10 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
         centre,
         planet_to_view(centre - forest.camera_planet_position.xyz),
     );
+    // Sample the same physical inputs as the ground at this tree's base.
+    let altitude = length(centre) - PLANET_RADIUS_METERS;
+    let sunlight = surface_direct_sun_transmittance(up, altitude, sun_direction);
+    let skylight = sky_diffuse_irradiance(up, up, altitude, sun_direction);
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(view_position, 1.0),
         world_normal,
@@ -422,6 +432,8 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
         cloud_visibility,
         fog,
         mesh.position,
+        sunlight,
+        skylight,
     );
 }
 
@@ -459,12 +471,13 @@ fn tree_foliage_noise(position: vec3<f32>, seed: f32) -> f32 {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let sun_direction = normalize(camera.sun_direction.xyz);
-    let solar_elevation_cosine = dot(input.up, sun_direction);
-    let direct = max(dot(normalize(input.normal), sun_direction), 0.0)
-        * 1.24 * input.cloud_visibility;
-    let sky_ambient = smoothstep(-0.18, 0.02, solar_elevation_cosine) * 0.36;
-    let back_scatter = max(dot(normalize(input.normal), -sun_direction), 0.0) * 0.16;
-    let lighting = (direct + sky_ambient + back_scatter) * input.shade;
+    let normal = normalize(input.normal);
+    let direct = max(dot(normal, sun_direction), 0.0) * SURFACE_SUNLIGHT_SCALE;
+    // Leaf transmission is sunlight too, not a second sun below the planet.
+    let back_scatter = max(dot(normal, -sun_direction), 0.0) * 0.16 * input.foliage;
+    let sky_view = 0.5 + 0.5 * clamp(dot(normal, input.up), -1.0, 1.0);
+    let lighting = (input.sunlight * input.cloud_visibility * (direct + back_scatter)
+        + input.skylight * sky_view) * input.shade;
     let broadleaf = srgb_to_linear(vec3<f32>(0.26, 0.36, 0.20));
     let conifer = srgb_to_linear(vec3<f32>(0.21, 0.31, 0.21));
     let foliage = mix(broadleaf, conifer, input.species_kind)

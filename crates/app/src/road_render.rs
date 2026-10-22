@@ -13,6 +13,18 @@ struct Instance {
     across: [f32; 4],
     forward: [f32; 4],
     up: [f32; 4],
+    material_origin: [f32; 4],
+}
+
+/// Preserve centimetre-scale texture phase without putting planetary f32
+/// coordinates in the fragment shader.256m is the material field period.
+pub(crate) fn material_origin(origin: DVec3) -> [f32; 4] {
+    [
+        origin.x.rem_euclid(256.0) as f32,
+        origin.y.rem_euclid(256.0) as f32,
+        origin.z.rem_euclid(256.0) as f32,
+        0.0,
+    ]
 }
 
 struct DrawChunk {
@@ -207,6 +219,7 @@ impl RoadRenderer {
                 across: vector(road::across()),
                 forward: vector(road::forward()),
                 up: vector(road::up()),
+                material_origin: material_origin(road::origin()),
             };
             frame.origin[3] = viewport[0] as f32;
             frame.across[3] = viewport[1] as f32;
@@ -337,7 +350,7 @@ fn create_pipeline_inner(
     });
     const VERTEX: [wgpu::VertexAttribute; 4] =
         wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 8 => Uint32];
-    const FRAME: [wgpu::VertexAttribute; 4] = [
+    const FRAME: [wgpu::VertexAttribute; 5] = [
         wgpu::VertexAttribute {
             format: wgpu::VertexFormat::Float32x4,
             offset: 0,
@@ -357,6 +370,11 @@ fn create_pipeline_inner(
             format: wgpu::VertexFormat::Float32x3,
             offset: 48,
             shader_location: 6,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 64,
+            shader_location: 10,
         },
     ];
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -457,7 +475,8 @@ mod tests {
         )
         .validate(&cuts)
         .unwrap();
-        assert_eq!(size_of::<super::Instance>(), 64);
+        assert_eq!(size_of::<super::Instance>(), 80);
+        assert_eq!(std::mem::offset_of!(super::Instance, material_origin), 64);
         assert_eq!(std::mem::offset_of!(super::Instance, up), 48);
         assert_eq!(size_of::<crate::road::Vertex>(), 40);
         assert_eq!(std::mem::offset_of!(crate::road::Vertex, lighting), 36);

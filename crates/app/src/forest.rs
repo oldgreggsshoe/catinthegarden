@@ -103,9 +103,36 @@ fn forest_shader_source() -> String {
     // The same switch terrain reads, so a cloud cannot shadow trees standing
     // on unshadowed ground.
     let features = crate::planet::render_feature_constants();
+    // Reuse the actual terrain helpers, not a second night/sunset model.
+    // These four self-contained helpers need only the physical LUT bindings.
+    let shared = include_str!("shared_planet.wgsl");
+    let mut lighting = String::new();
+    for name in ["SURFACE_SUNLIGHT_SCALE", "SKY_DIFFUSE_LIGHT_SCALE"] {
+        let line = shared
+            .lines()
+            .find(|line| line.starts_with(&format!("const {name}:")))
+            .expect("shared surface lighting constant");
+        lighting.push_str(line);
+        lighting.push('\n');
+    }
+    for name in [
+        "flat_horizon_sun_visibility",
+        "surface_direct_sun_transmittance",
+        "sky_diffuse_irradiance",
+        "perceptual_physical_sky_radiance",
+    ] {
+        let start = shared
+            .find(&format!("fn {name}("))
+            .expect("shared surface lighting helper");
+        let function = &shared[start..];
+        let end = function.find("\n}\n").expect("shared helper closing brace") + 3;
+        lighting.push_str(&function[..end]);
+        lighting.push('\n');
+    }
     [
         crate::body::wgsl_constants().as_str(),
         features.as_str(),
+        lighting.as_str(),
         include_str!("forest.wgsl"),
         include_str!("weather_cloud_density.wgsl"),
     ]
@@ -423,6 +450,32 @@ impl ForestRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -440,6 +493,18 @@ impl ForestRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(atmosphere.sky_view_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.transmittance),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.irradiance),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(atmosphere.physical_sampler),
                 },
             ],
         });
@@ -2629,18 +2694,14 @@ mod tests {
     }
 
     #[test]
-    fn forest_shader_has_no_unconditional_night_light() {
-        let shader = include_str!("forest.wgsl");
-        assert!(
-            shader.contains(
-                "let sky_ambient = smoothstep(-0.18, 0.02, solar_elevation_cosine) * 0.36;"
-            )
-        );
-        assert!(shader.contains("* 1.24 * input.cloud_visibility;"));
-        assert!(
-            shader.contains("let lighting = (direct + sky_ambient + back_scatter) * input.shade;")
-        );
-        assert!(!shader.contains("0.36 + sun_amount"));
+    fn forest_uses_the_terrain_sun_and_sky_inputs_without_a_night_floor() {
+        let shader = forest_shader_source();
+        assert!(shader.contains("surface_direct_sun_transmittance(up, altitude, sun_direction)"));
+        assert!(shader.contains("sky_diffuse_irradiance(up, up, altitude, sun_direction)"));
+        assert!(shader.contains("input.sunlight * input.cloud_visibility"));
+        assert!(shader.contains("input.skylight * sky_view"));
+        assert!(!shader.contains("let sky_ambient = smoothstep("));
+        assert!(!shader.contains("* 1.24 * input.cloud_visibility;"));
     }
 
     #[test]
@@ -2654,7 +2715,7 @@ mod tests {
         );
         assert!(shader.contains("floor(combined_density * 4.0 + 0.5) / 4.0"));
         assert!(shader.contains("cloud_shadow_visibility("));
-        assert!(shader.contains("* 1.24 * input.cloud_visibility;"));
+        assert!(shader.contains("input.sunlight * input.cloud_visibility"));
         assert!(renderer.contains("weather_field_bind_group_layout"));
         assert!(renderer.contains("weather_field_bind_group"));
     }

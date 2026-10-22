@@ -76,6 +76,7 @@ struct Instance {
     across: [f32; 4],
     forward: [f32; 4],
     up: [f32; 4],
+    material_origin: [f32; 4],
 }
 struct Scene {
     snapshot: Snapshot,
@@ -135,7 +136,7 @@ impl NetworkRenderer {
         );
         let instance = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("network camera-relative frame"),
-            size: 64,
+            size: size_of::<Instance>() as u64,
             usage: wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::UNIFORM,
@@ -372,6 +373,7 @@ impl NetworkRenderer {
             across: v(f.across),
             forward: v(f.forward),
             up: v(f.up),
+            material_origin: crate::road_render::material_origin(f.up * f.radius),
         };
         frame.origin[3] = viewport[0] as f32;
         frame.across[3] = viewport[1] as f32;
