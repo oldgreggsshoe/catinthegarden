@@ -13630,3 +13630,15 @@ excluded. Road mesh/cut-field/publication costs should be separated. Road
 benchmark commands also need road enable/site flags, not just a scenario-name
 substitution. Hardware targets are not measured guarantees. Assessment only;
 no extra performance changes authorised. Separate FFT-gating edit preserved.
+
+
+## 23 October — per-frame pacing record
+
+`frame_pacing.rs` stores every frame's wall-clock interval (first 120 frames
+and screenshot frames excluded) and rewrites
+`test-runs/frame_pacing_latest.txt` every 600 samples and at exit: mean, p50,
+p95, p99, max, 1%-low FPS, frames over 33/50 ms. Use this, not the 0.5 s
+spatial log, for p99/stall claims. still_5s check: 179 samples, p50 16.7 ms
+(vsync-limited), p99 24.3 ms. Next: measure land/forest/coast/road/tunnel
+scenes with it (roads need PLANET_ROAD_EXPERIMENT=1, tunnel
+PLANET_ROAD_NETWORK_SITE=longest_undersea). FFT gate remains uncommitted.

@@ -11,6 +11,7 @@ mod bubbles;
 mod debug;
 mod driving;
 mod flock_marker;
+mod frame_pacing;
 mod forest;
 mod shadow_heights;
 mod gust;
@@ -5217,6 +5218,10 @@ impl State {
             waterline_eye_height_meters: scenario_waterline_eye_height_meters,
             terrain_eye_height_meters: scenario_terrain_eye_height_meters,
         } = self.frame_inputs();
+        frame_pacing::record(
+            frame_time * 1000.0,
+            scenario_capture || self.manual_screenshot_requested,
+        );
         let planet_rotation_time = if self.scenario.is_some() {
             sim_time * scenario_planet_rotation_time_scale
         } else {
@@ -7000,6 +7005,7 @@ fn main() {
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::new(launch_options);
     event_loop.run_app(&mut app).expect("event loop failed");
+    frame_pacing::write_summary();
     let scenario_failed = app.scenario_failed.load(Ordering::Relaxed);
     // Release the GPU device before exiting. process::exit runs no
     // destructors, so taking it with wgpu resources still live leaves the
