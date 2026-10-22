@@ -1,29 +1,22 @@
-Resumed. The working tree is not clean: it holds uncommitted work from the last session, all of it building and passing its focused tests (cargo check; 14 driving tests; 38 forest tests).
+FFT gate A/B: no measurable gain yet. Change is in main.rs only (uncommitted): update_ocean_fft is skipped when has_ocean_draws() is false; PLANET_OCEAN_FFT_GATE=0 restores the old behaviour.
+- mountain_ground and road_network_driving never reach zero ocean chunks, so the gate never engaged (differences were noise).
+- still_5s (orbit, zero ocean chunks, FFT forced on), 3 interleaved pairs, 1280x720: gate off 5.79/4.58/4.15 ms vs on 4.99/5.66/5.46 ms. Noise, no signal.
+So the FFT cost in a genuinely inland view is still unmeasured; I have no inland zero-ocean scenario with a meaningful frame time. Not committed.
 
-In the tree:
-- Mouse steering: finer response near centre, speed-dependent lock, faster reversals (driving.rs)
-- Lantern output and road-paint glow reduced; paint glow off inside tunnels (road.wgsl, road_render.rs)
-- Tree night lighting now uses the terrain's sun-transmittance and skylight, so sunlight blocked by the planet no longer lights them from below (forest.rs/.wgsl)
+Steering is done and pushed (`bbe2983`): stronger cornering grip, quick corrections and an actual-steering indicator.759 tests pass; six known unrelated failures remain.
 
-Still pending: the doubled engine acceleration and the procedural asphalt/concrete road materials. Not started, so not claimed.
+I’ve read all eight pages of the review. **I broadly agree: keep the renderer and measure its expensive work rather than rewrite it.** It correctly distinguishes a source review from a benchmark and avoids promising a modern-GPU FPS multiplier.
 
-Next action: commit and push the above, then do the acceleration change and the materials. Say 'ok ready' to run a prompt from this file, or tell me the task.
+The strongest recommendations are:
+- Fixed, repeatable scenes covering land, forest, coast, roads and tunnels, including movement.
+- Separating presentation/compositor stalls from rendering work.
+- Checking hidden ocean computation before changing terrain architecture. A separate, uncommitted FFT-visibility experiment is already present here; it still needs its own validation.
 
-The main restriction I can see is the car’s **4 m/s² cornering limit**—about0.4g. At100km/h, that means a minimum turn radius of roughly193m, while our roads often bend more tightly. Turning the mouse further then cannot help.
+I would tighten three things:
+1. **Frame-pacing measurements need better sampling.** Current render profiles are emitted only on the0.5-second logging cadence, not every frame. Those logs cannot establish reliable1% lows or catch all streaming stalls. Record every frame’s wall-clock interval cheaply, and exclude warm-up/capture frames.
+2. **Move road excavation/rendering higher up the investigation list.** Off-thread route building does not make terrain-cut queries or road shading free. Separate planning/publication, road meshes and excavation costs instead of treating “roads off” as one explanation.
+3. **The road/tunnel benchmark instructions need their launch flags.** Merely changing the sample command’s scenario name will not enable roads. The network tunnel needs `PLANET_ROAD_EXPERIMENT=1` and the correct `PLANET_ROAD_NETWORK_SITE=longest_undersea`; verify the view is actually enclosed before interpreting results.
 
-I’d fix it by:
-- Raising available grip to about6–7m/s², while retaining speed-dependent steering.
-- Keeping countersteering quick, without adding sluggish smoothing.
-- Showing a small steering indicator so you can see when the virtual wheel is still turned.
+I’d treat the hardware examples as reference tiers, not buying advice or proof of1080p/60. The P50 remains useful for finding waste, even if it should not define the highest-quality target.
 
-Tight bends would still require braking—no invisible road-following. I’d test known bend radii at fixed speeds before tuning further, rather than just increasing mouse sensitivity.
-
-I’ll raise cornering grip to about 0.65g, keep the quick countersteering, and add a small steering indicator beside the speed readout. I’ll test turn radius, speed limits and steering reversals before committing.
-
-I’ll finish and test the steering changes first, then read the PDF and give you my assessment against the current renderer.
-
-Plan: modify driving.rs for one shared 6.5m/s² cornering limit, a read-only steering-position accessor and bend/reversal regressions; main.rs only for the compact steering bar. Then update README/HANDOFF/ROAD_NETWORK/AGENTS, run focused and full tests, inspect a live HUD capture, and commit/push. No road-routing, camera-following or renderer changes. The PDF review comes afterward.
-
-Steering is tested: the 100km/h minimum radius is now about119m instead of193m. Countersteering remains quick, and the live L/R bar correctly shows centre, right, left and reset, then disappears when walking. Sixteen focused driving checks pass; the full suite has759 passes and the same six unrelated failures.
-
-I’m committing that now, then reading the performance review. An unrelated FFT-gating edit appeared while I was working; I’m leaving it out of this commit.
+**My order:** improve frame-time recording, measure the five scene families, then optimise the largest demonstrated cost. The review is a good roadmap—not yet evidence that a hardware upgrade alone solves performance.

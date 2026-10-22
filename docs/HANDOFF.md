@@ -13617,3 +13617,16 @@ headline, with the same large improvement and no outdoor visibility loss.
 - A separate`PLANET_OCEAN_FFT_GATE` edit appeared in main.rs during this work.
   It was preserved but explicitly excluded from the steering commit. Do not
   attribute that change or its benchmark results to this phase.
+
+
+## 22 October — performance-review reading after steering completion
+
+Read all8 pages of`/home/dad/planet_performance_review_2026.pdf`; source-check
+supports its bounded-quadtree/batching and measurement-first/no-rewrite view.
+Important qualification: main.rs records render profiles only when write_log,
+and both interactive/scenario logging are0.5s cadence, not every frame. Real
+p99/1% lows need cheap per-frame wall-clock samples, with startup/captures
+excluded. Road mesh/cut-field/publication costs should be separated. Road
+benchmark commands also need road enable/site flags, not just a scenario-name
+substitution. Hardware targets are not measured guarantees. Assessment only;
+no extra performance changes authorised. Separate FFT-gating edit preserved.
