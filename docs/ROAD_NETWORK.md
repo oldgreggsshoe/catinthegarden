@@ -14,6 +14,37 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Mouse driving, land HUD and lanterns, 22 October
+
+Horizontal captured mouse motion steers a bounded virtual wheel; moving back
+straightens it. A/D override and reset the mouse wheel. Hold right mouse for
+independent free-look; release recentres the view. Vertical mouse motion and
+Q/E can still look. Focus/capture loss resets mouse controls, and the existing
+steering slew/speed-dependent lateral limits remain. The ordinary compact
+compass HUD now shows actual car speed in km/h (R for reverse), even with the
+debug overlay hidden. Sea settings require known dense-level open water and
+are excluded while driving or inside a bore. Road glow radiance is60% of the
+previous value; reflective paint still responds to lighting.
+
+Fixtures are now small three-dimensional wall lanterns: dark iron cage/hood,
+a wall bracket, tapered oil reservoir and a visible teardrop flame. Clear panes
+are implicit rather than opaque glowing panels. The186 vertices per lantern
+remain in the existing cached road batch, with no extra draw call. Each carries
+a stable world-position seed shared by its flame and local light lists. Amber hues vary slightly redder;
+smooth independent low-frequency value noise creates bounded80..102% flame
+flutter, never blackout/strobe flicker. Fixed indoor exposure remains. All
+variation runs in the existing road shader using the existing animation clock,
+with no added light update pass, CPU light search or per-frame buffer upload.
+
+A33x33 shoreline grid in the existing FFT tangent frame covers the spray pool.
+Dense open-ocean ownership is sampled from resident CPU tiles only when the
+32m grid window changes; incomplete data retries at most once a second. GPU
+birth/integration/draw checks require all four neighbouring samples wet, giving
+a conservative shore buffer and no imaginary inland wave sources. Source and
+displaced birth positions are checked. Rain shading is unchanged. Camera-local
+bubble/depth/audio checks now reuse physical open-ocean ownership rather than
+treating a global virtual wave over dry ground as water around the eye.
+
 ## Tunnel lighting and enclosed views, 21 October
 
 Network snapshots now bake warm wall fixtures every20m, alternating sides

@@ -39,6 +39,27 @@ struct Output {
     @location(9) @interpolate(flat) normal_local: vec3<f32>,
 }
 
+// Bounded, smooth irregular flame flutter, independently seeded in world
+// space. Shared by the diffuser and its illumination; never an on/off strobe.
+fn lantern_hash(seed: u32) -> f32 {
+    var x=seed;
+    x^=x>>16u; x*=0x7feb352du; x^=x>>15u; x*=0x846ca68bu; x^=x>>16u;
+    return f32(x & 0x00ffffffu)/16777216.0;
+}
+fn lantern_noise(t: f32, seed: u32) -> f32 {
+    let tick=u32(floor(t));
+    let f=fract(t);
+    return mix(lantern_hash(seed^tick),lantern_hash(seed^(tick+1u)),f*f*(3.0-2.0*f));
+}
+fn lantern_light(seed: f32) -> vec3<f32> {
+    let key=u32(seed*16777216.0);
+    let time=max(camera.projection.z,0.0);
+    let strength=0.80+0.16*lantern_noise(time*0.9+seed*23.0,key)
+        +0.06*lantern_noise(time*2.7+seed*71.0,key^0x85ebca6bu);
+    let amber=mix(vec3<f32>(1.0,0.50,0.19),vec3<f32>(1.0,0.46,0.17),seed);
+    return amber*strength;
+}
+
 fn project_vertex(input: Input) -> Output {
     let relative = input.origin.xyz + input.across.xyz * input.position.x
         + input.forward * input.position.y + input.up * input.position.z;
@@ -49,6 +70,7 @@ fn project_vertex(input: Input) -> Output {
     output.normal = normalize(input.across.xyz * input.normal.x
         + input.forward * input.normal.y + input.up * input.normal.z);
     output.colour = abs(input.colour);
+    if input.colour.x < -2.5 {output.colour=input.colour.z*lantern_light(input.colour.y);}
     output.local_position = input.position;
     output.lighting = input.lighting;
     output.normal_local = normalize(input.normal);
@@ -84,7 +106,7 @@ fn project_vertex(input: Input) -> Output {
     return output;
 }
 
-const PAINT_GLOW = vec3<f32>(0.08, 0.60, 0.18);
+const PAINT_GLOW = vec3<f32>(0.08, 0.60, 0.18) * 0.60;
 
 // Immutable nearby fixtures, never a search through the planetary network.
 // The finite soft cutoff removes light smoothly, without a bright/dark step.
@@ -96,9 +118,10 @@ fn tunnel_irradiance(input: Output) -> vec3<f32> {
         let lamp=tunnel_lights[base+1u+i];
         let delta=lamp.xyz-input.local_position;
         let distance=length(delta);
+        if distance>=34.0 {continue;}
         let fade=1.0-smoothstep(24.0,34.0,distance);
         let diffuse=max(dot(input.normal_local,delta/max(distance,0.05)),0.0);
-        light+=vec3<f32>(1.0,0.90,0.76)*lamp.w*fade*fade
+        light+=lantern_light(lamp.w)*85.0*fade*fade
             *(0.12+0.88*diffuse)/(dot(delta,delta)+16.0);
     }
     return light;

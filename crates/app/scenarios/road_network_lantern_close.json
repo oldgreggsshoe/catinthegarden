@@ -1,0 +1,44 @@
+{
+  "name": "road_network_lantern_close",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 4,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2,
+    4
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "look_at": [
+        3863739.9949775804,
+        738052.8668073358,
+        -725872.3130570734
+      ],
+      "position": [
+        3863740.419180157,
+        738052.876302698,
+        -725870.3579453089
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2,
+    "min_exposure": 0.9999,
+    "max_exposure": 1.0001,
+    "max_exposure_delta_per_frame": 0.0001
+  }
+}

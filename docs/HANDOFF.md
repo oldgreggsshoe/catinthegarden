@@ -10,7 +10,30 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 21 October: independent tunnel lighting and enclosed-view scheduling.**
+**Current phase, 22 October: mouse driving, land/sea effects and amber lanterns.**
+
+- Mouse horizontal motion is a bounded virtual steering wheel. A/D override/
+  reset it. Hold RMB for free-look; release centres the view. Vertical mouse
+  and Q/E look remain; capture/focus loss resets controls. Existing120Hz
+  suspension, steering slew and speed-dependent limits are unchanged.
+- Ordinary compass HUD shows driving km/h/R even with debug hidden. Sea
+  settings require known dense open water, no bore and no driving. Reflective
+  paint is retained; phosphorescent radiance is60% of its previous value.
+- World-seeded amber/slightly red lamps use smooth independent oil-lantern
+  flutter (80..102%, never off), shared by flame and illumination. Cached186-
+  vertex iron lanterns replace flat panels: cage/hood/bracket/oil reservoir
+  and a teardrop flame, implicit clear panes. No new pass
+  or per-frame lamp-buffer updates; indoor exposure remains stable.
+- Spray now checks cached dense ownership on a33x33/32m grid at source,
+  displaced birth, travel and draw. Unknown/dry cells fail closed; stationary
+  complete data is reused, missing data retries once a second. No per-frame
+  I/O or per-particle CPU search. Rain shader unchanged; camera water/bubble/
+  audio depth now excludes virtual sea over dry land using the existing
+  physical ownership helper.
+- Validation/results and any caveats are appended below. Preserve unrelated
+  response-file replacement. No road routing/grade/cover changes.
+
+**Previous phase, 21 October: independent tunnel lighting and enclosed-view scheduling.**
 
 - Added cached warm wall fixtures at20m intervals, alternating left/right, soft
   local attenuation and backlit tunnel boards. Complete source-alignment
@@ -13503,3 +13526,54 @@ Final near-wall-safe1280x800 off/on replay1792608165-1046854 /
 and pixel-identical images (max error0). Settled medians47.131 /6.927ms
 (~21 /144FPS); captures opened. This final rerun supersedes the earlier148FPS
 headline, with the same large improvement and no outdoor visibility loss.
+
+
+## 22 October — mouse controls, physical sea effects and lantern appearance
+
+- Live XTest input (only our own PID/window) in
+  `manual/1792672455-1212287`: seven captures opened/reviewed. Mouse-only
+  steering while W accelerates reaches23km/h and changes heading180->196deg;
+  A/D remain available. RMB changes view heading and release returns to car
+  heading; C/G remove speed and keep sea controls hidden on dry ground.
+  Earlier XSendEvent keyboard trials were unreliable; do not count those as
+  steering evidence. Tests now use real XTest key events, with cleanup.
+- Actual worker-derived close-up `road_network_lantern_close/1792672667-1213081`
+  opened at2/4s: iron cage and pitched hood, wall bracket, oil reservoir,
+  emissive teardrop flame; no opaque fake-glass panel. Mesh186 vertices per
+  fixture (was24), same cached draw and immutable light lists. Colour varies
+  from(1,.50,.19) to(1,.46,.17); light gain85 versus95, flame radiance2.7
+  versus3. Shader time/seed drive the same smooth80..102% flutter in flame and
+  illumination. Static frame colours vary with exposure held1, not blackouts.
+- Deep replay `road_network_tunnel_performance/1792672719-1213857` passes with
+  17/17 enclosed samples; opened image shows staggered lanterns/pools.
+  1280x800 X11/Immediate median7.724ms,12 non-capture samples after2s
+  (~129FPS). Earlier pre-model7.025ms and previous phase6.927ms are NOT a
+  strict paired timing here; no new FPS gain claim. Outdoor culling retained.
+- Coastal replay `road_network_coastal_spray/1792670390-1206874` uses the two
+  reconstructed user poses/late27/36s captures; dry entrance views opened.
+  The precise soft puffs did not reproduce in the earlier matched-pose
+  baseline, so do not claim an image-measured elimination of every puff.
+  Production Vulkan spray test deterministically retains64 active particles
+  over wet cells and retires64 at a dry corner; disabled-guard diagnostic
+  control retains them. Source/displaced births, travel and draw are gated.
+  Existing physical open-ocean helper also replaces the virtual sea-height
+  test for camera bubble/audio/rain cutoff over land. Rain shading unchanged.
+- Positive open-water storm comparison, wind40/swell30/chop2, spray5 versus0:
+  `ocean_spray_sequence/1792672638-1212726` and`1792672656-1212924`.
+  All ten matched frames differ in spray regions (RGB absolute sum~302k-351k);
+  opened spray capture confirms the mask has not blanket-disabled sea spray.
+  Default mild-sea pair had no visible spray and was inconclusive, not failure.
+- Replays must set`PLANET_ROAD_NETWORK_SITE=longest_undersea` and
+  `PLANET_ROAD_SIGNS_WAIT=1`; interactive defaults select that site, scenarios
+  do not. Initial close-up without the site was outside the loaded road field
+  and was rejected; use the later capture above. No routing/profile,25% grade,
+  roof-cover, portal, presentation or precompute changes.
+- Open-sea compact HUD positive check `manual/1792672910-1215810` uses
+  `PLANET_OCEAN_FFT=1` and retains swell/wind readouts; non-FFT startup
+  correctly omits them. Both are actual interactive captures.
+- Final release build succeeds (one existing unused-startup-helper warning).
+  Serial app suite:753 passed,68 ignored, same six existing failures:
+  maximum optical mouse zoom, orbital optical LOD traversal, wheel screen-error,
+  out-of-range FOV scenario, shallow turquoise and water-aboard label.
+  All seven production road Vulkan tests and the new production spray Vulkan
+  test pass. Real-worker lantern-pose test and scenario registry pass.

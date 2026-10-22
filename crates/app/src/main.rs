@@ -501,6 +501,18 @@ fn speed_through_water_knots(
     (relative - up * relative.dot(up)).length() * KNOTS_PER_METER_PER_SECOND
 }
 
+fn sea_controls_visible(fft: bool, ocean: Option<bool>, tunnel: bool, driving: bool) -> bool {
+    fft && ocean == Some(true) && !tunnel && !driving
+}
+
+fn driving_speed_text(speed: f64) -> String {
+    format!(
+        "{}{:.0} km/h",
+        if speed < -0.05 { "R " } else { "" },
+        speed.abs() * 3.6
+    )
+}
+
 /// Compass heading (degrees clockwise from north, 0-360) of `forward` seen
 /// from planet-local `position`. North is toward the +Y pole; east is
 /// north x up, which is geographic east (-Z from +X, `geographic_longitude_degrees`).
@@ -1021,7 +1033,7 @@ impl CameraMode {
             Self::LowFlight => "fixed-speed WASD flight; altitude-scaled ([/]: scale, Shift: 4x)",
             Self::Surface => "surface walking/swimming; G: return to flight, Space: jump/thrust",
             Self::Driving => {
-                "driving; W/S: accelerate/brake/reverse, A/D: steer, Space: brake, C: walk, G: fly"
+                "driving; W/S: accelerate/brake/reverse, mouse/A/D: steer, hold RMB: look, Space: brake, C: walk, G: fly"
             }
             Self::Boat => "ship bridge; F4: detach to flight",
         }
@@ -1585,6 +1597,7 @@ struct State {
     surface_pending_seconds: f64,
     car: driving::Car,
     driving_brake: bool,
+    driving_mouse: driving::MouseSteering,
     /// Ocean-clock time the swimmer has been carried up to (NaN: not swimming).
     swimmer_carry_time_seconds: f64,
     /// The piece of sea (rest position, tangent-plane metres) the ship floats
@@ -2216,6 +2229,7 @@ impl State {
             surface_pending_seconds: 0.0,
             car: driving::Car::default(),
             driving_brake: false,
+            driving_mouse: driving::MouseSteering::default(),
             swimmer_carry_time_seconds: f64::NAN,
             ship_label: None,
             ship_distance_meters: f64::INFINITY,
@@ -2577,6 +2591,7 @@ impl State {
             self.look_release_times = [None; 4];
             self.surface_jump_requested = false;
             self.driving_brake = false;
+            self.driving_mouse = driving::MouseSteering::default();
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
             self.mouse_captured = false;
@@ -3040,6 +3055,7 @@ impl State {
             self.flight_local_tangent = horizontal.normalize();
         }
         self.car = driving::Car::default();
+        self.driving_mouse = driving::MouseSteering::default();
         self.driving_brake = false;
         self.surface_pending_seconds = 0.0;
         self.surface_jump_requested = false;
@@ -3125,8 +3141,10 @@ impl State {
             };
             let throttle = f64::from(self.flight_movement.forward as u8)
                 - f64::from(self.flight_movement.backward as u8);
-            let steer = f64::from(self.flight_movement.right as u8)
-                - f64::from(self.flight_movement.left as u8);
+            let steer = self.driving_mouse.input(
+                f64::from(self.flight_movement.right as u8)
+                    - f64::from(self.flight_movement.left as u8),
+            );
             let (distance, yaw) =
                 self.car
                     .travel(throttle, steer, self.driving_brake, self.flight_speed_scale);
@@ -3686,11 +3704,10 @@ impl State {
         // for rain, bubble depth and underwater sound as the camera collider.
         let in_tunnel = self.in_road_tunnel(direction, altitude);
         let water = if !in_tunnel && altitude < ocean::MAXIMUM_WAVE_HEIGHT_METERS + 50.0 {
-            ocean::global_wave_height_meters(
-                direction,
-                ocean_time_seconds,
-                SHIP_FALLBACK_DEPTH_METERS,
-            )
+            // Do not treat a virtual FFT crest over dry land as water around
+            // the eye (bubbles, muffled sound or suppressed land rain).
+            self.open_ocean_environment_at(direction, altitude, ocean_time_seconds, 0.0)
+                .map_or(f64::NEG_INFINITY, |(_, height, _)| height)
         } else {
             f64::NEG_INFINITY
         };
@@ -4796,12 +4813,28 @@ impl State {
             .is_none()
             .then_some(self.compass_heading_degrees)
             .flatten();
-        let sea_settings = planet::ocean_fft_enabled().then(|| {
+        let local = self
+            .camera
+            .planet_frame_world_position(planet::planet_rotation_radians(
+                self.interactive_planet_rotation_time(self.interactive_sim_time()),
+            ));
+        let sea_settings = sea_controls_visible(
+            planet::ocean_fft_enabled(),
+            self.terrain.dense_level_open_ocean_at(local.normalize()),
+            self.in_road_tunnel(
+                local.normalize(),
+                local.length() - planet::planet_radius_meters(),
+            ),
+            self.camera_mode == CameraMode::Driving,
+        )
+        .then(|| {
             (
                 ocean_fft::swell_target_meters(),
                 ocean_fft::wind_speed_from_environment(),
             )
         });
+        let driving_speed =
+            (self.camera_mode == CameraMode::Driving).then(|| driving_speed_text(self.car.speed));
         self.compass_drawn_degrees = compass;
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
             if let Some(heading) = compass {
@@ -4809,7 +4842,14 @@ impl State {
                 egui::Area::new(egui::Id::new("compass"))
                     .anchor(egui::Align2::RIGHT_TOP, [-14.0, 10.0])
                     .interactable(false)
-                    .show(&context, |ui| draw_compass(ui, heading, sea_settings));
+                    .show(&context, |ui| {
+                        draw_compass(ui, heading, sea_settings);
+                        if let Some(speed) = &driving_speed {
+                            ui.label(egui::RichText::new(speed).size(22.0).strong()
+                                .color(egui::Color32::WHITE)
+                                .background_color(egui::Color32::from_black_alpha(150)));
+                        }
+                    });
             }
             if let Some((flooded_tonnes, sinking_tonnes, on_seabed, foundering, clearance, knots)) =
                 water_aboard
@@ -7069,6 +7109,21 @@ impl ApplicationHandler for App {
             }
             window.request_redraw();
         }
+        if let WindowEvent::MouseInput {
+            state: pressed,
+            button: winit::event::MouseButton::Right,
+            ..
+        } = &event
+            && state.camera_mode == CameraMode::Driving
+            && state.mouse_captured
+        {
+            state.driving_mouse.free_look = pressed.is_pressed();
+            if !pressed.is_pressed() {
+                state.flight_look_yaw_radians = 0.0;
+                state.flight_look_pitch_radians = 0.0;
+            }
+            window.request_redraw();
+        }
         let egui_response = state.egui_state.on_window_event(window, &event);
         if egui_response.repaint && !matches!(&event, WindowEvent::RedrawRequested) {
             window.request_redraw();
@@ -7387,10 +7442,15 @@ impl ApplicationHandler for App {
         if let DeviceEvent::MouseMotion { delta } = event
             && device_mouse_look_enabled(state.mouse_captured, state.scenario.is_some())
         {
-            state.look_camera(
-                delta.0 * MOUSE_LOOK_RADIANS_PER_PIXEL,
-                -delta.1 * MOUSE_LOOK_RADIANS_PER_PIXEL,
-            );
+            if state.camera_mode == CameraMode::Driving && !state.driving_mouse.free_look {
+                state.driving_mouse.motion(delta.0);
+                state.look_camera(0.0, -delta.1 * MOUSE_LOOK_RADIANS_PER_PIXEL);
+            } else {
+                state.look_camera(
+                    delta.0 * MOUSE_LOOK_RADIANS_PER_PIXEL,
+                    -delta.1 * MOUSE_LOOK_RADIANS_PER_PIXEL,
+                );
+            }
             window.request_redraw();
         }
     }
@@ -7626,6 +7686,27 @@ fn create_depth_texture(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sea_controls_are_only_shown_over_known_open_water_outside_driving_and_tunnels() {
+        assert!(super::sea_controls_visible(true, Some(true), false, false));
+        for land in [None, Some(false)] {
+            assert!(!super::sea_controls_visible(true, land, false, false));
+        }
+        assert!(!super::sea_controls_visible(true, Some(true), true, false));
+        assert!(!super::sea_controls_visible(true, Some(true), false, true));
+        assert!(!super::sea_controls_visible(
+            false,
+            Some(true),
+            false,
+            false
+        ));
+    }
+    #[test]
+    fn compact_driving_speed_is_in_kilometres_per_hour_including_reverse() {
+        assert_eq!(super::driving_speed_text(10.0), "36 km/h");
+        assert_eq!(super::driving_speed_text(-5.0), "R 18 km/h");
+        assert_eq!(super::driving_speed_text(0.0), "0 km/h");
+    }
     use glam::DVec3;
 
     #[test]

@@ -69,6 +69,18 @@ struct OceanFftView {
 @group(0) @binding(5) var foam_history_map: texture_2d<f32>;
 @group(0) @binding(6) var foam_sampler: sampler;
 
+@group(0) @binding(7) var<storage, read> spray_coast: array<u32>;
+
+fn spray_over_water(position: vec2<f32>) -> bool {
+    let cell = vec2<i32>(floor((position - vec2<f32>(frame.axis_u.w, frame.axis_v.w)) / 32.0));
+    if any(cell < vec2<i32>(0)) || any(cell >= vec2<i32>(32)) { return false; }
+    let index = u32(cell.y) * 33u + u32(cell.x);
+    // All four ownership samples must be water: a conservative shore buffer.
+    return min(min(spray_coast[index], spray_coast[index+1u]),
+        min(spray_coast[index+33u], spray_coast[index+34u])) != 0u;
+}
+
+
 const GRAVITY: f32 = 9.81;
 // The first particle slots belong to the ship's bow (ocean_spray.rs).
 const SHIP_SPRAY_SLOTS: u32 = 2048u;
@@ -309,6 +321,11 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
         );
         var position = particle.position.xyz + velocity * dt;
         position = vec3<f32>(position.xy - frame.shift_dt.xy, position.z);
+        if !spray_over_water(position.xy) {
+            particle.velocity.w = 0.0;
+            particles[index] = particle;
+            return;
+        }
         particle.position = vec4<f32>(position, particle.position.w + dt);
         particle.velocity = vec4<f32>(velocity, particle.velocity.w);
         // Spray that falls back into the sea is gone: retire it at the
@@ -400,6 +417,7 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
             lift,
             select(0.9 + 1.2 * r3, 1.2 + 1.3 * r3, struck) * froude,
         );
+        if !spray_over_water(particle.position.xy) { particle.velocity.w = 0.0; }
         particles[index] = particle;
         return;
     }
@@ -409,6 +427,11 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     let radius = frame.params.x * unit_random(seed);
     let angle = 6.2831853 * unit_random(seed ^ 0x68e31da4u);
     let local = radius * vec2<f32>(cos(angle), sin(angle));
+    if !spray_over_water(local) {
+        particle.velocity.w = 0.0;
+        particles[index] = particle;
+        return;
+    }
     let field = spray_field(local);
     let chop = frame.params.z;
     let j = field.jacobian * fft_view.gain.x;
@@ -438,6 +461,11 @@ fn cs_spray(@builtin(global_invocation_id) id: vec3<u32>) {
     // hard line at the wave's edge.
     let height = spray_surface_height(field);
     let drawn = local - chop * field.displacement * fft_view.gain.x;
+    if !spray_over_water(drawn) {
+        particle.velocity.w = 0.0;
+        particles[index] = particle;
+        return;
+    }
     let r1 = unit_random(seed ^ 0x9e3779b9u);
     let r2 = unit_random(seed ^ 0x85ebca6bu);
     let r3 = unit_random(seed ^ 0xc2b2ae35u);

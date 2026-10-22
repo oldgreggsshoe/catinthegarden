@@ -29,6 +29,18 @@ struct SprayDrawFrame {
 @group(1) @binding(0) var<storage, read> spray_particles: array<SprayParticle>;
 @group(1) @binding(1) var<uniform> spray_frame: SprayDrawFrame;
 
+
+@group(1) @binding(2) var<storage, read> spray_coast: array<u32>;
+
+fn spray_over_water(position: vec2<f32>) -> bool {
+    let cell = vec2<i32>(floor((position - vec2<f32>(spray_frame.axis_u.w, spray_frame.axis_v.w)) / 32.0));
+    if any(cell < vec2<i32>(0)) || any(cell >= vec2<i32>(32)) { return false; }
+    let index = u32(cell.y) * 33u + u32(cell.x);
+    // All four ownership samples must be water: a conservative shore buffer.
+    return min(min(spray_coast[index], spray_coast[index+1u]),
+        min(spray_coast[index+33u], spray_coast[index+34u])) != 0u;
+}
+
 struct SprayVertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) corner: vec2<f32>,
@@ -120,7 +132,7 @@ fn vs_spray(
     let corner = corners[vertex_index];
     out.corner = corner;
     let lifetime = particle.velocity.w;
-    if lifetime <= 0.0 || particle.position.w >= lifetime {
+    if lifetime <= 0.0 || particle.position.w >= lifetime || !spray_over_water(particle.position.xy) {
         out.clip_position = vec4<f32>(0.0, 0.0, -1.0, 1.0);
         out.alpha = 0.0;
         return out;

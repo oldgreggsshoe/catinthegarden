@@ -213,3 +213,31 @@ Done and pushed.
 Final 1280×800 X11/Immediate test: **~21 → 144FPS**, with pixel-identical culling comparisons.
 
 750 tests passed; 6 known unrelated failures remain. Dense-village planning is still slow and was not changed.
+
+I’ll check the driving controls, HUD visibility and latest screenshot first. Then I’ll add mouse steering with a way to free-look, show driving speed in km/h, hide the sea controls on land/in tunnels, and trace why sea spray is reaching the entrance without changing the rain.
+
+I’ll also reduce the road paint’s glow to 60% of its current value.
+
+The screenshots show the soft spray puffs around the dry entrance, separate from the rain streaks. The spray code currently checks FFT wave crests but not whether they’re over water. I’ll add shoreline checks at birth and during travel, rather than just hiding spray whenever the camera is on land. For driving, I’ll use horizontal mouse movement to steer and hold-right-button free-look, while keeping A/D available.
+
+Plan: change driving.rs/main.rs for mouse steering and the compact driving HUD; road.wgsl only for the 60% paint glow; ocean_spray.rs, its update/draw shaders and the terrain call site for a cached shoreline mask. I’ll add focused tests and a replay of the two photographed entrance views, then check open-water spray still works and compare tunnel performance.
+
+I’ll make the tunnel lights amber, with a small fixed reddish variation per lamp and gentle, independent random flicker. The glowing fixtures and the light they cast will flicker together; exposure will stay steady.
+
+Yes—an oil-lantern effect: slow, irregular warm flutter, not an electrical strobe or lamps switching off.
+
+Your renderer is currently running. Could you close it when convenient so I can test mouse steering and measure FPS without interfering with your session? I’ll keep working meanwhile.
+
+You’re right—it has stopped since I checked. The process seen most recently was my test run, which I’ve now closed.
+
+I’ll shift them a little further toward orange-red and lower the brightness, keeping the same oil-lamp flutter.
+
+I’ll replace the flat fixtures with small wall-mounted lanterns: a dark metal frame and hood, a bracket, and a visible glowing flame. They’ll use the same flickering light and existing draw batch.
+
+Mouse steering and the km/h display now pass the live driving check; right-button free-look and land HUD hiding work too. I’m checking the new 3D lanterns up close and making sure the shoreline spray fix doesn’t remove spray over open water.
+
+Done and pushed: 3D wall lanterns with metal cages, hoods, brackets and visible flames. They’re slightly redder/dimmer, with independent oil-lamp flicker.
+
+Mouse steering, km/h HUD, land/tunnel sea-readout hiding, 60% road glow and shoreline spray checks are included.
+
+Screenshots checked; 753 tests and all 8 Vulkan checks pass. Six known unrelated test failures remain.

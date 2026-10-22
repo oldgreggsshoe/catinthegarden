@@ -102,12 +102,19 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-ap
 
 For the lightweight driving camera, add `PLANET_ROAD_DRIVE=1` to start in the
 car, or press **C** during normal exploration. **W/S** accelerate, brake and
-reverse; **A/D** steer; **Space** brakes; **[ / ]** change the maximum speed
-(default108km/h, reverse capped at29km/h). Mouse/Q/E look independently of
-steering. **C** gets out to walk; **G** returns to flight. The car can leave the
+reverse; **mouse movement/A/D** steer; hold **right mouse** to look around
+(release recentres the view); **Space** brakes; **[ / ]** change the maximum
+speed (default108km/h, reverse capped at29km/h). Mouse vertical motion and Q/E
+also look independently of steering.
+Mouse steering holds a bounded virtual wheel; move back to straighten, or use
+A/D to override and reset it. Losing capture resets mouse steering. **C** gets
+out to walk; **G** returns to flight. The car can leave the
 road: gravity, four ground contacts and damped suspension replace the walking
 height clamp. Auto-hold keeps the stationary car parked on gradients. This is a test controller, not a rendered vehicle or full chassis,
 parapet/tyre collision simulation. Existing tunnel wall/roof sweeps remain.
+Driving speed (including reverse) is shown in km/h below the compass even
+with the debug overlay hidden. Swell/wind controls appear only over known
+open water, not on land, while driving or inside a bore.
 
 ```sh
 env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_DRIVE=1 cargo run --release -p planet-app
@@ -121,14 +128,22 @@ checks: `road_network_driving` exercises the real controller, while
 Use `PLANET_ROAD_NETWORK_SITE=longest_undersea PLANET_ROAD_SIGNS_WAIT=1` with
 those replays so they wait for signs, not an arbitrary frame count.
 
-Network bores have warm wall lights every20m, alternating left/right (40m per
-wall), with soft distance falloff. Their surfaces and exit boards do not use
+Network bores have amber wall lights every20m, alternating left/right (40m per
+wall), with soft distance falloff. Each has a slight, stable reddish variation
+and smooth independent oil-lantern flutter (not on/off electrical flashing).
+Iron cages, pitched hoods, wall brackets, oil reservoirs and visible flames
+replace the flat panels. Flame and cast light share the same variation. Night-glowing road
+paint emits60% of its former radiance. Their surfaces and exit boards do not use
 daylight/cloud lighting. Automatic exposure settles to a fixed interior target
 rather than pumping as lamps or signs pass the camera.
 When conservative portal visibility proves the entire view enclosed, outdoor
 terrain, sky, ocean/FFT/spray, weather and vegetation rendering are skipped.
 Visible/uncertain mouths keep the normal path; simulation time keeps advancing.
 `PLANET_TUNNEL_CULL=0` disables this optimisation for matched comparisons.
+Sea spray now uses a cached conservative shoreline mask at birth, during
+travel and at draw time, rather than emitting imaginary wave crests on land.
+Unknown terrain remains dry until its resident data is available; the rain
+renderer is unchanged.
 `road_network_tunnel_performance` and `road_network_tunnel_lighting` replay a
 deep view and the user's two interior positions with changing sun directions.
 

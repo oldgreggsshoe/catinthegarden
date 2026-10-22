@@ -6,6 +6,29 @@ pub const TRACK: f64 = 1.6;
 pub const STEP: f64 = 1.0 / 120.0;
 const GRAVITY: f64 = 9.80665;
 
+/// Relative mouse motion acts as a bounded virtual steering wheel. Keyboard
+/// steering overrides/recentres it; free-look never changes wheel position.
+#[derive(Default)]
+pub struct MouseSteering {
+    value: f64,
+    pub free_look: bool,
+}
+impl MouseSteering {
+    pub fn motion(&mut self, pixels: f64) {
+        if !self.free_look && pixels.is_finite() {
+            self.value = (self.value + pixels / 300.0).clamp(-1.0, 1.0);
+        }
+    }
+    pub fn input(&mut self, keyboard: f64) -> f64 {
+        if keyboard != 0.0 {
+            self.value = 0.0;
+            keyboard
+        } else {
+            self.value
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Car {
     pub speed: f64,
@@ -90,6 +113,27 @@ impl Car {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mouse_wheel_is_bounded_frame_independent_and_keyboard_can_override() {
+        let mut a = MouseSteering::default();
+        let mut b = MouseSteering::default();
+        a.motion(150.0);
+        for _ in 0..15 {
+            b.motion(10.0);
+        }
+        assert!((a.input(0.0) - b.input(0.0)).abs() < 1e-12);
+        assert_eq!(a.input(0.0), 0.5);
+        a.free_look = true;
+        a.motion(-300.0);
+        assert_eq!(a.input(0.0), 0.5);
+        a.free_look = false;
+        a.motion(900.0);
+        assert_eq!(a.input(0.0), 1.0);
+        assert_eq!(a.input(-1.0), -1.0);
+        assert_eq!(a.input(0.0), 0.0);
+        a.motion(-900.0);
+        assert_eq!(a.input(0.0), -1.0);
+    }
     #[test]
     fn flat_road_is_stationary_and_not_bobbing() {
         let mut car = Car::default();

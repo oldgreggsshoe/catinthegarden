@@ -23,6 +23,33 @@ const SPAWN_RATE: f32 = 100.0;
 /// Frames longer than this (pauses, hitches) are clamped so particles do not
 /// teleport.
 const MAX_STEP_SECONDS: f32 = 0.1;
+const COAST_SIDE: usize = 33;
+const COAST_STEP: f64 = 32.0;
+
+pub(super) struct CoastRequest {
+    key: [i64; 3],
+    pub directions: Vec<Option<glam::DVec3>>,
+}
+
+fn coast_key(direction: glam::DVec3) -> ([i64; 3], [f64; 2]) {
+    let (u, v) = crate::ocean_fft::anchor_axes(direction.to_array());
+    let u = glam::DVec3::from_array(u);
+    let v = glam::DVec3::from_array(v);
+    let r = crate::planet::planet_radius_meters();
+    let uv = [r * direction.dot(u), r * direction.dot(v)];
+    (
+        [
+            (uv[0] / COAST_STEP).floor() as i64 - 16,
+            (uv[1] / COAST_STEP).floor() as i64 - 16,
+            if direction.dot(u.cross(v)) < 0.0 {
+                -1
+            } else {
+                1
+            },
+        ],
+        uv,
+    )
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -112,6 +139,10 @@ pub(super) fn spray_enabled() -> bool {
 pub(super) struct OceanSpray {
     _particles: wgpu::Buffer,
     uniform: wgpu::Buffer,
+    coast: wgpu::Buffer,
+    coast_key: Option<[i64; 3]>,
+    coast_complete: bool,
+    coast_time: f32,
     update_bind_groups: [wgpu::BindGroup; 2],
     draw_bind_group: wgpu::BindGroup,
     update_pipeline: wgpu::ComputePipeline,
@@ -139,6 +170,11 @@ impl OceanSpray {
             label: Some("ocean spray frame"),
             contents: bytemuck::bytes_of(&SprayFrame::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let coast = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("spray shoreline ownership"),
+            contents: bytemuck::cast_slice(&[0u32; COAST_SIDE * COAST_SIDE]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         let uniform_entry = |binding, visibility| wgpu::BindGroupLayoutEntry {
             binding,
@@ -183,6 +219,7 @@ impl OceanSpray {
                     count: None,
                 },
                 uniform_entry(4, compute),
+                storage_entry(7, compute, true),
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: compute,
@@ -242,6 +279,10 @@ impl OceanSpray {
                         binding: 6,
                         resource: wgpu::BindingResource::Sampler(&foam_sampler),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: coast.as_entire_binding(),
+                    },
                 ],
             })
         });
@@ -270,6 +311,7 @@ impl OceanSpray {
             entries: &[
                 storage_entry(0, vertex_fragment, true),
                 uniform_entry(1, vertex_fragment),
+                storage_entry(2, vertex_fragment, true),
             ],
         });
         let draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -283,6 +325,10 @@ impl OceanSpray {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: coast.as_entire_binding(),
                 },
             ],
         });
@@ -333,6 +379,10 @@ impl OceanSpray {
             cache: crate::pipeline_cache::get(),
         });
         Self {
+            coast,
+            coast_key: None,
+            coast_complete: false,
+            coast_time: f32::NEG_INFINITY,
             _particles: particles,
             uniform,
             update_bind_groups,
@@ -343,6 +393,49 @@ impl OceanSpray {
             previous_time: None,
             frame: 0,
         }
+    }
+
+    /// Dense ownership is cached on a32m grid, not queried per particle/frame.
+    /// Unknown tiles stay dry and retry once a second, without synchronous I/O.
+    pub(super) fn coast_request(&self, direction: glam::DVec3, time: f32) -> Option<CoastRequest> {
+        let direction = direction.normalize();
+        let (key, _) = coast_key(direction);
+        if self.coast_key == Some(key) && (self.coast_complete || time - self.coast_time < 1.0) {
+            return None;
+        }
+        let (u, v) = crate::ocean_fft::anchor_axes(direction.to_array());
+        let u = glam::DVec3::from_array(u);
+        let v = glam::DVec3::from_array(v);
+        let w = u.cross(v) * key[2] as f64;
+        let r = crate::planet::planet_radius_meters();
+        let mut directions = Vec::with_capacity(COAST_SIDE * COAST_SIDE);
+        for y in 0..COAST_SIDE {
+            for x in 0..COAST_SIDE {
+                let a = (key[0] + x as i64) as f64 * COAST_STEP;
+                let b = (key[1] + y as i64) as f64 * COAST_STEP;
+                let z = r * r - a * a - b * b;
+                directions.push((z >= 0.0).then(|| (u * a + v * b + w * z.sqrt()) / r));
+            }
+        }
+        Some(CoastRequest { key, directions })
+    }
+
+    pub(super) fn install_coast(
+        &mut self,
+        queue: &wgpu::Queue,
+        request: CoastRequest,
+        ownership: &[Option<bool>],
+        time: f32,
+    ) {
+        assert_eq!(ownership.len(), COAST_SIDE * COAST_SIDE);
+        let data: Vec<u32> = ownership
+            .iter()
+            .map(|v| u32::from(*v == Some(true)))
+            .collect();
+        queue.write_buffer(&self.coast, 0, bytemuck::cast_slice(&data));
+        self.coast_key = Some(request.key);
+        self.coast_complete = ownership.iter().all(Option::is_some);
+        self.coast_time = time;
     }
 
     /// Advances the particles to `ocean_time_seconds`; call after the FFT
@@ -423,9 +516,16 @@ impl OceanSpray {
             }
             None => ([0.0; 4], [1.0, 0.0, 0.0, 0.0], [0.0; 4]),
         };
+        let key = self
+            .coast_key
+            .unwrap_or(coast_key(camera_direction.normalize()).0);
+        let mut axis_u = xyz(u);
+        let mut axis_v = xyz(v);
+        axis_u[3] = (key[0] as f64 * COAST_STEP - camera_uv[0]) as f32;
+        axis_v[3] = (key[1] as f64 * COAST_STEP - camera_uv[1]) as f32;
         let frame = SprayFrame {
-            axis_u: xyz(u),
-            axis_v: xyz(v),
+            axis_u,
+            axis_v,
             shift_dt: [
                 shift[0] as f32,
                 shift[1] as f32,
@@ -514,6 +614,187 @@ fn draw_shader_source() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "Vulkan production spray retirement and shoreline-buffer regression"]
+    fn gpu_spray_retires_on_land_but_not_over_water() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let initial: Vec<[f32; 4]> = (0..64)
+            .flat_map(|_| {
+                [
+                    [0.0, 0.0, 10.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                    [10.0, 0.0, 0.0, 0.0],
+                ]
+            })
+            .collect();
+        let buffer = |name, bytes: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(name),
+                contents: bytes,
+                usage,
+            })
+        };
+        let particles = buffer(
+            "live spray",
+            bytemuck::cast_slice(&initial),
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        );
+        let mut frame = SprayFrame::zeroed();
+        frame.axis_u[3] = -512.0;
+        frame.axis_v[3] = -512.0;
+        frame.shift_dt[2] = 0.01;
+        frame.params = [300.0, 0.0, 1.0, 16.0];
+        let uniform = buffer(
+            "spray frame",
+            bytemuck::bytes_of(&frame),
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let mut fft = [[0.0f32; 4]; 8];
+        for cascade in &mut fft[2..6] {
+            cascade[2] = 128.0;
+        }
+        fft[6][0] = 1.0;
+        let fft_uniform = buffer(
+            "flat FFT",
+            bytemuck::cast_slice(&fft),
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let texture = |layers| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("flat spray field"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: layers,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        };
+        let field = texture(4).create_view(&Default::default());
+        let foam = texture(1).create_view(&Default::default());
+        let sampler = device.create_sampler(&Default::default());
+        let coast = buffer(
+            "test shoreline",
+            bytemuck::cast_slice(&[1u32; COAST_SIDE * COAST_SIDE]),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("spray retirement"),
+            size: particles.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        for gated in [false, true] {
+            // The control retains the former live-particle behaviour: it only
+            // retires at the imaginary FFT sea, ignoring dry ground below it.
+            let source = if gated {
+                update_shader_source()
+            } else {
+                update_shader_source().replace("!spray_over_water(position.xy)", "false")
+            };
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("production spray update"),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &shader,
+                entry_point: Some("cs_spray"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: particles.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&field),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: fft_uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&foam),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: coast.as_entire_binding(),
+                    },
+                ],
+            });
+            for wet in [false, true] {
+                let mut mask = [1u32; COAST_SIDE * COAST_SIDE];
+                // Only one corner of the current cell is dry: conservative
+                // lookup must reject it, including spray drifting onto land.
+                if !wet {
+                    mask[16 * COAST_SIDE + 16] = 0;
+                }
+                queue.write_buffer(&coast, 0, bytemuck::cast_slice(&mask));
+                queue.write_buffer(&particles, 0, bytemuck::cast_slice(&initial));
+                let mut encoder = device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = encoder.begin_compute_pass(&Default::default());
+                    pass.set_pipeline(&pipeline);
+                    pass.set_bind_group(0, &group, &[]);
+                    pass.dispatch_workgroups(1, 1, 1);
+                }
+                encoder.copy_buffer_to_buffer(&particles, 0, &readback, 0, particles.size());
+                queue.submit([encoder.finish()]);
+                let (tx, rx) = std::sync::mpsc::channel();
+                readback
+                    .slice(..)
+                    .map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+                device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: Some(std::time::Duration::from_secs(20)),
+                    })
+                    .unwrap();
+                rx.recv().unwrap().unwrap();
+                let mapped = readback.slice(..).get_mapped_range();
+                let values: &[[f32; 4]] = bytemuck::cast_slice(&mapped);
+                for p in values.chunks_exact(3) {
+                    assert_eq!(p[1][3] > 0.0, wet || !gated, "gated={gated} wet={wet}");
+                }
+                drop(mapped);
+                readback.unmap();
+            }
+        }
+    }
 
     fn validate(source: &str) {
         let module = wgpu::naga::front::wgsl::parse_str(source).expect("spray shader must parse");

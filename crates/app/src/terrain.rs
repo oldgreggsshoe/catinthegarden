@@ -1618,6 +1618,23 @@ impl TerrainRenderer {
         ocean_time_seconds: f32,
         gust: &crate::gust::Gust,
     ) {
+        if let Some(request) = self
+            .ocean_spray
+            .as_ref()
+            .and_then(|spray| spray.coast_request(camera_direction, ocean_time_seconds))
+        {
+            let ownership: Vec<_> = request
+                .directions
+                .iter()
+                .map(|d| d.and_then(|d| self.dense_level_open_ocean_at(d)))
+                .collect();
+            self.ocean_spray.as_mut().unwrap().install_coast(
+                &self.queue,
+                request,
+                &ownership,
+                ocean_time_seconds,
+            );
+        }
         if let Some(spray) = &mut self.ocean_spray {
             let storm = crate::ocean::sea_state_at(f64::from(ocean_time_seconds)).intensity;
             spray.update(

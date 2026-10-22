@@ -1,0 +1,90 @@
+{
+  "name": "road_network_coastal_spray",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 36,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    27,
+    36
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3863736.8690835233,
+        738085.9562961159,
+        -725865.6056542516
+      ],
+      "look_at": [
+        3863749.191091481,
+        738037.5407592284,
+        -725863.5798442061
+      ]
+    },
+    {
+      "time_s": 28.2,
+      "position": [
+        3863736.8690835233,
+        738085.9562961159,
+        -725865.6056542516
+      ],
+      "look_at": [
+        3863749.191091481,
+        738037.5407592284,
+        -725863.5798442061
+      ]
+    },
+    {
+      "time_s": 30,
+      "position": [
+        3863736.869083512,
+        738085.9562960861,
+        -725865.6056542469
+      ],
+      "look_at": [
+        3863751.447326411,
+        738043.3179504905,
+        -725887.2723640832
+      ]
+    },
+    {
+      "time_s": 36,
+      "position": [
+        3863736.869083512,
+        738085.9562960861,
+        -725865.6056542469
+      ],
+      "look_at": [
+        3863751.447326411,
+        738043.3179504905,
+        -725887.2723640832
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.4811089250062256,
+        0.397776994021848,
+        0.7812219052908697
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 49.58256179428978
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2
+  }
+}
