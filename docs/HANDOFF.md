@@ -13749,3 +13749,17 @@ All scenario assertions pass at every budget. Pixel change vs 256 (>16 levels): 
 - Used per instance when the chunk's fine cells project to < `PLANET_OCEAN_COARSE_CELL_PIXELS` (default 8) pixels (`DrawBatch.ocean_coarse`; sort key keeps batches contiguous). `PLANET_OCEAN_COARSE_STEP` = 2 (default) / 4 / 0 (off). Dense near-field ocean grids are untouched.
 - 1280x720 Immediate p50 (off -> step2 px8): road_network_driving 77.8 -> 60.7 ms (ocean triangles 571k -> 268k), ocean_hybrid_close 47.8 -> 42.8 (585k -> 332k). Other settings: step2 px4 64.9/44.5; step2 px16 58.6/40.9; step4 px8 58.6/41.4. Applying to all chunks regardless of distance (step 2/4): road 63.9/58.2, tour_mountains 40.6 -> 33.4/31.8.
 - Picture (>16 levels vs off): step2 px8 road 0.08-1.5%, hybrid_close 0.2-0.4%; px16 up to 2.7% (glint structure shifts); step4 softens glints slightly. Terrain-off seam check on ocean_rough_horizon/hybrid_close/flyover: only scattered tens of pixels differ, no line-shaped sky leaks. Full app suite: 762 pass, same 6 unrelated failures.
+
+## Graphics preset candidates (23 October)
+
+1280x720 Immediate p50 ms, one run each (orig = 256 chunks, coarse ocean off; High = 256 + step2/8px = current default; Medium = 192 + step2/8px; Low = 128 + step4/16px). Noise note: orig road/low_flight differ from earlier runs (67.8 vs 77.8, 53.7 vs 48.3), so treat single-run gaps under ~10% as uncertain.
+
+| scenario | orig | High | Medium | Low |
+|---|---|---|---|---|
+| road_network_driving | 67.8 | 60.6 | 46.6 | 36.9 |
+| ocean_hybrid_close | 47.8 | 42.7 | 38.0 | 30.3 |
+| tour_mountains | 40.7 | 33.6 | 28.0 | 22.4 |
+| low_flight_performance | 53.7 | 53.8 | 47.2 | 39.9 |
+| forest_performance | 66.1 | 66.0 | 56.8 | 48.4 |
+
+Pixels >16 levels vs orig: High 0-1.5%; Medium 0-1.5% (+0.7% low_flight, 0.3-0.8% mountains); Low 0.3-3.3% (low_flight 3.1%). All assertions pass. Presets are not wired into any UI yet; mapping is env-only (`PLANET_MAX_ACTIVE_CHUNKS`, `PLANET_OCEAN_COARSE_STEP`, `PLANET_OCEAN_COARSE_CELL_PIXELS`).
