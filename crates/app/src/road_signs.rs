@@ -109,7 +109,7 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
             &mut mesh.vertices,
             frame,
             panel,
-            WOOD_EDGE,
+            if board.village { [0.78; 3] } else { WOOD_EDGE },
             [board.width, height],
         );
         let mut back_face = back;
@@ -118,7 +118,7 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
             &mut mesh.vertices,
             frame,
             back_face,
-            WOOD_EDGE,
+            [0.55; 3],
             [board.width, height],
         );
         for i in 0..4 {
@@ -514,7 +514,7 @@ mod tests {
                 let frame = frame.unwrap();
                 let mut boards = Vec::new();
                 for quad in mesh.vertices.chunks_exact(6) {
-                    if quad[0].colour == WOOD_EDGE && quad[0].normal[2].is_finite() {
+                    if quad[0].colour == WOOD_EDGE {
                         let local = quad
                             .iter()
                             .map(|v| DVec3::from_array(v.position.map(f64::from)))
@@ -535,6 +535,69 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
+    #[test]
+    fn all_sign_kinds_have_wood_faces_black_ink_and_unchanged_kind_counts() {
+        let p = DVec3::Z * 4_001_000.0;
+        let frame = Frame::new(p.normalize(), 4e6).unwrap();
+        let boards: Vec<_> = [
+            Kind::Junction,
+            Kind::Distance,
+            Kind::Village,
+            Kind::Tunnel,
+            Kind::Branch,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, kind)| Board {
+            kind,
+            centre: p + DVec3::X * (i as f64 * 10.0),
+            right: DVec3::X,
+            up: DVec3::Z,
+            lines: vec!["OAKFORD 1234 KM >".into()],
+            width: 6.0,
+            village: kind == Kind::Village,
+            support: None,
+        })
+        .collect();
+        let mesh = bake(&boards, frame).unwrap();
+        assert_eq!(mesh.counts, [1; 5]);
+        assert!(mesh.vertices.iter().filter(|v| v.uv[0] <= -2.0).count() >= 5 * 42);
+        let glyphs: Vec<_> = mesh.vertices.iter().filter(|v| v.uv[0] >= 0.0).collect();
+        assert!(!glyphs.is_empty());
+        assert!(glyphs.iter().all(|v| v.colour.map(f32::abs) == INK));
+        assert!(
+            glyphs.iter().any(|v| v.colour[2] < 0.0),
+            "tunnel lighting flag retained"
+        );
+        assert!(
+            glyphs.iter().any(|v| v.colour[2] > 0.0),
+            "outdoor signs retain normal lighting"
+        );
+        assert!(
+            mesh.vertices
+                .iter()
+                .all(|v| v.uv.iter().all(|x| x.is_finite()))
+        );
+    }
+
+    #[test]
+    fn embedded_wood_has_a_complete_opaque_mip_chain_and_visible_grain() {
+        let pixels = wood_mips();
+        let expected: usize = (0..10).map(|level| (512usize >> level).pow(2) * 4).sum();
+        assert_eq!(pixels.len(), expected);
+        assert!(pixels.chunks_exact(4).all(|p| p[3] == 255));
+        assert!(
+            pixels[..512 * 512 * 4]
+                .chunks_exact(4)
+                .any(|p| p[0].abs_diff(pixels[0]) > 30)
+        );
+        let mean = &pixels[pixels.len() - 4..];
+        assert!(
+            mean[0] > mean[1] && mean[1] > mean[2],
+            "natural warm oak colour"
+        );
+    }
+
     #[test]
     fn sign_shader_validates() {
         let module = wgpu::naga::front::wgsl::parse_str(include_str!("road_signs.wgsl")).unwrap();

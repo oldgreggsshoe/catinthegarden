@@ -4944,12 +4944,19 @@ impl State {
             }
             if show_debug_overlay {
                 let context = ui.ctx().clone();
+                // The panel has grown taller than a small render surface:
+                // cap it to the screen and scroll the rest, and keep the lines
+                // that matter most (FPS, quality) at the top.
+                let panel_max_height = (context.content_rect().height() - 24.0).max(120.0);
                 egui::Window::new("PLANET THING")
                     .default_pos([12.0, 12.0])
+                    .max_height(panel_max_height)
+                    .vscroll(true)
                     .show(&context, |ui| {
                         ui.label("Quadtree terrain renderer");
                         ui.label(format!("GPU: {adapter_label}"));
                         ui.label(format!("Render FPS: {fps:.0}"));
+                        ui.label(quality::status_text());
                         ui.label(format!(
                             "Camera: [{:.0}, {:.0}, {:.0}] m",
                             camera_position.x, camera_position.y, camera_position.z
@@ -5093,7 +5100,6 @@ impl State {
                                 "fixed"
                             },
                         ));
-                        ui.label(quality::status_text());
                         ui.label(format!(
                             "Post: AA {}  |  bloom {}  |  HDR curve {}",
                             if blur_enabled { "on" } else { "off" },

@@ -13774,3 +13774,7 @@ Pixels >16 levels vs orig: High 0-1.5%; Medium 0-1.5% (+0.7% low_flight, 0.3-0.8
 
 - F5 now applies the preset immediately: `TerrainRenderer::set_quality` calls `PlanetLod::set_max_active_chunks` (clears split nodes and forces reselection; the instance buffer already grows on demand) and swaps the ocean coarse step (2x/4x index lists are both built at startup) and cell-pixel threshold. Individual `PLANET_*` overrides still win. `quality::active()` is now an atomic, and F5 also saves it for later launches.
 - Test hook: `PLANET_QUALITY_SWITCH=<frames>:<level>` applies a preset once, N frames into a run. road_network_driving: switching High->Low at frame 150 drops terrain triangles 589,824 -> 294,912 (ocean ~268k -> ~105k); starting Low and switching to High at 150 restores 589,824/~270k. The scenario passes both ways; full suite 764 pass, same 6 unrelated failures. Visual transition (cross-fade pop when many chunks change at once) not inspected.
+
+### F3 overlay overflow (23 October)
+
+The debug panel had grown taller than the 640x360 surface, hiding its lower lines (including Quality). The Quality line is now second from the top (below Render FPS) and the window is capped to the screen height (`max_height`, `vscroll`) so the rest scrolls. Scenarios hide the overlay, so this was built and compiled but not captured.
