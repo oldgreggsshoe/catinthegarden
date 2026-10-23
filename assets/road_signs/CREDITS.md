@@ -7,7 +7,7 @@
   name-table license record in `OFL.txt`. The renderer retains its existing
   fallback fonts for symbols missing from this face.
 - `oak.png`: generated with the built-in image-generation tool on 23 October
-  2026 for this project. Runtime downsamples it to a cached512px sRGB texture
+  2026 for this project (1254×1254 PNG output). Runtime downsamples it to a cached512px sRGB texture
   with mipmaps; no image generation or decoding occurs in movement frames.
 
 ## Wood generation prompt

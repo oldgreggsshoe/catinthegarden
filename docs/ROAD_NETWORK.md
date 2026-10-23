@@ -14,6 +14,27 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Wooden sign boards and natural lettering, 23 October
+
+All junction/distance/branch, village and tunnel boards now use warm oak grain
+and black EB Garamond12 Bold lettering instead of green/white panels and white
+sans-serif text. The unmodified font is embedded with its OFL1.1 license;
+existing egui fallback fonts remain for missing symbols. Village plaques retain
+a slightly lighter wooden rim. Boards have a closed6cm wooden body; posts and
+mounts, board centres/sizes, text, arrows and measured route distances remain.
+
+One generated albedo tile is decoded at renderer startup, reduced to512² and
+uploaded once as a10-level sRGB mip chain (~1.33MiB). Grain uses board-local
+metres and a repeating filtered sampler, rather than camera/world movement.
+Negative-U vertices distinguish wood from glyph UVs and solid hardware without
+changing the44-byte vertex layout. The wood stays cached across sign uploads;
+font layout/mesh preparation still run on the worker, in the same bounded
+single draw. Existing independent tunnel-board illumination is retained.
+
+Assets, license/provenance and full built-in image-generation prompt are in
+`assets/road_signs/`. Daylight junction and both tunnel sign faces were opened;
+kind counts, glyph alpha/winding, black ink, finite UVs and mip data are tested.
+
 ## Stronger lantern flutter and precise highway steering, 23 October
 
 Partial steering now uses a speed-dependent progressive response, separate

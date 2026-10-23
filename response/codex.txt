@@ -1,1 +1,17 @@
 Cheaper fog/aerial trial: exact storm-horizon gate kept (no picture change); 1-sample aerial in-scatter is opt-in (PLANET_ABLATE=cheap_aerial), saves ~1 ms (1-2%), changes only distant mountain haze slightly (max 22 levels); no cracks/geometry touched. Not default, pending your call on a future graphics-options menu.
+
+I’ll inspect the sign renderer and font atlas, then change the boards to textured wood with black lettering in a more natural font. I’ll keep the text, distances and placement unchanged and check screenshots before committing.
+
+I’ll use warm, weathered oak with visible grain and a traditional serif font for the black lettering. The wood texture will be cached in the existing sign draw pass, so this won’t add per-frame layout or another draw pass.
+
+The changes will be limited to the sign renderer/shader, its call site and tests, the new texture/font assets, and documentation.
+
+The oak texture and serif lettering are ready. I also noticed the other assistant’s quality-settings commit picked up the in-progress sign code, so I’m adding the assets it references now, then finishing the tests and screenshot checks. I won’t alter the quality-setting work.
+
+The daylight and tunnel screenshots now show oak-grain boards with black serif lettering. The placement checks pass, and the tunnel distances are unchanged. I’m finishing the documentation and final commit.
+
+Done and pushed: weathered oak boards with black EB Garamond serif lettering. Junction and tunnel screenshots checked; placement and distances unchanged.
+
+Wood texture: `assets/road_signs/oak.png`. Full generation prompt and font credits: `assets/road_signs/CREDITS.md`.
+
+Four sign checks pass; full suite766 passes, with six known unrelated failures.

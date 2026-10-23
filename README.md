@@ -126,6 +126,11 @@ open water, not on land, while driving or inside a bore.
 env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_DRIVE=1 cargo run --release -p planet-app
 ```
 
+Road and village signs use weathered oak boards with black EB Garamond serif
+lettering, including tunnel-distance boards. The wood texture and font are
+bundled; no installed system font is needed. Asset credits and the generation
+prompt are in `assets/road_signs/CREDITS.md`.
+
 Interior overhead boards are spaced 500m along the engineered bore, with a
 separate remaining-exit distance on each face (normally rounded to500m).
 Distances cross region/residency boundaries; portal headers remain. Automated

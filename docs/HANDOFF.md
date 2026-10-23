@@ -10,7 +10,22 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 23 October: stronger lantern flutter and precise highway steering.**
+**Current phase, 23 October: wooden sign boards and natural lettering.**
+
+- Junction/distance/branch, village and tunnel boards use oak texture with
+  black EB Garamond12 Bold serif lettering. Generated PNG and unmodified
+  embedded font/license/provenance in assets/road_signs; no system-font need.
+- Sign posts/placement/board dimensions, destination names/arrows/distances
+  and independent tunnel illumination unchanged. Boards now have closed6cm
+  wooden edges. Village arrival plaques keep a lighter wooden rim.
+- One cached512px sRGB wood tile/10 mip levels, board-local UVs in the old
+  44-byte vertex format, existing single cached draw. No per-frame decoding,
+  layout, uploads or new draw pass. Validation at end.
+- Concurrent quality/F3 work picked up the in-progress sign code/tests in
+  commits460b767/862fbad; asset commitff5c67f supplies their include_bytes.
+  Do not revert those quality changes as part of sign work.
+
+**Previous phase, 23 October: stronger lantern flutter and precise highway steering.**
 
 - Partial steering gains a speed-progressive curve: unchanged below36km/h,
   smoothly reduced to30% near-centre gain at108km/h. Full lock/grip, quick
@@ -13778,3 +13793,28 @@ Pixels >16 levels vs orig: High 0-1.5%; Medium 0-1.5% (+0.7% low_flight, 0.3-0.8
 ### F3 overlay overflow (23 October)
 
 The debug panel had grown taller than the 640x360 surface, hiding its lower lines (including Quality). The Quality line is now second from the top (below Render FPS) and the window is capped to the screen height (`max_height`, `vscroll`) so the rest scrolls. Scenarios hide the overlay, so this was built and compiled but not captured.
+
+
+## 23 October — wooden sign visual/test completion
+
+- Opened`road_network_tunnel_distances/1792756476-183926` captures1/2/3:
+  oak boards, black serif EXIT20.5KM / EXIT500M and next marker remain legible,
+  correctly directed and lit independently inside the bore. All3 replay
+  captures/finite metrics pass. Tunnel geometry/lighting is not otherwise edited.
+- Opened`road_network_signs/1792756520-184086` daylight junction capture1
+  (three-capture replay passes): existing village names/arrows/distances on
+  warm wood, natural grain and black EB Garamond lettering. Exact photographed
+  junction worker regression passes:3 approaches/6 departure fingers and
+  at least9 boards still within70m. Sign siting/routes untouched.
+- Four focused sign tests pass: real glyph alpha/finite geometry/winding,
+  shader validation, all5 board kinds/black ink/tunnel flags, complete opaque
+  wood mip chain/visible grain. Full serial766 pass/6 same known unrelated
+  failures/68 ignored. Release builds with the existing unused-startup-helper
+  warning; concurrent overlay API error was fixed by its owner before replays.
+- Texture generated with the built-in image tool; original1254² PNG is
+  `assets/road_signs/oak.png`. Renderer caches512² with mipmaps. Font is an
+  unmodified local EB Garamond12 Bold0.016, license copied from its name table.
+  Full generation prompt/provenance in CREDITS.md. No dependency/lockfile,
+  route planner, physics, camera, rain or terrain changes from this task.
+- No matched FPS claim. Same single sign draw; wood consumes one additional
+  texture sample only on board faces. Atlas/font and GPU wood remain cached.
