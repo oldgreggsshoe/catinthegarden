@@ -14,11 +14,19 @@ const PATH: &str = "test-runs/frame_pacing_latest.txt";
 struct Pacing {
     frames_seen: u32,
     intervals_ms: Vec<f32>,
+    previous_excluded: bool,
+    /// (frame number, interval ms, previous frame was a capture) for every
+    /// frame over `STALL_MS`, so a stall can be tied to what happened there.
+    stalls: Vec<(u32, f32, bool)>,
 }
+
+const STALL_MS: f32 = 100.0;
 
 static PACING: Mutex<Pacing> = Mutex::new(Pacing {
     frames_seen: 0,
     intervals_ms: Vec::new(),
+    previous_excluded: false,
+    stalls: Vec::new(),
 });
 
 /// Records one frame interval. `excluded` marks frames that are not
@@ -26,12 +34,19 @@ static PACING: Mutex<Pacing> = Mutex::new(Pacing {
 pub fn record(interval_ms: f32, excluded: bool) {
     let mut pacing = PACING.lock().unwrap();
     pacing.frames_seen = pacing.frames_seen.saturating_add(1);
-    if excluded || pacing.frames_seen <= WARMUP_FRAMES || pacing.intervals_ms.len() >= MAX_SAMPLES {
+    let after_capture = pacing.previous_excluded;
+    pacing.previous_excluded = excluded;
+    if interval_ms > STALL_MS && pacing.stalls.len() < 64 {
+        let frame = pacing.frames_seen;
+        pacing.stalls.push((frame, interval_ms, after_capture));
+    }
+    // The frame after a capture absorbs the screenshot readback wait too.
+    if excluded || after_capture || pacing.frames_seen <= WARMUP_FRAMES || pacing.intervals_ms.len() >= MAX_SAMPLES {
         return;
     }
     pacing.intervals_ms.push(interval_ms);
     if pacing.intervals_ms.len() % REWRITE_EVERY == 0 {
-        let text = summary(&pacing.intervals_ms);
+        let text = summary(&pacing.intervals_ms, &pacing.stalls);
         drop(pacing);
         let _ = std::fs::write(PATH, text);
     }
@@ -42,7 +57,7 @@ pub fn write_summary() {
     if pacing.intervals_ms.is_empty() {
         return;
     }
-    let text = summary(&pacing.intervals_ms);
+    let text = summary(&pacing.intervals_ms, &pacing.stalls);
     drop(pacing);
     let _ = std::fs::write(PATH, text);
 }
@@ -52,7 +67,7 @@ fn percentile(sorted: &[f32], fraction: f64) -> f32 {
     sorted[index]
 }
 
-fn summary(intervals_ms: &[f32]) -> String {
+fn summary(intervals_ms: &[f32], stalls: &[(u32, f32, bool)]) -> String {
     let mut sorted = intervals_ms.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
     let count = sorted.len();
@@ -63,8 +78,15 @@ fn summary(intervals_ms: &[f32]) -> String {
         1000.0 / (slowest.iter().map(|&v| v as f64).sum::<f64>() / slowest.len() as f64);
     let over_33 = sorted.iter().filter(|&&v| v > 33.4).count();
     let over_50 = sorted.iter().filter(|&&v| v > 50.0).count();
+    let mut stall_lines = String::new();
+    for (frame, interval, after_capture) in stalls {
+        stall_lines.push_str(&format!(
+            "stall frame {frame} {interval:.1}ms{}\n",
+            if *after_capture { " (follows a capture frame)" } else { "" }
+        ));
+    }
     format!(
-        "frames {count} (first {WARMUP_FRAMES} and captures excluded)\n\
+        "{stall_lines}frames {count} (first {WARMUP_FRAMES}, captures and the frame after each excluded)\n\
          mean_ms {mean:.3}\np50_ms {:.3}\np95_ms {:.3}\np99_ms {:.3}\nmax_ms {:.3}\n\
          one_percent_low_fps {one_percent_low_fps:.1}\nframes_over_33ms {over_33}\nframes_over_50ms {over_50}\n",
         percentile(&sorted, 0.5),
@@ -82,7 +104,7 @@ mod tests {
     fn summary_reports_percentiles_and_one_percent_low() {
         let mut values = vec![10.0f32; 99];
         values.push(100.0);
-        let text = summary(&values);
+        let text = summary(&values, &[]);
         assert!(text.contains("p50_ms 10.000"), "{text}");
         assert!(text.contains("max_ms 100.000"), "{text}");
         assert!(text.contains("one_percent_low_fps 10.0"), "{text}");

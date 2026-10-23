@@ -13818,3 +13818,9 @@ The debug panel had grown taller than the 640x360 surface, hiding its lower line
   route planner, physics, camera, rain or terrain changes from this task.
 - No matched FPS claim. Same single sign draw; wood consumes one additional
   texture sample only on board faces. Atlas/font and GPU wood remain cached.
+
+## The ~160 ms "stalls" were screenshot readback (23 October)
+
+- `frame_pacing` now lists every frame over 100 ms in `frame_pacing_latest.txt` with its frame number and whether the previous frame was a capture. In ocean_hybrid_close every post-warm-up stall (frames 31/122/212, 130-150 ms) directly follows a capture frame; the same holds in road_network_driving (125-180 ms, incl. the earlier 340 ms spike) -- the readback wait lands on the next frame's interval. Frames 3-4 (200-600 ms) are first-use pipeline compilation, inside the warm-up window.
+- The recorder now also excludes the frame after each capture. Result with captures out: ocean_hybrid_close p50 43.0 / p99 43.7 / max 43.9 ms (was p99 157-169), road_network_driving p50 60.7 / p99 68.4 / max 78.6, forest_performance p99 66.7. So there is no in-game stall in these scenes; earlier p99 numbers in this file that came from captured scenarios were harness artifacts.
+- Not covered: interactive play (no captures there) -- stalls from tile streaming, weather uploads or the live quality switch would show in the same file during a real session; run the game with `PLANET_PRESENT_MODE=immediate`, play, quit, and read `test-runs/frame_pacing_latest.txt`.
