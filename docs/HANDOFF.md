@@ -13841,3 +13841,11 @@ counts589824 terrain/97344 ocean triangles,0km/h. Both attempted timings
 contaminated by concurrent Claude GPU replays; discarded, our renderer closed.
 No behaviour/source changes. Evidence, options and exact next experiments in
 `docs/TUNNEL_ENTRANCE_PROFILE.md`; obtain an exclusive GPU window before timing.
+
+## CPU terrain-update savings (23 October)
+
+Per-frame CPU in `TerrainRenderer::update` (lap timers, nothing drawn, 640x360): LOD select 3.2-4.7 ms, instance prep (edge stitch 2.5-2.8 ms/frame), seam diagnostic 2.2-4.3 ms, tile resolve up to 3 ms (near-field window rebuilds). Changes, all output-identical (pixels compared old-binary vs new over tour_mountains, tour_coast, village_pov, ocean_hybrid_close, low_flight_performance, road_network_driving: 0 differing pixels in every capture):
+- Edge-stitch words cached per active node; on a topology change only entries within twice the summed angular diagonals of any loaded/unloaded node are dropped (checked against full recomputation in the scenarios above with a temporary assertion hook, since removed). Stitch cost 2.76 -> ~1.2 ms/frame.
+- `height_footprint_is_strictly_land` answers cached per (tile or near-field generation, sub-footprint); `best_available_ancestor` lookups cached per requested tile.
+- Interactive sessions (no `--scenario`; or `PLANET_SEAM_METRIC_THROTTLE=1` for measurement) recompute the outmap seam diagnostic at most every 0.5 s and turn off the placeholder-terrain seam bookkeeping in `PlanetLod` (`set_seam_diagnostics`), which outmap rendering never reads. Scenarios keep exact values. Seam block 2.2-4.3 -> 0.1-0.2 ms; LOD select 3.2-4.7 -> 2.5 ms.
+- Net: nothing-drawn road frame 12.4 -> 11.5 ms (unthrottled scenario) / 10.7 ms (throttled, as interactive). tour_coast at Low is still GPU-limited (13.8 ms unchanged), so this helps CPU-bound machines/scenes, not frame time in the scenes measured earlier. Remaining CPU: ship physics ~5.2 ms, LOD select 2.5 ms, near-field window rebuild.

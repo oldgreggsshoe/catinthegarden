@@ -956,6 +956,20 @@ pub struct TerrainRenderer {
     // The exact unguttered height grid uploaded to the near-field texture.
     // Its UVs cannot be used to test a single guttered source tile.
     raster_near_field_heights: Vec<f32>,
+    /// Bumped whenever the near-field window's heights are replaced, so cached
+    /// per-footprint answers about them can be discarded.
+    raster_near_field_generation: u64,
+    /// `height_footprint_is_strictly_land` answers, keyed by what they depend on.
+    land_footprint_cache: HashMap<(Option<TileKey>, u64, [u32; 4]), bool>,
+    /// `best_available_ancestor` per requested tile. The manifest never
+    /// changes, and each lookup is a binary search per ancestor level.
+    resolved_source_cache: HashMap<TileKey, TileKey>,
+    /// Edge-stitch words per active node. They depend only on the active node
+    /// set, so they are kept until the topology changes.
+    stitch_cache: HashMap<QuadtreeNode, u32>,
+    /// Interactive sessions recompute the seam diagnostic at most this often.
+    seam_metric_min_interval: Option<std::time::Duration>,
+    seam_metric_computed_at: Option<std::time::Instant>,
     /// CPU-only dense-level tiles held for village siting.
     ///
     /// The streaming cache cannot serve this: it holds whatever the LOD
@@ -978,6 +992,16 @@ impl TerrainRenderer {
     /// Opt-in system rendering only; the single-body default remains L18.
     pub(crate) fn set_distant_level_limit(&mut self, level: Option<u8>) {
         self.lod.set_maximum_level(level.unwrap_or(MAX_LOD_LEVEL));
+    }
+
+    /// Interactive play does not need the seam diagnostic every frame; it is
+    /// only logged. Recompute it at most every half second. Scenarios leave
+    /// this off so their assertions see the exact value.
+    pub fn throttle_seam_metric(&mut self) {
+        self.seam_metric_min_interval = Some(std::time::Duration::from_millis(500));
+        if matches!(self.source, TerrainDataSource::Outmap(_)) {
+            self.lod.set_seam_diagnostics(false);
+        }
     }
 
     fn ocean_index_slot(&self) -> usize {
@@ -1539,6 +1563,12 @@ impl TerrainRenderer {
             max_outmap_seam_delta_meters: 0.0,
             raster_near_field: None,
             raster_near_field_heights: Vec::new(),
+            raster_near_field_generation: 0,
+            land_footprint_cache: HashMap::new(),
+            stitch_cache: HashMap::new(),
+            resolved_source_cache: HashMap::new(),
+            seam_metric_min_interval: None,
+            seam_metric_computed_at: None,
             village_siting_tiles: HashMap::new(),
             flat_triangle_experiment,
         };
@@ -2721,6 +2751,8 @@ impl TerrainRenderer {
         let Some(key) = key else {
             self.raster_near_field = None;
             self.raster_near_field_heights.clear();
+            self.raster_near_field_generation += 1;
+            self.land_footprint_cache.clear();
             return;
         };
         let Some(sources) = self.near_field_sources(key) else {
@@ -2751,6 +2783,8 @@ impl TerrainRenderer {
             size_of::<u8>() as u32,
         );
         self.raster_near_field_heights = window.heights_meters;
+        self.raster_near_field_generation += 1;
+        self.land_footprint_cache.clear();
         self.raster_near_field = Some(sources);
     }
 
@@ -2889,6 +2923,26 @@ impl TerrainRenderer {
         };
         let topology_changed =
             !lod_update.loaded_nodes.is_empty() || !lod_update.unloaded_nodes.is_empty();
+        if topology_changed {
+            // A node's stitch word depends only on the active nodes touching
+            // it, so keep every entry far from every change. 'Far' is twice
+            // the sum of the two nodes' diagonal angular sizes, which a
+            // touching pair can never exceed.
+            let changed: Vec<(DVec3, f64)> = lod_update
+                .loaded_nodes
+                .iter()
+                .chain(lod_update.unloaded_nodes.iter())
+                .map(|node| (node.center_direction(), node_angular_diagonal(node.level)))
+                .collect();
+            self.stitch_cache.retain(|node, _| {
+                let center = node.center_direction();
+                let size = node_angular_diagonal(node.level);
+                changed.iter().all(|(other_center, other_size)| {
+                    center.dot(*other_center).clamp(-1.0, 1.0).acos()
+                        > 2.0 * (size + other_size)
+                })
+            });
+        }
         // Geometry is a shared canonical grid, so every selected leaf is
         // immediately drawable. There is no resident-parent fallback and no
         // delayed whole-region promotion from one giant triangle to a fine
@@ -2962,7 +3016,14 @@ impl TerrainRenderer {
             let mut load_candidates = Vec::new();
             for render_node in &render_nodes {
                 let requested_key = tile_key(render_node.node)?;
-                let preferred_source_key = outmap.resolve_tile(requested_key)?;
+                let preferred_source_key = match self.resolved_source_cache.get(&requested_key) {
+                    Some(source_key) => *source_key,
+                    None => {
+                        let source_key = outmap.resolve_tile(requested_key)?;
+                        self.resolved_source_cache.insert(requested_key, source_key);
+                        source_key
+                    }
+                };
                 if !self.tile_cache.contains_key(&preferred_source_key)
                     && !self.pending_tile_loads.contains(&preferred_source_key)
                 {
@@ -3112,7 +3173,10 @@ impl TerrainRenderer {
             let anchor_u = (u_min + u_max) * 0.5;
             let anchor_v = (v_min + v_max) * 0.5;
             let edge_stitch = if render_node.active {
-                edge_stitch_info_indexed(render_node.node, &active_node_index)
+                *self
+                    .stitch_cache
+                    .entry(render_node.node)
+                    .or_insert_with(|| edge_stitch_info_indexed(render_node.node, &active_node_index))
             } else {
                 0
             };
@@ -3133,11 +3197,17 @@ impl TerrainRenderer {
             self.surface_node_index
                 .insert(render_node.node, surface_index);
             let may_contain_ocean = match tile_key {
-                Some(_) if near_field => !height_footprint_is_strictly_land(
-                    &self.raster_near_field_heights,
-                    source_uv_scale,
-                    source_uv_offset,
-                ),
+                Some(_) if near_field => {
+                    let cache_key = (
+                        None,
+                        self.raster_near_field_generation,
+                        footprint_cache_bits(source_uv_scale, source_uv_offset),
+                    );
+                    let heights = &self.raster_near_field_heights;
+                    !*self.land_footprint_cache.entry(cache_key).or_insert_with(|| {
+                        height_footprint_is_strictly_land(heights, source_uv_scale, source_uv_offset)
+                    })
+                }
                 Some(key) => {
                     let tile = self
                         .tile_cache
@@ -3147,11 +3217,20 @@ impl TerrainRenderer {
                         if source_uv_scale == [1.0, 1.0] && source_uv_offset == [0.0, 0.0] {
                             tile.complete_logical_footprint_is_land
                         } else {
-                            height_footprint_is_strictly_land(
-                                &tile.heights_meters,
-                                source_uv_scale,
-                                source_uv_offset,
-                            )
+                            // A tile's heights never change under its key, so the
+                            // answer for a given sub-footprint is cached.
+                            let cache_key = (
+                                Some(key),
+                                0,
+                                footprint_cache_bits(source_uv_scale, source_uv_offset),
+                            );
+                            *self.land_footprint_cache.entry(cache_key).or_insert_with(|| {
+                                height_footprint_is_strictly_land(
+                                    &tile.heights_meters,
+                                    source_uv_scale,
+                                    source_uv_offset,
+                                )
+                            })
                         };
                     !footprint_is_land
                 }
@@ -3300,7 +3379,12 @@ impl TerrainRenderer {
 
         let metrics = lod_update.metrics;
         let max_seam_delta_meters = if matches!(&self.source, TerrainDataSource::Outmap(_)) {
-            if topology_changed || tiles_loaded > 0 {
+            let seam_metric_due = self.seam_metric_min_interval.is_none_or(|interval| {
+                self.seam_metric_computed_at
+                    .is_none_or(|computed_at| computed_at.elapsed() >= interval)
+            });
+            if (topology_changed || tiles_loaded > 0) && seam_metric_due {
+                self.seam_metric_computed_at = Some(std::time::Instant::now());
                 self.max_outmap_seam_delta_meters = max_outmap_seam_delta(
                     &active_render_nodes,
                     &active_resolved_tiles,
@@ -5136,6 +5220,15 @@ pub(crate) fn is_open_ocean_sample(height_meters: f32, biome: BiomeId) -> bool {
 /// Returning false is deliberately conservative: zero, negative, malformed,
 /// or invalid bounds retain the ocean shell and let the fragment ownership
 /// test make the final decision.
+/// Upper bound on a quadtree node's angular diagonal at this level.
+fn node_angular_diagonal(level: u8) -> f64 {
+    std::f64::consts::FRAC_PI_2 / f64::from(1_u32 << level) * 1.5
+}
+
+fn footprint_cache_bits(scale: [f32; 2], offset: [f32; 2]) -> [u32; 4] {
+    [scale[0].to_bits(), scale[1].to_bits(), offset[0].to_bits(), offset[1].to_bits()]
+}
+
 fn height_footprint_is_strictly_land(
     heights: &[f32],
     source_uv_scale: [f32; 2],

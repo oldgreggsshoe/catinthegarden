@@ -1990,6 +1990,9 @@ impl State {
             Some((&shadow_height_view, shadow_face_quads)),
         )
         .expect("terrain renderer must initialize");
+        if scenario.is_none() || std::env::var_os("PLANET_SEAM_METRIC_THROTTLE").is_some() {
+            terrain.throttle_seam_metric();
+        }
         startup_profile::mark("terrain renderer");
         let road =
             (road::enabled() && body::active() == body::PLANET && !network_active).then(|| {

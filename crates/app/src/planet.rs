@@ -1640,6 +1640,10 @@ impl Ord for SplitCandidate {
 pub struct PlanetLod {
     policy: LodPolicy,
     max_active_chunks: usize,
+    /// Placeholder-terrain seam bookkeeping (boundary samples per loaded and
+    /// unloaded node). Pure diagnostics; outmap terrain measures its seams
+    /// separately, so interactive play turns this off.
+    seam_diagnostics: bool,
     split_nodes: HashSet<QuadtreeNode>,
     active_nodes: Vec<QuadtreeNode>,
     seam_samples: HashMap<[i64; 3], SeamSample>,
@@ -1668,6 +1672,7 @@ impl PlanetLod {
         Self {
             policy,
             max_active_chunks,
+            seam_diagnostics: true,
             split_nodes: HashSet::new(),
             active_nodes: Vec::new(),
             seam_samples: HashMap::new(),
@@ -1685,6 +1690,10 @@ impl PlanetLod {
     /// A distant-body presentation may use a sub-L2 ceiling. Invalidate the
     /// cached selection, but retain the tree so ordinary geomorphing still
     /// handles the transition back to surface detail.
+    pub fn set_seam_diagnostics(&mut self, enabled: bool) {
+        self.seam_diagnostics = enabled;
+    }
+
     /// Change the leaf budget on a running selector. Splits made under the
     /// old budget are dropped and reselected so the new cap holds at once.
     pub fn set_max_active_chunks(&mut self, max_active_chunks: usize) {
@@ -2434,6 +2443,9 @@ impl PlanetLod {
         loaded_nodes: &[QuadtreeNode],
         unloaded_nodes: &[QuadtreeNode],
     ) {
+        if !self.seam_diagnostics {
+            return;
+        }
         for node in unloaded_nodes {
             for (key, _) in node_boundary_samples(*node) {
                 if let std::collections::hash_map::Entry::Occupied(mut entry) =
