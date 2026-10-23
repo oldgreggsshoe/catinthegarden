@@ -10,7 +10,23 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 23 October: wooden sign boards and natural lettering.**
+**Current phase, 23 October: exact-output entrance excavation savings.**
+
+- Cell metadata now distinguishes open-road/court references from bores, so
+  irrelevant open-cut scans are skipped. Unchanged first-pass terrain heights
+  return rather than repeating the same scan. Buffer/query budgets unchanged.
+- Matched High1280x800 X11/Immediate entrance68.1–68.3 ->63.8–63.9ms;
+  actual interactive stationary start72.8 ->68.3ms (~13.7 ->14.6FPS). Modest
+ 6–7% FPS improvement, not a complete solution to the entrance cost.
+-37960 GPU samples bit-identical in cut height/normal and flags/ownership;
+ 8 road Vulkan checks pass. Full769 pass/same6 unrelated failures/69 ignored.
+  New stationary-driving scenario; all6 portal/walk matched captures and both
+  stationary captures pixel-identical, opened, replay assertions pass.
+- No quality, geometry, lighting, routing, camera or render-order changes.
+  Temporary attribution/early-road probes removed. Claude's a9cc600 changes
+  retained. Detailed evidence/options: docs/TUNNEL_ENTRANCE_PROFILE.md.
+
+**Previous phase, 23 October: wooden sign boards and natural lettering.**
 
 - Junction/distance/branch, village and tunnel boards use oak texture with
   black EB Garamond12 Bold serif lettering. Generated PNG and unmodified
@@ -13867,3 +13883,10 @@ No output-identical saving was found: the named terms are each small, the FFT su
 - Measured: advance_ship 5.2 ms/frame in road_network_driving (4 steps x 0.65 ms per hull x two hulls). Each buoyancy column asked the wave surface three separate questions per step (height, vertical velocity, slope), and on the Gerstner sea those evaluate every wave four times between them.
 - `ocean::global_wave_probe` evaluates each wave once and returns all three, bit-identical to the separate calls (unit test over 240 point/time/depth combinations, unit and non-unit directions, compared by `to_bits`); `step_ship_in_water` uses it. advance_ship 5.19 -> 1.67 ms (road_network_driving), 2.76 -> 0.89 ms (ocean_hybrid_close). Captures old vs new pixel-identical in ocean_ship_float, ocean_hybrid_close, ocean_rough_horizon and road_network_driving.
 - Not improved: with `PLANET_OCEAN_FFT=1` it is still ~6 ms (0.73 ms/step/hull). The FFT path already reuses its last sample across the three queries, so the cost is the CPU surface inversion itself (Newton iteration over bilinear lattice samples per buoyancy column); a speed-up there needs a warm-started inverse or fewer columns, neither bit-identical.
+
+Final entrance validation: release build completed before new unrelated
+road.rs/road_network_mesh.rs material/paint work appeared in the working tree.
+Those edits were preserved and excluded from the entrance commit. The eight
+GPU/full-suite/matched-image results above cover the entrance change on the
+recorded immutable before/after builds, not the later material edits. No test
+renderer remains running; the GPU is available again.

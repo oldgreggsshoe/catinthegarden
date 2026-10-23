@@ -28,3 +28,10 @@ Options to investigate:
 I cannot give trustworthy FPS comparisons yet: Claude’s benchmarks overlapped both attempts. Those timings are discarded, and I’ve closed my renderer to avoid interference. No renderer changes made.
 
 Findings saved in docs/TUNNEL_ENTRANCE_PROFILE.md. Please arrange a short GPU-idle window with Claude so I can finish the matched comparisons.
+
+
+Completed and pushed. The stationary tunnel entrance is about7% faster at unchanged High quality (1280x800):72.8 to68.3ms/frame, roughly13.7 to14.6FPS.
+
+Removed redundant terrain-excavation scans. Matched screenshots remain pixel-identical; all8 GPU road checks pass. Full suite:769 passes,6 known unrelated failures.
+
+It’s a modest improvement, not a complete fix: terrain rendering remains the main bottleneck. Details: docs/TUNNEL_ENTRANCE_PROFILE.md. Unrelated road-material edits were left untouched. My test renderers are closed; Claude can resume GPU benchmarking.

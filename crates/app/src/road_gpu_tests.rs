@@ -115,6 +115,14 @@ fn execute_cut_samples_with_ownership(
         "@group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;\n@group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;\n@compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id: vec3<u32>) { let c=cases[id.x]; results[id.x]=vec4<f32>(road_terrain_cut(c.xyz,c.w).height,road_tunnel_void(c.xyz,c.w),select(0.0,1.0,road_tunnel_lining_owns(c.xyz,c.w)),select(0.0,1.0,road_clears_tree(c.xyz,c.w))); }"
     );
     let source = source.replace("road_tunnel_lining_owns(c.xyz,c.w)", ownership);
+    execute_cut_shader(profile_data, cases, source)
+}
+
+fn execute_cut_shader(
+    profile_data: &[[f32; 4]],
+    cases: &[[f32; 4]],
+    source: String,
+) -> Vec<[f32; 4]> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::VULKAN,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -741,5 +749,95 @@ fn gpu_parking_courts_match_cpu_without_zero_length_road_math() {
                 assert!(r[2] > 0.5, "pavement owns its pixels: {r:?}");
             }
         }
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan; exact excavation fast-path comparison"]
+fn gpu_excavation_fast_paths_preserve_height_normals_flags_and_ownership() {
+    use crate::road_network_field::{Field, Frame, Segment};
+    let shader = include_str!("road_cuts.wgsl");
+    assert!(shader.contains("if (list.z & 2u)==0u { return result; }"));
+    assert!(shader.contains("if result.height==uncut { return result; }"));
+    assert!(shader.contains("if (list.z & 2u)==0u { return false; }"));
+    // Reference retains the old two-pass full candidate scan. Use the same
+    // arithmetic, only removing the new shortcuts, and compare GPU bit patterns.
+    let start = shader.find("fn road_network_terrain_cut(").unwrap();
+    let end = shader.find("fn road_network_tunnel_void(").unwrap();
+    let reference_cut = shader[start..end]
+        .replace("road_network_terrain_cut", "reference_cut")
+        .replace("if (list.z & 2u)==0u { return result; }", "")
+        .replace("if result.height==uncut { return result; }", "");
+    let start = shader.find("fn road_network_open_cut_owns(").unwrap();
+    let end = start + shader[start..].find("\n}\n").unwrap() + 3;
+    let reference_owns = shader[start..end]
+        .replace("road_network_open_cut_owns", "reference_owns")
+        .replace("if (list.z & 2u)==0u { return false; }", "");
+    let source = format!(
+        "const ROAD_CUTS_ENABLED: bool = true;\n{}\n{reference_cut}\n{reference_owns}\n{}",
+        shader.replace("@group(2) @binding(21)", "@group(0) @binding(1)"),
+        r#"
+        @group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;
+        @group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;
+        @compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id: vec3<u32>) {
+            let c=cases[id.x];
+            let fast=road_network_terrain_cut(c.xyz,c.w);
+            let slow=reference_cut(c.xyz,c.w);
+            let same=all(bitcast<vec4<u32>>(vec4<f32>(fast.height,fast.normal))
+                ==bitcast<vec4<u32>>(vec4<f32>(slow.height,slow.normal)));
+            results[id.x]=vec4<f32>(select(0.0,1.0,same),
+                select(0.0,1.0,fast.lowered==slow.lowered && fast.paved==slow.paved),
+                select(0.0,1.0,road_network_open_cut_owns(c.xyz,c.w)==reference_owns(c.xyz,c.w)),
+                select(0.0,1.0,fast.lowered));
+        }"#
+    );
+    for up in [DVec3::Z, DVec3::new(1.0, 2.0, 3.0).normalize()] {
+        let frame = Frame::new(up, crate::planet::planet_radius_meters()).unwrap();
+        let segment = |a: [f64; 3], b: [f64; 3], tunnel| Segment {
+            a: a.into(),
+            b: b.into(),
+            tunnel,
+            reach: 48.0,
+            floor_depth: 6.0,
+            junction_a: false,
+            junction_b: false,
+        };
+        let mut field = Field::build(
+            frame,
+            vec![
+                segment([-240.0, -120.0, 100.0], [240.0, 120.0, 120.0], false),
+                segment([-240.0, 160.0, 80.0], [240.0, 160.0, 100.0], true),
+                segment([-80.0, 160.0, 90.0], [120.0, 300.0, 100.0], true),
+                crate::road_parking::segment(DVec3::new(160.0, -160.0, 110.0)),
+            ],
+        )
+        .unwrap();
+        field.set_geometry_window(glam::DVec2::ZERO, 1000.0);
+        let mut cases = Vec::new();
+        for x in -32..=32 {
+            for y in -32..=40 {
+                for z in [50.0, 100.0, 130.0, 200.0] {
+                    let world = frame.world(DVec3::new(x as f64 * 8.0, y as f64 * 8.0, z));
+                    let d = world.normalize().as_vec3();
+                    cases.push([d.x, d.y, d.z, (world.length() - frame.radius) as f32]);
+                }
+            }
+        }
+        let results = execute_cut_shader(field.gpu_data(), &cases, source.clone());
+        for (case, result) in cases.iter().zip(&results) {
+            assert_eq!(
+                &result[..3],
+                &[1.0; 3],
+                "fast path differs at {case:?}: {result:?}"
+            );
+        }
+        assert!(
+            results.iter().any(|r| r[3] > 0.5),
+            "must exercise actual lowered terrain"
+        );
+        assert!(
+            results.iter().any(|r| r[3] < 0.5),
+            "must exercise unchanged terrain"
+        );
     }
 }

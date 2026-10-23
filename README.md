@@ -159,6 +159,11 @@ Unknown terrain remains dry until its resident data is available; the rain
 renderer is unchanged.
 `road_network_tunnel_performance` and `road_network_tunnel_lighting` replay a
 deep view and the user's two interior positions with changing sun directions.
+`road_network_entrance_performance` is the stationary driving benchmark at
+that undersea entrance; run with `PLANET_ROAD_NETWORK_SITE=longest_undersea`
+and `PLANET_ROAD_SIGNS_WAIT=1` as well as the road flag. See
+[entrance profiling](docs/TUNNEL_ENTRANCE_PROFILE.md) for measured results and
+matched-run settings.
 
 Omit `--scenario` for ordinary walking/free flight. Mouse/WASD and **G** work as
 below. The default interactive start is on the **dry landward approach** to the

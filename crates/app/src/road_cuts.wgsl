@@ -99,7 +99,7 @@ fn road_network_cell(xy: vec2<f32>) -> vec3<u32> {
         let entry=road_cut_data[4u+((hash+probe)&(NETWORK_BUCKETS-1u))];
         if entry.w<0.5 { break; }
         if all(vec2<i32>(entry.xy)==cell) {
-            return vec3<u32>(vec2<u32>(entry.zw),select(0u,1u,fract(entry.w)>0.1));
+            return vec3<u32>(vec2<u32>(entry.zw),u32(fract(entry.w)*4.0));
         }
     }
     return vec3<u32>(0u);
@@ -124,6 +124,7 @@ fn road_network_terrain_cut(direction: vec3<f32>, uncut: f32) -> RoadTerrainCut 
         let p=road_network_local(direction,result.height);
         let list=road_network_cell(p.xy);
         result=RoadTerrainCut(uncut,direction,false,false);
+        if (list.z & 2u)==0u { return result; }
         for (var j=0u; j<min(list.y,64u); j+=1u) {
             let index=road_network_segment(list.x+j);
             let a=road_cut_data[index];
@@ -163,6 +164,9 @@ fn road_network_terrain_cut(direction: vec3<f32>, uncut: f32) -> RoadTerrainCut 
                 *6.0*fade*(1.0-fade)/8.0*displacement/max(offset,0.00001);
             result.normal=normalize(up-road_cut_data[1].xyz*gradient.x-road_cut_data[2].xyz*gradient.y);
         }
+        // With unchanged height the next radial projection and candidate scan
+        // are identical, including paved ownership and the default normal.
+        if result.height==uncut { return result; }
     }
     return result;
 }
@@ -174,7 +178,7 @@ fn road_network_void_local(p: vec3<f32>) -> f32 {
     // Uniform no-bore regions and open-only cells are the common case.
     if road_cut_data[0].z<0.5 { return -1000000.0; }
     let list=road_network_cell(p.xy);
-    if list.z==0u { return -1000000.0; }
+    if (list.z & 1u)==0u { return -1000000.0; }
     var result=-1000000.0;
     for (var j=0u; j<min(list.y,64u); j+=1u) {
         let index=road_network_segment(list.x+j);
@@ -252,6 +256,7 @@ fn road_network_open_cut_owns(direction: vec3<f32>, height: f32) -> bool {
     // interpolated terrain poking through the asphalt (and f32 radial error
     // can exceed the apron excavation itself).
     let list=road_network_cell(p.xy);
+    if (list.z & 2u)==0u { return false; }
     for (var j=0u; j<min(list.y,64u); j+=1u) {
         let index=road_network_segment(list.x+j);
         let a=road_cut_data[index]; let b=road_cut_data[index+1u];

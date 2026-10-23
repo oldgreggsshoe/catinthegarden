@@ -187,12 +187,16 @@ impl Field {
                 .map(|p| 4 + ((hash(x, y) + p) & (BUCKETS - 1)))
                 .find(|&b| data[b][3] == 0.0)
                 .ok_or("network excavation hash probe budget exceeded")?;
-            // Fractional metadata preserves the integer reference count and
-            // existing buffer size. Most road cells contain no tunnel at all:
-            // terrain fragments need not walk their open-road references just
-            // to discover that fact on every pixel.
+            // Two fractional bits preserve the integer reference count and
+            // buffer size: bit0 has bores, bit1 has open roads/courts. Both
+            // vertex cuts and fragment masks can skip irrelevant cell lists.
             let bore_flag = if list.iter().any(|&i| segments[i].tunnel) {
                 0.25
+            } else {
+                0.0
+            };
+            let open_flag = if list.iter().any(|&i| !segments[i].tunnel) {
+                0.5
             } else {
                 0.0
             };
@@ -200,7 +204,7 @@ impl Field {
                 x as f32,
                 y as f32,
                 reference as f32,
-                list.len() as f32 + bore_flag,
+                list.len() as f32 + bore_flag + open_flag,
             ];
             for &i in list {
                 data[REFS + reference / 4][reference % 4] = i as f32;
@@ -606,6 +610,36 @@ mod tests {
         assert!(shader.contains(&format!("min(list.y,{}u)", MAX_PER_CELL)));
     }
     #[test]
+    fn network_cell_flags_preserve_full_capacity_counts_for_every_kind() {
+        let frame = Frame::new(DVec3::Z, 4e6).unwrap();
+        let open = segment([0.0, 0.0, 100.0], [40.0, 0.0, 100.0], false);
+        let bore = Segment {
+            tunnel: true,
+            ..open
+        };
+        let court = crate::road_parking::segment(DVec3::new(20.0, 0.0, 100.0));
+        for (segments, flags) in [
+            (vec![open; MAX_PER_CELL], 2),
+            (vec![bore; MAX_PER_CELL], 1),
+            (vec![court; MAX_PER_CELL], 2),
+            (
+                (0..MAX_PER_CELL)
+                    .map(|i| if i % 2 == 0 { open } else { bore })
+                    .collect(),
+                3,
+            ),
+        ] {
+            let field = Field::build(frame, segments).unwrap();
+            let entry = (0..PROBES)
+                .map(|p| field.data[4 + ((hash(0, 0) + p) & (BUCKETS - 1))])
+                .find(|b| b[3] > 0.0 && b[0] == 0.0 && b[1] == 0.0)
+                .unwrap();
+            assert_eq!(entry[3] as usize, MAX_PER_CELL);
+            assert_eq!((entry[3].fract() * 4.0) as u32, flags);
+        }
+    }
+
+    #[test]
     fn network_field_gpu_layout_hash_and_reference_lists_match_cpu() {
         let f = Frame::new(DVec3::Z, 4e6).unwrap();
         let field = Field::build(
@@ -630,9 +664,14 @@ mod tests {
                 .map(|r| field.data[REFS + r / 4][r % 4] as usize)
                 .collect();
             assert_eq!(&actual, expected);
+            let flags = (entry[3].fract() * 4.0) as u32;
             assert_eq!(
-                entry[3].fract() > 0.0,
+                flags & 1 != 0,
                 expected.iter().any(|&i| field.segments[i].tunnel)
+            );
+            assert_eq!(
+                flags & 2 != 0,
+                expected.iter().any(|&i| !field.segments[i].tunnel)
             );
         }
     }

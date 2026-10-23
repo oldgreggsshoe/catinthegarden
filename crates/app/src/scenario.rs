@@ -369,6 +369,7 @@ scenarios! {
     "road_network_tunnel_performance" => "../scenarios/road_network_tunnel_performance.json",
     "road_network_tunnel_lighting" => "../scenarios/road_network_tunnel_lighting.json",
     "road_network_lantern_close" => "../scenarios/road_network_lantern_close.json",
+    "road_network_entrance_performance" => "../scenarios/road_network_entrance_performance.json",
     "road_network_driving" => "../scenarios/road_network_driving.json",
     "road_network_cut_walls" => "../scenarios/road_network_cut_walls.json",
     "road_network_cut_walls_exit" => "../scenarios/road_network_cut_walls_exit.json",
@@ -1189,11 +1190,23 @@ mod tests {
         assert_eq!(replay.expected_screenshots(), 4);
     }
 
+    #[test]
+    fn entrance_performance_drives_but_stays_parked_until_the_last_frame() {
+        let replay = ScenarioRunner::load("road_network_entrance_performance").unwrap();
+        assert!(replay.replays_driving() && replay.replays_forward_flight());
+        assert_eq!(replay.definition.waypoints.len(), 1);
+        assert_eq!(
+            replay.definition.forward_flight_start_time_seconds,
+            Some(replay.definition.duration_seconds)
+        );
+        assert_eq!(replay.expected_screenshots(), 1);
+    }
+
     /// The table is the only list, so a name cannot be loadable but unlisted,
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 148);
+        assert_eq!(SCENARIO_NAMES.len(), 149);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));
