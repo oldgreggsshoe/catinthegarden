@@ -100,6 +100,18 @@ fn project_vertex(input: Input) -> Output {
 // Ultraviolet fluorescence of the timber: a dim violet that only shows where
 // the ordinary lighting is nearly dark (night, unlit bores), never by day.
 const WOOD_UV_GLOW = vec3<f32>(0.20, 0.04, 0.55) * 0.09;
+const WOOD_GLOW_BLUE = vec3<f32>(0.07, 0.09, 0.70) * 0.09;
+const WOOD_GLOW_RED = vec3<f32>(0.46, 0.03, 0.42) * 0.09;
+// Slowly drifting hue: violet shading toward blue in one direction and red in
+// the other. Three plane waves whose wave-vectors are integer multiples of the
+// 256 m material period, so the field is seamless across the wrapped
+// material_position (wavelengths 256/128/85 m, fixed to the ground).
+fn wood_glow_colour(p: vec3<f32>) -> vec3<f32> {
+    let k = 6.2831853 / 256.0;
+    let t = clamp(0.55 * sin(k * (p.x + 2.0 * p.y)) + 0.30 * sin(k * (2.0 * p.y - 3.0 * p.z) + 1.7)
+        + 0.25 * sin(k * (3.0 * p.x + p.z) + 4.1), -1.0, 1.0);
+    return mix(WOOD_UV_GLOW, select(WOOD_GLOW_BLUE, WOOD_GLOW_RED, t > 0.0), abs(t));
+}
 const DECK_PLANK_ALBEDO = vec3<f32>(0.20, 0.115, 0.055);
 const BEAM_ALBEDO = vec3<f32>(0.17, 0.10, 0.05);
 
@@ -242,7 +254,7 @@ fn lit_colour(input: Output) -> vec3<f32> {
     // Timber fluoresces violet wherever the real light has all but gone.
     if wood.a >= 0.0 && input.sheltered < 1.5 {
         let luma = dot(lit, vec3<f32>(0.2126, 0.7152, 0.0722));
-        return lit + WOOD_UV_GLOW * wood.a * (1.0 - smoothstep(0.02, 0.14, luma));
+        return lit + wood_glow_colour(input.material_position) * wood.a * (1.0 - smoothstep(0.02, 0.14, luma));
     }
     return lit;
 }

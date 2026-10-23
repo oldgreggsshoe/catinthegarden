@@ -13909,3 +13909,14 @@ constant backlight. The dim violet wood glow is now per fragment and gated on th
 exactly like the road timber, so it shows at night and in bores but never by day. Ink unchanged.
 Sign shader test and 4 sign tests pass; opened `road_network_signs/1792789069-293766` (village site,
 junction view): daylit oak board, no glow. Night sign view not captured; no FPS claim.
+
+## Glow hue varies with location (23 October)
+
+`road.wgsl::wood_glow_colour(material_position)` replaces the constant `WOOD_UV_GLOW` in the timber
+glow: three plane waves (wave-vectors integer multiples of 2*pi/256 m, so seamless across the
+256 m-wrapped `material_position`; wavelengths 256/128/85 m, ground-fixed) give t in [-1,1] that
+mixes violet toward blue (t<0, `WOOD_GLOW_BLUE`) or red (t>0, `WOOD_GLOW_RED`), similar luminance.
+Sign boards keep the base violet (no stable world position in their vertices). 109 road tests pass.
+Opened `road_network_tunnel_lighting/1792790222-304137` (needs `PLANET_ROAD_NETWORK_SITE=longest_undersea`;
+without it the scenario shows only sea): pinker floor, bluer far end. Tune the three amplitudes/
+wavelengths and the two colour constants. No FPS claim (three sines per glowing road pixel).
