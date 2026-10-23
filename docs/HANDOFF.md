@@ -13729,3 +13729,16 @@ triangles) and need a quality decision.
   - `PLANET_MAX_ACTIVE_CHUNKS=128`: triangles halve (terrain 294,912; road ocean 571k -> 276k). road 78.0 -> 47.6 ms (-39%), village 73.3 -> 51.7 (-29%).
   - Quality at 128: road scene >16-level pixel change 0.01-0.14%; village capture 1 10.7% (foreground ground-detail shapes shift, no cracks/holes seen), capture 2 1.2%. Images: scratchpad lod_village.png / lod_road.png.
 - Conclusion: triangle count is set by the chunk budget, not the split threshold. Budget is the quality knob; cracks/skirts untouched. Next: try 160/192, check mountain scenarios, then consider a graphics preset for it and a coarser far-ocean grid.
+
+## Chunk-budget sweep across scenarios (23 October)
+
+`PLANET_MAX_ACTIVE_CHUNKS`, 1280x720 Immediate, single run each, p50 ms (terrain triangles 256/192/160/128 = ~588k/440k/367k/293k):
+
+| scenario | 256 | 192 | 160 | 128 |
+|---|---|---|---|---|
+| tour_mountains | 36.5 | 29.3 | 26.1 | 22.9 |
+| low_flight_performance | 48.3 | 42.2 | 39.0 | 35.4 |
+| tour_coast | 20.9 | 16.2 | 13.9 | 11.6 |
+| forest_performance | 57.5 | 50.0 | 46.7 | 40.4 |
+
+All scenario assertions pass at every budget. Pixel change vs 256 (>16 levels): tour_mountains <=0.9%, low_flight 2.5% (160) / 3.1% (128). Visual: coast/mountain shots near-identical; in low_flight the near ground loses crispness (pit/crumple shapes in the foreground are smoother and slightly different), no cracks or holes. forest_performance has no captures. Roughly -2.5 to -3 ms per 32 chunks. Images: scratchpad bud_tour_mountains.png, bud_low_flight_performance.png. Suggested preset mapping: High 256 (current), Medium 192, Low 128; to be wired with the graphics options.
