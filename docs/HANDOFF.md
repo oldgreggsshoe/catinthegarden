@@ -13681,3 +13681,14 @@ PLANET_ROAD_NETWORK_SITE=longest_undersea). FFT gate remains uncommitted.
   by this task. At validation time the uncommitted FFT-gate condition/comment
   was in the post-LOD camera-correction block, not the FFT update call; its
   owner should verify that placement before treating it as ocean gating.
+
+### 23 October — first frame-pacing sweep (1280x720, Immediate, 3 reps, p50 / p99)
+forest_performance 58.3/61-66 ms; ocean_hybrid_close 41.4/157-169 ms (118 samples,
+1-2 stall frames per run, cause unidentified); road_network_driving
+(PLANET_ROAD_EXPERIMENT=1) 78.2-79.7/84-86 ms; road_network_tunnel_performance
+(longest_undersea) 5.6/6.4-7.6 ms. mountain_ground is 1.5 s, too short for any
+post-warm-up samples. Road driving PLANET_DISABLE ablation (p50): roads 77.6,
+forest 73.3, villages/clouds/ship ~78, terrain 37.6, ocean 28.7. So the road
+draw is <1 ms there; the ocean costs ~50 ms in that view (default Gerstner; with
+PLANET_OCEAN_FFT=1 it is 69.3 ms). Interactive default is 640x360, so expect
+roughly a quarter of the fragment-bound part.
