@@ -164,6 +164,8 @@ const ABLATE_OCEAN_FOAM: bool = {};
 const ABLATE_OCEAN_UNDERSIDE: bool = {};
 const ABLATE_OCEAN_SURFACE: bool = {};
 const ABLATE_OCEAN_LIGHTING: bool = {};
+const ABLATE_OCEAN_AERIAL: bool = {};
+const ABLATE_OCEAN_FOG: bool = {};
 const CHEAP_VERTEX_AERIAL: bool = {};",
         ablate("material"),
         ablate("tint"),
@@ -174,6 +176,8 @@ const CHEAP_VERTEX_AERIAL: bool = {};",
         ablate("ocean_underside"),
         ablate("ocean_surface"),
         ablate("ocean_lighting"),
+        ablate("ocean_aerial"),
+        ablate("ocean_fog"),
         // Not an ablation: a one-sample in-scatter estimate, for A/B pictures.
         ablate("cheap_aerial"),
     );

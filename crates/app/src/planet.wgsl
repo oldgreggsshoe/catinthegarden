@@ -2585,12 +2585,15 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
         return vec4<f32>(water_surface_color, 1.0);
     }
-    let water_aerial_color = ocean_aerial_perspective(
-        water_surface_color,
-        input.camera_relative_view_position,
-        direction,
-        surface.vertical_displacement,
-    );
+    var water_aerial_color = water_surface_color;
+    if !ABLATE_OCEAN_AERIAL {
+        water_aerial_color = ocean_aerial_perspective(
+            water_surface_color,
+            input.camera_relative_view_position,
+            direction,
+            surface.vertical_displacement,
+        );
+    }
     if render_debug_mode == RENDER_DEBUG_AERIAL_CONTRIBUTION {
         return vec4<f32>(
             max(water_aerial_color - water_surface_color, vec3<f32>(0.0)),
@@ -2602,12 +2605,15 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     // sky. This path applied aerial perspective only, so a storm's fog never
     // reached the water: the sea kept its detail and a sharp horizon under a
     // fog that hid everything else.
-    let misted_water_color = terrain_distance_fog(
-        water_aerial_color,
-        input.camera_relative_view_position,
-        direction,
-        surface.vertical_displacement,
-    );
+    var misted_water_color = water_aerial_color;
+    if !ABLATE_OCEAN_FOG {
+        misted_water_color = terrain_distance_fog(
+            water_aerial_color,
+            input.camera_relative_view_position,
+            direction,
+            surface.vertical_displacement,
+        );
+    }
     return vec4<f32>(misted_water_color, shoreline_alpha);
 }
 
