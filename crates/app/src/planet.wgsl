@@ -1066,12 +1066,17 @@ fn vs_ocean(input: VertexInput) -> OceanVertexOutput {
         input.edge_stitch,
         input.node_uv_origin_span.z * PLANET_RADIUS_METERS * 0.7 / 32.0,
     );
-    let surface = ocean_surface(
-        projected.direction,
-        camera.projection.z,
-        length(flat_camera_relative_view_position),
-        max(-macro_height_meters, 0.0),
-    );
+    var surface: OceanSurface;
+    if ABLATE_OCEAN_VERTEX {
+        surface.normal = projected.direction;
+    } else {
+        surface = ocean_surface(
+            projected.direction,
+            camera.projection.z,
+            length(flat_camera_relative_view_position),
+            max(-macro_height_meters, 0.0),
+        );
+    }
     let displacement = projected.direction * surface.vertical_displacement
         + surface.horizontal_displacement;
     let camera_relative_view_position = select(
@@ -1951,8 +1956,12 @@ fn ocean_clear_water_discard(position: vec4<f32>) -> bool {
 
 @fragment
 fn fs_ocean_transmission(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if ABLATE_OCEAN_FRAGMENT { return vec4<f32>(0.0, 0.1, 0.3, 1.0); }
     if ocean_clear_water_discard(input.position) { discard; }
-    if !front && !ocean_back_face_is_fold() { return ocean_underside_reflecting_fragment(input); }
+    if !front && !ocean_back_face_is_fold() {
+        if ABLATE_OCEAN_UNDERSIDE { return vec4<f32>(0.0, 0.1, 0.3, 1.0); }
+        return ocean_underside_reflecting_fragment(input);
+    }
     if u32(camera.projection.w + 0.5) != RENDER_DEBUG_FLAT_TRIANGLES {
         let threshold = lod_dither_threshold(input.position);
         let incoming = input.lod_transition.y > 0.5;
@@ -1964,8 +1973,12 @@ fn fs_ocean_transmission(input: OceanVertexOutput, @builtin(front_facing) front:
 
 @fragment
 fn fs_ocean_transmission_stable(input: OceanVertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if ABLATE_OCEAN_FRAGMENT { return vec4<f32>(0.0, 0.1, 0.3, 1.0); }
     if ocean_clear_water_discard(input.position) { discard; }
-    if !front && !ocean_back_face_is_fold() { return ocean_underside_reflecting_fragment(input); }
+    if !front && !ocean_back_face_is_fold() {
+        if ABLATE_OCEAN_UNDERSIDE { return vec4<f32>(0.0, 0.1, 0.3, 1.0); }
+        return ocean_underside_reflecting_fragment(input);
+    }
     return ocean_transmitting_fragment_color(input);
 }
 
@@ -2052,7 +2065,8 @@ fn fs_underwater_background(input: UnderwaterBackgroundOutput) -> @location(0) v
 
 fn ocean_transmitting_fragment_color(input: OceanVertexOutput) -> vec4<f32> {
     let height = macro_terrain_height(input.outmap > 0.5, input.source_uv, normalize(input.surface_direction));
-    let surface = ocean_raster_surface(input, height);
+    var surface: OceanSurface;
+    if ABLATE_OCEAN_SURFACE { surface.normal = normalize(input.surface_direction); } else { surface = ocean_raster_surface(input, height); }
     let water = ocean_fragment_with_transmission(input, ocean_scene_transmission(input, surface, height), surface, height);
     // Composite against the real opaque bed, not a painted sand approximation.
     // Both ownership cutoffs approach transparent water on their wet side.
@@ -2157,6 +2171,7 @@ fn ocean_scene_colour_filtered(uv: vec2<f32>) -> vec3<f32> {
 // fallback and no alpha blending: the shell continues to own depth. A missing
 // or off-screen bed retains the scattering colour rather than leaking space.
 fn ocean_scene_transmission(input: OceanVertexOutput, surface: OceanSurface, height: f32) -> vec4<f32> {
+    if ABLATE_OCEAN_TRACE { return vec4<f32>(0.0); }
     if height < -80.0 || u32(camera.projection.w + 0.5) == RENDER_DEBUG_FLAT_TRIANGLES {
         return vec4<f32>(0.0);
     }
@@ -2484,13 +2499,16 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
         sun_direction,
     );
     // Foam: surf where there is a bottom to break on, whitecaps where there is not.
-    let foam = ocean_foam_coverage(
-        max(-macro_height_meters, 0.0),
-        surface.vertical_displacement,
-        surface.breaking_ratio,
-        lighting_normal,
-        direction,
-    );
+    var foam = 0.0;
+    if !ABLATE_OCEAN_FOAM {
+        foam = ocean_foam_coverage(
+            max(-macro_height_meters, 0.0),
+            surface.vertical_displacement,
+            surface.breaking_ratio,
+            lighting_normal,
+            direction,
+        );
+    }
     let normal_view = normalize(planet_to_view(lighting_normal));
     let facing = max(dot(normal_view, normalize(-input.camera_relative_view_position)), 0.0);
     let fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
@@ -2502,14 +2520,17 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     // still returns to the body as `bed.w` falls toward zero.
     let bed_mix = bed.w * 0.22;
     let transmission = (bed.rgb - body) * bed_mix * (1.0 - fresnel);
-    let base_water = ocean_lighting(
-        lighting_normal,
-        surface.crest_sharpness,
-        ocean_fine_crest_transmission(surface),
-        input.camera_relative_view_position,
-        sun_transmittance,
-        sky_diffuse,
-    );
+    var base_water = vec3<f32>(0.0, 0.1, 0.3);
+    if !ABLATE_OCEAN_LIGHTING {
+        base_water = ocean_lighting(
+            lighting_normal,
+            surface.crest_sharpness,
+            ocean_fine_crest_transmission(surface),
+            input.camera_relative_view_position,
+            sun_transmittance,
+            sky_diffuse,
+        );
+    }
     // Shallow-water turquoise scattering tint. `bed.w` alone only says a bed
     // was resolved through the water, so keying the mix on it painted the tint
     // wherever the bottom was visible at all -- and at

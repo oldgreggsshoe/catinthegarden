@@ -156,9 +156,23 @@ pub(crate) fn planet_shader_source() -> String {
     );
     let material_ablation_setting = format!(
         "const ABLATE_FRAGMENT_MATERIAL: bool = {};
-const ABLATE_FRAGMENT_TINT: bool = {};",
+const ABLATE_FRAGMENT_TINT: bool = {};
+const ABLATE_OCEAN_VERTEX: bool = {};
+const ABLATE_OCEAN_FRAGMENT: bool = {};
+const ABLATE_OCEAN_TRACE: bool = {};
+const ABLATE_OCEAN_FOAM: bool = {};
+const ABLATE_OCEAN_UNDERSIDE: bool = {};
+const ABLATE_OCEAN_SURFACE: bool = {};
+const ABLATE_OCEAN_LIGHTING: bool = {};",
         ablate("material"),
-        ablate("tint")
+        ablate("tint"),
+        ablate("ocean_vertex"),
+        ablate("ocean_fragment"),
+        ablate("ocean_trace"),
+        ablate("ocean_foam"),
+        ablate("ocean_underside"),
+        ablate("ocean_surface"),
+        ablate("ocean_lighting"),
     );
     [
         crate::planet::shared_planet_shader_source(),

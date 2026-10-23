@@ -13692,3 +13692,25 @@ forest 73.3, villages/clouds/ship ~78, terrain 37.6, ocean 28.7. So the road
 draw is <1 ms there; the ocean costs ~50 ms in that view (default Gerstner; with
 PLANET_OCEAN_FFT=1 it is 69.3 ms). Interactive default is 640x360, so expect
 roughly a quarter of the fragment-bound part.
+
+### 23 October — ocean/terrain cost attribution (no renderer behaviour change)
+New `PLANET_ABLATE` terms compile out ocean work for A/B timing (pictures are wrong
+with them set): `ocean_vertex` (no wave evaluation in vs_ocean), `ocean_fragment`
+(constant colour), `ocean_trace` (refracted-bed march), `ocean_foam`,
+`ocean_underside`, `ocean_surface` (fragment wave evaluation), `ocean_lighting`.
+road_network_driving, 1280x720 Immediate, PLANET_ROAD_EXPERIMENT=1, p50 (baseline
+78.3 Gerstner / 69.1 with PLANET_OCEAN_FFT=1): ocean_trace -10.5, ocean_surface
+-13.5 (-9 FFT), ocean_underside -17.5 (-11 FFT), ocean_foam 0, ocean_lighting ~-1,
+ocean_fragment -45 (-32 FFT), ocean_vertex -38 (-26 FFT; also flattens the sea so it
+is not a pure vertex number). In that view the water fills the screen at shallow
+depth, so the fragment cost is real shading, not discarded land.
+Non-ocean floor is ~25 ms at 640x360 and 1280x720 alike (PLANET_DISABLE=ocean),
+i.e. terrain geometry: ablating vertex terms at 640x360 gives normals -5.0,
+aerial -4.3, fog -4.5, detail -1.7 ms, all four together -11 ms of 25.5.
+Tried and reverted, no measurable change: early ownership discard before the wave
+evaluation in the transmitting fragment; skipping the mid/fine FFT cascade taps in
+vs_ocean when their distance weight is zero (exact, but no gain on road,
+ocean_rough_horizon or ocean_hybrid_close); the FFT visibility gate (tour_desert,
+village_pov A/B identical). Remaining levers all change the picture or the mesh
+(coarser far-ocean index buffer, cheaper per-vertex aerial/fog, fewer ocean
+triangles) and need a quality decision.
