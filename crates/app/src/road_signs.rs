@@ -174,7 +174,7 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
             }
         }
         if board.kind == Kind::Tunnel {
-            // Backlit tunnel information is independent of sun and clouds.
+            // Boards inside bores are tagged so they take the sheltered (sunless) lighting.
             for v in &mut mesh.vertices[first_vertex..] {
                 v.colour[2] = -v.colour[2].abs();
             }

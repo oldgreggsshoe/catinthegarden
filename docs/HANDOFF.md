@@ -13899,3 +13899,13 @@ renderer remains running; the GPU is available again.
 - Paint removed: edge lines and centre dashes in `road_network_mesh.rs`, the legacy pilot's dashes in `road.rs`, the shader's paint widening/glow.
 - Glow: `WOOD_UV_GLOW` (violet, ~0.09 peak) added only where lit luminance is below ~0.14, modulated by grain/gaps. Signs: wood faces of `road_signs.wgsl` glow the same way once the sun is down (always in bores); ink is unchanged.
 - Verified: 109 road tests pass (shader validation included); opened road_network_join/parking/overview (day) and tunnel_lighting (night) captures. No FPS measurement; shader cost is a few extra noise lookups on road pixels only.
+
+## Road signs lit like the road (23 October)
+
+Sign boards are no longer self-lit. `road_signs.wgsl` uses the same flat sun + sky-ambient
+lighting as `road.wgsl::lit_colour` (per-vertex, flat); boards tagged as inside bores (negative
+colour z, unchanged in `road_signs.rs`) get the road's sheltered interior level instead of the old
+constant backlight. The dim violet wood glow is now per fragment and gated on the lit luminance,
+exactly like the road timber, so it shows at night and in bores but never by day. Ink unchanged.
+Sign shader test and 4 sign tests pass; opened `road_network_signs/1792789069-293766` (village site,
+junction view): daylit oak board, no glow. Night sign view not captured; no FPS claim.

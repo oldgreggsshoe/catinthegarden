@@ -13,9 +13,8 @@ struct Input {
 }
 struct Output {
     @builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@location(1) colour:vec3<f32>,
-    @location(2) @interpolate(flat) light:f32,
+    @location(2) @interpolate(flat) light:vec3<f32>,
     @location(3) @interpolate(flat) wood:f32,
-    @location(4) @interpolate(flat) night:f32,
 }
 @vertex fn vs_main(v:Input)->Output {
     let relative=v.origin.xyz+v.across.xyz*v.position.x+v.forward.xyz*v.position.y+v.up.xyz*v.position.z;
@@ -24,23 +23,32 @@ struct Output {
     var out:Output;out.position=camera.projection_matrix*vec4<f32>(view,1.0);out.uv=v.uv;out.colour=abs(v.colour);
     out.wood=select(0.0,1.0,v.uv.x < -1.5);
     if out.wood>0.5 {out.uv=vec2<f32>(-2.0-v.uv.x,v.uv.y);}
-    out.light=0.40+1.4*max(dot(normal,normalize(camera.sun_direction.xyz)),0.0)*max(dot(v.up.xyz,normalize(camera.sun_direction.xyz)),0.0);
-    if v.colour.z<0.0 {out.light=1.0;}
-    // Boards fluoresce violet once the sun is down (always inside bores).
-    out.night=1.0-smoothstep(-0.08,0.10,dot(normalize(v.up.xyz),normalize(camera.sun_direction.xyz)));
-    if v.colour.z<0.0 {out.night=1.0;}
+    // The road's own lighting (road.wgsl lit_colour): flat sun plus sky ambient,
+    // nothing self-lit. Boards inside bores (negative tag) get the sheltered level.
+    let up=normalize(v.up.xyz);let sun=normalize(camera.sun_direction.xyz);
+    let elevation=clamp(dot(sun,up),0.0,1.0);
+    let direct=vec3<f32>(1.9,1.78,1.6)*elevation*max(dot(normal,sun),0.0);
+    let ambient=mix(vec3<f32>(0.05,0.055,0.06),vec3<f32>(0.24,0.29,0.36),0.5+0.5*dot(normal,up))*(0.25+0.75*elevation);
+    out.light=direct+ambient;
+    if v.colour.z<0.0 {out.light=(0.10+0.04*(1.0-abs(dot(normal,up))))*vec3<f32>(1.0,0.96,0.90);}
     return out;
 }
 @fragment fn fs_main(v:Output)->@location(0) vec4<f32> {
     var alpha=1.0;
     var colour=v.colour;
-    var glow=vec3<f32>(0.0);
+    var wood_grain=-1.0;
     if v.wood>0.5 {
         let grain=textureSample(wood_texture,wood_sampler,v.uv).rgb;
         colour*=grain;
-        glow=vec3<f32>(0.20,0.04,0.55)*0.055*v.night*(0.5+1.0*dot(grain,vec3<f32>(0.3333)));
+        wood_grain=dot(grain,vec3<f32>(0.3333));
     }
     else if v.uv.x>=0.0 {alpha=textureSample(atlas,atlas_sampler,v.uv).a;}
     if alpha<0.02 {discard;}
-    return vec4<f32>(colour*v.light+glow,alpha);
+    var lit=colour*v.light;
+    // Same dim violet fluorescence as the road timber, only where the light has all but gone.
+    if wood_grain>=0.0 {
+        let luma=dot(lit,vec3<f32>(0.2126,0.7152,0.0722));
+        lit+=vec3<f32>(0.20,0.04,0.55)*0.09*(0.5+1.0*wood_grain)*(1.0-smoothstep(0.02,0.14,luma));
+    }
+    return vec4<f32>(lit,alpha);
 }
