@@ -1514,6 +1514,86 @@ pub fn global_wave_slope(direction: DVec3, sim_time: f64, water_depth_meters: f6
     gradient - radial * gradient.dot(radial)
 }
 
+/// Height, vertical velocity and slope of the global wave surface at one
+/// point, as `global_wave_height_meters(.., height_depth)`,
+/// `global_wave_vertical_velocity_meters_per_second(.., other_depth)` and
+/// `global_wave_slope(.., other_depth)` would return them, bit for bit. The
+/// ship asks all three at every buoyancy column every step; on the Gerstner sea
+/// each of those evaluates every wave (the slope and velocity twice), so doing
+/// the waves once and sharing them is about three times cheaper.
+pub fn global_wave_probe(
+    direction: DVec3,
+    sim_time: f64,
+    height_depth_meters: f64,
+    other_depth_meters: f64,
+) -> (f64, f64, DVec3) {
+    if fft_surface().is_some() || horizontal_transport_enabled() {
+        // The FFT sea already reuses its last sample across the three calls.
+        return (
+            global_wave_height_meters(direction, sim_time, height_depth_meters),
+            global_wave_vertical_velocity_meters_per_second(
+                direction,
+                sim_time,
+                other_depth_meters,
+            ),
+            global_wave_slope(direction, sim_time, other_depth_meters),
+        );
+    }
+    let state = sea_state_at(sim_time);
+    let radial = direction.normalize();
+    let amplitude_scale = geometry_amplitude_scale(state.intensity);
+    let blend = storm_blend(state.intensity);
+    let waves = active_waves();
+    let at_direction: Vec<WaveSample> = waves
+        .iter()
+        .map(|wave| sample_wave(direction, sim_time, wave))
+        .collect();
+    let height_of = |samples: &[WaveSample]| -> f64 {
+        waves
+            .iter()
+            .zip(samples)
+            .map(|(wave, sample)| wave.amplitude(blend) * amplitude_scale * sample.profile)
+            .sum()
+    };
+    let raw = height_of(&at_direction);
+    let height = raw * breaking_weight(raw, height_depth_meters);
+
+    let vertical_velocity = waves
+        .iter()
+        .zip(&at_direction)
+        .map(|(wave, sample)| {
+            wave.amplitude(blend) * amplitude_scale * sample.velocity
+                + amplitude_change_velocity(wave, state) * sample.profile
+        })
+        .sum::<f64>()
+        * breaking_rate_weight(raw, other_depth_meters);
+
+    // The slope is taken at the normalised direction; when that is the same
+    // vector (the ship passes unit vectors) the samples are shared.
+    let at_radial: Vec<WaveSample>;
+    let radial_samples: &[WaveSample] = if radial == direction {
+        &at_direction
+    } else {
+        at_radial = waves
+            .iter()
+            .map(|wave| sample_wave(radial, sim_time, wave))
+            .collect();
+        &at_radial
+    };
+    let radial_raw = if radial == direction {
+        raw
+    } else {
+        height_of(radial_samples)
+    };
+    let gradient = waves
+        .iter()
+        .zip(radial_samples)
+        .map(|(wave, sample)| sample.slope * (wave.amplitude(blend) * amplitude_scale))
+        .sum::<DVec3>()
+        * breaking_rate_weight(radial_raw, other_depth_meters);
+    (height, vertical_velocity, gradient - radial * gradient.dot(radial))
+}
+
 pub fn global_wave_vertical_velocity_meters_per_second(
     direction: DVec3,
     sim_time: f64,
@@ -1592,6 +1672,34 @@ pub fn local_wave_vertical_velocity_meters_per_second(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_fused_water_probe_matches_the_separate_queries_bit_for_bit() {
+        for index in 0..40_u32 {
+            let phase = f64::from(index) * 0.731;
+            let unit = DVec3::new(phase.cos(), phase.sin() * 0.6, 0.4 + 0.01 * f64::from(index))
+                .normalize();
+            // Unit vectors (what the ship passes) and an unnormalised one.
+            for direction in [unit, unit * 1.0000003] {
+                let time = 3.0 + 7.3 * f64::from(index);
+                for (height_depth, other_depth) in [(250.0, 250.0), (6.0, 250.0), (40.0, 18.0)] {
+                    let (height, velocity, slope) =
+                        super::global_wave_probe(direction, time, height_depth, other_depth);
+                    assert_eq!(
+                        height.to_bits(),
+                        super::global_wave_height_meters(direction, time, height_depth).to_bits()
+                    );
+                    assert_eq!(
+                        velocity.to_bits(),
+                        super::global_wave_vertical_velocity_meters_per_second(direction, time, other_depth)
+                            .to_bits()
+                    );
+                    let expected = super::global_wave_slope(direction, time, other_depth);
+                    assert_eq!(slope.to_array().map(f64::to_bits), expected.to_array().map(f64::to_bits));
+                }
+            }
+        }
+    }
+
     use glam::DVec3;
 
     use super::{

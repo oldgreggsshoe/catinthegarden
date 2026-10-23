@@ -1490,23 +1490,16 @@ fn step_ship_in_water(
     let hull_depth = (-(body.position.length() - planet::planet_radius_meters())).max(0.0);
     let water_velocity = water_horizontal * (-ship::WAVE_DECAY_PER_METER * hull_depth).exp();
     body.advance(hull, ship::FIXED_STEP_SECONDS, |direction| {
+        let (height_meters, vertical_velocity, slope) = ocean::global_wave_probe(
+            direction,
+            ocean_time_seconds,
+            depth_meters,
+            SHIP_FALLBACK_DEPTH_METERS,
+        );
         ship::WaterSample {
-            height_meters: ocean::global_wave_height_meters(
-                direction,
-                ocean_time_seconds,
-                depth_meters,
-            ),
-            vertical_velocity_meters_per_second:
-                ocean::global_wave_vertical_velocity_meters_per_second(
-                    direction,
-                    ocean_time_seconds,
-                    SHIP_FALLBACK_DEPTH_METERS,
-                ),
-            slope: ocean::global_wave_slope(
-                direction,
-                ocean_time_seconds,
-                SHIP_FALLBACK_DEPTH_METERS,
-            ),
+            height_meters,
+            vertical_velocity_meters_per_second: vertical_velocity,
+            slope,
             horizontal_velocity: water_horizontal,
         }
     });
