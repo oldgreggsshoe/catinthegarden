@@ -1685,6 +1685,17 @@ impl PlanetLod {
     /// A distant-body presentation may use a sub-L2 ceiling. Invalidate the
     /// cached selection, but retain the tree so ordinary geomorphing still
     /// handles the transition back to surface detail.
+    /// Change the leaf budget on a running selector. Splits made under the
+    /// old budget are dropped and reselected so the new cap holds at once.
+    pub fn set_max_active_chunks(&mut self, max_active_chunks: usize) {
+        let max_active_chunks = max_active_chunks.max(FACE_COUNT as usize);
+        if self.max_active_chunks != max_active_chunks {
+            self.max_active_chunks = max_active_chunks;
+            self.split_nodes.clear();
+            self.last_selection_input = None;
+        }
+    }
+
     pub(crate) fn set_maximum_level(&mut self, level: u8) {
         let level = level.min(MAX_LOD_LEVEL);
         if self.policy.max_level != level {

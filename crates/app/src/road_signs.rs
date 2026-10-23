@@ -5,6 +5,8 @@ use crate::{
 };
 use glam::DVec3;
 use wgpu::util::DeviceExt;
+const WOOD_EDGE: [f32; 3] = [0.65; 3];
+const INK: [f32; 3] = [0.006; 3];
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -36,6 +38,20 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
         return Ok(Mesh::empty());
     }
     let ctx = egui::Context::default();
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "road-sign-serif".into(),
+        egui::FontData::from_static(include_bytes!(
+            "../../../assets/road_signs/EBGaramond12-Bold.ttf"
+        ))
+        .into(),
+    );
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Proportional)
+        .unwrap()
+        .insert(0, "road-sign-serif".into());
+    ctx.set_fonts(fonts);
     let mut galleys = Vec::new();
     ctx.begin_pass(egui::RawInput::default());
     {
@@ -87,24 +103,40 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
                 centre - board.right * width / 2.0 + board.up * height / 2.0,
             ]
         };
-        solid(
+        let panel = quad(board.centre, board.width, height);
+        let back = quad(board.centre - normal * 0.06, board.width, height);
+        wood(
             &mut mesh.vertices,
             frame,
-            quad(board.centre, board.width, height),
-            [0.80, 0.82, 0.78],
+            panel,
+            WOOD_EDGE,
+            [board.width, height],
         );
-        let mut back = quad(board.centre - normal * 0.06, board.width, height);
-        back.reverse();
-        solid(&mut mesh.vertices, frame, back, [0.19, 0.20, 0.19]);
-        solid(
+        let mut back_face = back;
+        back_face.reverse();
+        wood(
+            &mut mesh.vertices,
+            frame,
+            back_face,
+            WOOD_EDGE,
+            [board.width, height],
+        );
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            wood(
+                &mut mesh.vertices,
+                frame,
+                [panel[i], back[i], back[j], panel[j]],
+                [0.55; 3],
+                [0.06, panel[i].distance(panel[j])],
+            );
+        }
+        wood(
             &mut mesh.vertices,
             frame,
             quad(front, board.width - 0.08, height - 0.08),
-            if board.village {
-                [0.75, 0.77, 0.72]
-            } else {
-                [0.015, 0.13, 0.045]
-            },
+            [1.0; 3],
+            [board.width - 0.08, height - 0.08],
         );
         if let Some(anchor) = board.support {
             let foot = board.centre - board.up * 4.0;
@@ -135,11 +167,7 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
                             p,
                             normal,
                             [v.uv.x / size[0] as f32, v.uv.y / size[1] as f32],
-                            if board.village {
-                                [0.015; 3]
-                            } else {
-                                [0.92, 0.94, 0.86]
-                            },
+                            INK,
                         ));
                     }
                 }
@@ -188,6 +216,64 @@ fn solid(out: &mut Vec<Vertex>, f: Frame, p: [DVec3; 4], c: [f32; 3]) {
         out.push(vertex(f, p[i], n, [-1.0; 2], c));
     }
 }
+// Negative U distinguishes wood from both glyph UVs and solid hardware.
+// Local board coordinates keep horizontal grain attached to each sign.
+fn wood(out: &mut Vec<Vertex>, f: Frame, p: [DVec3; 4], c: [f32; 3], size: [f64; 2]) {
+    let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize();
+    let u = size[0] as f32 / 2.5;
+    let v = size[1] as f32 / 1.25;
+    let uv = [[-2.0, v], [-2.0 - u, v], [-2.0 - u, 0.0], [-2.0, 0.0]];
+    for i in [0, 1, 2, 0, 2, 3] {
+        out.push(vertex(f, p[i], n, uv[i], c));
+    }
+}
+
+fn wood_mips() -> Vec<u8> {
+    let decoded = image::load_from_memory(include_bytes!("../../../assets/road_signs/oak.png"))
+        .expect("embedded oak texture must decode")
+        .to_rgba8();
+    let mut level =
+        image::imageops::resize(&decoded, 512, 512, image::imageops::FilterType::Triangle);
+    let mut pixels = Vec::new();
+    loop {
+        pixels.extend_from_slice(level.as_raw());
+        let size = level.width();
+        if size == 1 {
+            break;
+        }
+        level = image::imageops::resize(
+            &level,
+            size / 2,
+            size / 2,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    pixels
+}
+
+fn wood_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let texture = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("cached oak sign texture"),
+            size: wgpu::Extent3d {
+                width: 512,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 10,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &wood_mips(),
+    );
+    texture.create_view(&Default::default())
+}
+
 fn beam(out: &mut Vec<Vertex>, f: Frame, a: DVec3, b: DVec3, r: f64) {
     let axis = (b - a).normalize();
     let reference = if axis.z.abs() < 0.9 {
@@ -213,6 +299,7 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     texture: wgpu::BindGroup,
+    wood: wgpu::TextureView,
     vertices: wgpu::Buffer,
     count: u32,
     pub inspection: Option<(DVec3, DVec3)>,
@@ -220,6 +307,7 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         camera: &wgpu::BindGroupLayout,
     ) -> Self {
@@ -242,6 +330,22 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -259,11 +363,13 @@ impl Renderer {
             primitive:wgpu::PrimitiveState{cull_mode:Some(wgpu::Face::Back),..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::GreaterEqual),stencil:Default::default(),bias:Default::default()}),
             multisample:Default::default(),multiview_mask:None,cache:crate::pipeline_cache::get()});
-        let texture = create_atlas(device, &layout, [1, 1]);
+        let wood = wood_texture(device, queue);
+        let texture = create_atlas(device, &layout, [1, 1], &wood);
         Self {
             pipeline,
             layout,
             texture: texture.1,
+            wood,
             vertices: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("empty signs"),
                 size: 44,
@@ -284,7 +390,7 @@ impl Renderer {
         if mesh.vertices.is_empty() {
             return;
         }
-        let (texture, bind) = create_atlas(device, &self.layout, mesh.size);
+        let (texture, bind) = create_atlas(device, &self.layout, mesh.size, &self.wood);
         self.texture = bind;
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -332,6 +438,7 @@ fn create_atlas(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     size: [u32; 2],
+    wood: &wgpu::TextureView,
 ) -> (wgpu::Texture, wgpu::BindGroup) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("road sign glyph atlas"),
@@ -353,6 +460,15 @@ fn create_atlas(
         min_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
+    let wood_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("mipmapped repeating wood"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        ..Default::default()
+    });
     let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("road sign atlas"),
         layout,
@@ -364,6 +480,14 @@ fn create_atlas(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(wood),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(&wood_sampler),
             },
         ],
     });
@@ -390,7 +514,7 @@ mod tests {
                 let frame = frame.unwrap();
                 let mut boards = Vec::new();
                 for quad in mesh.vertices.chunks_exact(6) {
-                    if quad[0].colour == [0.80, 0.82, 0.78] {
+                    if quad[0].colour == WOOD_EDGE && quad[0].normal[2].is_finite() {
                         let local = quad
                             .iter()
                             .map(|v| DVec3::from_array(v.position.map(f64::from)))

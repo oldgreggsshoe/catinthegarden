@@ -1,14 +1,14 @@
 //! Graphics quality: one setting that trades detail for frame time.
 //!
-//! Chosen once at startup (the chunk budget sizes GPU buffers), from
-//! `PLANET_QUALITY` or else the saved setting. Scenario runs and unit tests
+//! Chosen at startup from `PLANET_QUALITY` or else the saved setting. Scenario runs and unit tests
 //! ignore the saved file so recorded results never depend on a player's
 //! preference; they still honour `PLANET_QUALITY` and the individual
 //! `PLANET_MAX_ACTIVE_CHUNKS` / `PLANET_OCEAN_COARSE_*` overrides.
-//! F5 cycles the saved setting; it takes effect on the next launch.
+//! F5 cycles the setting live and saves it for the next launch.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Quality {
@@ -46,7 +46,7 @@ impl Quality {
     /// Terrain/ocean leaf budget: the main triangle-count lever.
     pub fn chunk_budget(self) -> usize {
         match self {
-            Self::High => 256,
+            Self::High => crate::planet::DEFAULT_MAX_ACTIVE_CHUNKS,
             Self::Medium => 192,
             Self::Low => 128,
         }
@@ -97,45 +97,40 @@ fn reads_saved_setting() -> bool {
     !cfg!(test) && !std::env::args().any(|argument| argument == "--scenario")
 }
 
-/// The quality this run was started with.
-pub fn active() -> Quality {
-    static ACTIVE: OnceLock<Quality> = OnceLock::new();
-    *ACTIVE.get_or_init(|| {
-        std::env::var("PLANET_QUALITY")
+fn active_slot() -> &'static AtomicU8 {
+    static ACTIVE: OnceLock<AtomicU8> = OnceLock::new();
+    ACTIVE.get_or_init(|| {
+        let initial = std::env::var("PLANET_QUALITY")
             .ok()
             .and_then(|value| Quality::parse(&value))
             .or_else(|| reads_saved_setting().then(load_saved).flatten())
-            .unwrap_or(Quality::High)
+            .unwrap_or(Quality::High);
+        AtomicU8::new(initial as u8)
     })
 }
 
-fn pending_slot() -> &'static Mutex<Quality> {
-    static PENDING: OnceLock<Mutex<Quality>> = OnceLock::new();
-    PENDING.get_or_init(|| Mutex::new(active()))
+/// The quality in force now (the startup choice until F5 changes it).
+pub fn active() -> Quality {
+    match active_slot().load(Ordering::Relaxed) {
+        1 => Quality::Medium,
+        2 => Quality::Low,
+        _ => Quality::High,
+    }
 }
 
-/// F5: step the saved setting High -> Medium -> Low and store it for the next
-/// launch. Returns the new saved value.
-pub fn cycle_saved() -> Quality {
-    let mut pending = pending_slot().lock().unwrap_or_else(|e| e.into_inner());
-    *pending = pending.next();
-    save(*pending);
-    tracing::info!(target: "planet::quality", saved = pending.name(), active = active().name(), "quality setting changed; applies on restart");
-    *pending
+/// F5: step High -> Medium -> Low, save it for later launches, and return the
+/// new value for the caller to apply to the running renderer.
+pub fn cycle() -> Quality {
+    let next = active().next();
+    active_slot().store(next as u8, Ordering::Relaxed);
+    save(next);
+    tracing::info!(target: "planet::quality", quality = next.name(), "quality changed");
+    next
 }
 
 /// One line for the debug overlay.
 pub fn status_text() -> String {
-    let pending = *pending_slot().lock().unwrap_or_else(|e| e.into_inner());
-    if pending == active() {
-        format!("Quality: {} (F5 cycles; applies on restart)", active().name())
-    } else {
-        format!(
-            "Quality: {} now, {} after restart (F5)",
-            active().name(),
-            pending.name()
-        )
-    }
+    format!("Quality: {} (F5 cycles, saved)", active().name())
 }
 
 #[cfg(test)]

@@ -199,16 +199,21 @@ const MAX_RASTER_NEAR_FIELD_PREFETCH_PER_FRAME: usize = 4;
 /// window at roughly one vertex per texel, so avoid paying for extra triangles.
 const NEAR_FIELD_DENSE_MAX_LEVEL: u8 = 10;
 /// A chunk whose canonical-grid cells project to fewer pixels than this draws
-/// its sea with a coarser interior (`PLANET_OCEAN_COARSE_STEP` 2 or 4 turns
-/// the feature on). Its outer ring of vertices is unchanged.
-fn ocean_coarse_cell_pixels() -> f64 {
-    static PIXELS: OnceLock<f64> = OnceLock::new();
-    *PIXELS.get_or_init(|| {
-        std::env::var("PLANET_OCEAN_COARSE_CELL_PIXELS")
-            .ok()
-            .and_then(|value| value.trim().parse::<f64>().ok())
-            .unwrap_or_else(|| crate::quality::active().ocean_coarse_cell_pixels())
-    })
+/// its sea with a coarser interior (outer ring unchanged). The quality preset
+/// sets it; `PLANET_OCEAN_COARSE_CELL_PIXELS` overrides.
+fn effective_ocean_coarse_cell_pixels(quality: crate::quality::Quality) -> f64 {
+    std::env::var("PLANET_OCEAN_COARSE_CELL_PIXELS")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or_else(|| quality.ocean_coarse_cell_pixels())
+}
+/// 0 turns the thinning off; `PLANET_OCEAN_COARSE_STEP` overrides the preset.
+fn effective_ocean_coarse_step(quality: crate::quality::Quality) -> usize {
+    std::env::var("PLANET_OCEAN_COARSE_STEP")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .map(|step| if matches!(step, 2 | 4) { step } else { 0 })
+        .unwrap_or_else(|| quality.ocean_coarse_step())
 }
 /// The full 40x40 ocean lattice is an expensive visual diagnostic. Keep it
 /// opt-in until a topology solution removes its measured triangle increase.
@@ -918,9 +923,13 @@ pub struct TerrainRenderer {
     chunk_vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
-    /// Ocean chunks draw with a coarser interior and the identical boundary.
-    ocean_index_buffer: wgpu::Buffer,
-    ocean_index_count: u32,
+    /// Ocean chunks draw with a coarser interior and the identical boundary:
+    /// index lists for a 2x and a 4x thinned interior.
+    ocean_index_buffers: [(wgpu::Buffer, u32); 2],
+    /// 0 (off), 2 or 4: which of those lists far ocean chunks use.
+    ocean_coarse_step: usize,
+    /// Chunks whose cells project below this many pixels are thinned.
+    ocean_coarse_cell_pixels: f64,
     near_field_vertex_buffer: wgpu::Buffer,
     near_field_index_buffer: wgpu::Buffer,
     near_field_index_count: u32,
@@ -969,6 +978,20 @@ impl TerrainRenderer {
     /// Opt-in system rendering only; the single-body default remains L18.
     pub(crate) fn set_distant_level_limit(&mut self, level: Option<u8>) {
         self.lod.set_maximum_level(level.unwrap_or(MAX_LOD_LEVEL));
+    }
+
+    fn ocean_index_slot(&self) -> usize {
+        usize::from(self.ocean_coarse_step == 4)
+    }
+
+    /// Apply a quality preset to a running renderer. Individual
+    /// `PLANET_*` overrides still win over the preset.
+    pub fn set_quality(&mut self, quality: crate::quality::Quality) {
+        if std::env::var_os("PLANET_MAX_ACTIVE_CHUNKS").is_none() {
+            self.lod.set_max_active_chunks(quality.chunk_budget());
+        }
+        self.ocean_coarse_step = effective_ocean_coarse_step(quality);
+        self.ocean_coarse_cell_pixels = effective_ocean_coarse_cell_pixels(quality);
     }
 
     pub fn new(
@@ -1254,24 +1277,15 @@ impl TerrainRenderer {
             contents: bytemuck::cast_slice(&topology.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        let ocean_coarse_step = std::env::var("PLANET_OCEAN_COARSE_STEP")
-            .ok()
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .map(|step| if matches!(step, 2 | 4) { step } else { 0 })
-            .unwrap_or_else(|| crate::quality::active().ocean_coarse_step());
-        let ocean_indices = if ocean_coarse_step == 0 {
-            topology.indices.clone()
-        } else {
-            crate::planet::coarse_interior_indices(
-                &topology.indices,
-                CHUNK_GRID_QUADS,
-                ocean_coarse_step,
-            )
-        };
-        let ocean_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("shared ocean chunk indices"),
-            contents: bytemuck::cast_slice(&ocean_indices),
-            usage: wgpu::BufferUsages::INDEX,
+        let ocean_index_buffers = [2_usize, 4].map(|step| {
+            let indices =
+                crate::planet::coarse_interior_indices(&topology.indices, CHUNK_GRID_QUADS, step);
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("shared ocean chunk indices"),
+                contents: bytemuck::cast_slice(&indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            (buffer, indices.len() as u32)
         });
         let near_field_topology =
             build_chunk_mesh_with_quads(QuadtreeNode::root(0), NEAR_FIELD_GRID_QUADS);
@@ -1498,8 +1512,9 @@ impl TerrainRenderer {
             chunk_vertex_buffer,
             index_buffer,
             index_count: topology.indices.len() as u32,
-            ocean_index_buffer,
-            ocean_index_count: ocean_indices.len() as u32,
+            ocean_index_buffers,
+            ocean_coarse_step: effective_ocean_coarse_step(crate::quality::active()),
+            ocean_coarse_cell_pixels: effective_ocean_coarse_cell_pixels(crate::quality::active()),
             near_field_vertex_buffer,
             near_field_index_buffer,
             near_field_index_count: near_field_topology.indices.len() as u32,
@@ -3160,7 +3175,8 @@ impl TerrainRenderer {
                 / nearest_meters.max(1.0)
                 * f64::from(viewport[1])
                 / (2.0 * (0.5 * vertical_fov_radians).tan());
-            let ocean_coarse = fine_cell_pixels < ocean_coarse_cell_pixels();
+            let ocean_coarse =
+                self.ocean_coarse_step != 0 && fine_cell_pixels < self.ocean_coarse_cell_pixels;
             prepared_instances.push((
                 if near_field { None } else { tile_key },
                 near_field,
@@ -3319,7 +3335,7 @@ impl TerrainRenderer {
                 let index_count = if batch.dense_near_field {
                     self.near_field_index_count
                 } else if batch.ocean_coarse {
-                    self.ocean_index_count
+                    self.ocean_index_buffers[self.ocean_index_slot()].1
                 } else {
                     self.index_count
                 };
@@ -3484,8 +3500,8 @@ impl TerrainRenderer {
                 if batch.ocean_coarse {
                     (
                         &self.chunk_vertex_buffer,
-                        &self.ocean_index_buffer,
-                        self.ocean_index_count,
+                        &self.ocean_index_buffers[self.ocean_index_slot()].0,
+                        self.ocean_index_buffers[self.ocean_index_slot()].1,
                     )
                 } else {
                     (

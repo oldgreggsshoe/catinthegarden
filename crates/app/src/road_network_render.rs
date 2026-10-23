@@ -158,7 +158,7 @@ impl NetworkRenderer {
             field_segments=active.snapshot.field.segments.len(),
             "road network startup region ready");
         worker.request(centre, true);
-        let signs = crate::road_signs::Renderer::new(device, format, camera);
+        let signs = crate::road_signs::Renderer::new(device, queue, format, camera);
         let mut renderer = Self {
             signs,
             overlay,

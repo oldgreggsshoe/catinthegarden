@@ -5224,6 +5224,20 @@ impl State {
             frame_time * 1000.0,
             scenario_capture || self.manual_screenshot_requested,
         );
+        // Test hook for the live quality switch: `PLANET_QUALITY_SWITCH=300:low`
+        // applies that preset once, 300 frames in, as F5 would.
+        if let Some((frames, level)) = std::env::var("PLANET_QUALITY_SWITCH")
+            .ok()
+            .and_then(|value| {
+                let (frames, level) = value.split_once(':')?;
+                Some((frames.trim().parse::<u64>().ok()?, quality::Quality::parse(level)?))
+            })
+        {
+            static FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            if FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == frames {
+                self.terrain.set_quality(level);
+            }
+        }
         let planet_rotation_time = if self.scenario.is_some() {
             sim_time * scenario_planet_rotation_time_scale
         } else {
@@ -7322,7 +7336,7 @@ impl ApplicationHandler for App {
                     if event.state.is_pressed()
                         && event.physical_key == PhysicalKey::Code(KeyCode::F5) =>
                 {
-                    quality::cycle_saved();
+                    state.terrain.set_quality(quality::cycle());
                     state.mark_hud_dirty();
                     window.request_redraw();
                 }
