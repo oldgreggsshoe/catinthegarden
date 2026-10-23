@@ -2549,6 +2549,76 @@ pub fn build_chunk_mesh(node: QuadtreeNode) -> ChunkMesh {
     build_chunk_mesh_with_quads(node, CHUNK_GRID_QUADS)
 }
 
+/// Index list for a chunk whose interior is `step` times coarser than its
+/// vertex grid while every vertex on the outer boundary ring is kept and joined
+/// to its neighbours exactly as in the full grid, so the chunk's edges (and the
+/// skirts, which are copied unchanged) are bit-for-bit those of the full mesh
+/// and cannot open a crack against any neighbour. A one-quad-wide annulus of
+/// `step` quads merges the fine outer ring with the coarse inner ring.
+/// `full` is the index list `build_chunk_mesh_with_quads` produced.
+pub fn coarse_interior_indices(full: &[u32], grid_quads: usize, step: usize) -> Vec<u32> {
+    let quads = grid_quads;
+    let vertices_per_row = quads + 1;
+    let inset = step;
+    assert!(step >= 2 && quads > 2 * inset && (quads - 2 * inset) % step == 0);
+    let index = |x: usize, y: usize| (y * vertices_per_row + x) as u32;
+    let ring = |lo: usize, hi: usize, stride: usize| -> Vec<(usize, usize)> {
+        let mut ring = Vec::new();
+        ring.extend((lo..hi).step_by(stride).map(|x| (x, lo)));
+        ring.extend((lo..hi).step_by(stride).map(|y| (hi, y)));
+        ring.extend((lo + stride..=hi).rev().step_by(stride).map(|x| (x, hi)));
+        ring.extend((lo + stride..=hi).rev().step_by(stride).map(|y| (lo, y)));
+        ring
+    };
+    let outer = ring(0, quads, 1);
+    let inner = ring(inset, quads - inset, step);
+    let mut indices = Vec::new();
+    // Coarse interior.
+    for y in (inset..quads - inset).step_by(step) {
+        for x in (inset..quads - inset).step_by(step) {
+            let (lower_left, lower_right) = (index(x, y), index(x + step, y));
+            let (upper_left, upper_right) = (index(x, y + step), index(x + step, y + step));
+            indices.extend_from_slice(&[
+                lower_left,
+                lower_right,
+                upper_left,
+                lower_right,
+                upper_right,
+                upper_left,
+            ]);
+        }
+    }
+    // Annulus: both rings start at their lower-left corner and run
+    // counter-clockwise, with corners at the same fractions of the perimeter.
+    let (outer_count, inner_count) = (outer.len(), inner.len());
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < outer_count || j < inner_count {
+        let outer_next = (i + 1) as f64 / outer_count as f64;
+        let inner_next = (j + 1) as f64 / inner_count as f64;
+        let advance_outer = j >= inner_count || (i < outer_count && outer_next <= inner_next);
+        let o = |k: usize| outer[k % outer_count];
+        let n = |k: usize| inner[k % inner_count];
+        if advance_outer {
+            indices.extend_from_slice(&[
+                index(o(i).0, o(i).1),
+                index(o(i + 1).0, o(i + 1).1),
+                index(n(j).0, n(j).1),
+            ]);
+            i += 1;
+        } else {
+            indices.extend_from_slice(&[
+                index(o(i).0, o(i).1),
+                index(n(j + 1).0, n(j + 1).1),
+                index(n(j).0, n(j).1),
+            ]);
+            j += 1;
+        }
+    }
+    // Skirts follow the top surface in the full list and are unchanged.
+    indices.extend_from_slice(&full[quads * quads * 6..]);
+    indices
+}
+
 pub fn build_chunk_mesh_with_quads(node: QuadtreeNode, grid_quads: usize) -> ChunkMesh {
     assert!(node.is_valid(), "invalid quadtree node {node:?}");
     assert!(grid_quads > 0, "chunk grid must contain at least one quad");
@@ -3154,6 +3224,54 @@ fn reversed_z_infinite_perspective(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn coarse_interior_chunk_keeps_its_boundary_and_covers_the_same_area() {
+        let mesh = build_chunk_mesh_with_quads(QuadtreeNode::root(0), CHUNK_GRID_QUADS);
+        let quads = CHUNK_GRID_QUADS;
+        let row = quads + 1;
+        let full_top = &mesh.indices[..quads * quads * 6];
+        for step in [2usize, 4] {
+            let coarse = crate::planet::coarse_interior_indices(&mesh.indices, quads, step);
+            let top = &coarse[..coarse.len() - (mesh.indices.len() - quads * quads * 6)];
+            assert!(top.len() < full_top.len() / 2, "step {step} saves triangles");
+            let xy = |index: u32| ((index as usize % row) as f64, (index as usize / row) as f64);
+            let mut area = 0.0;
+            let mut edges = std::collections::HashMap::<(u32, u32), i32>::new();
+            let _: &mut std::collections::HashMap<(u32, u32), i32> = &mut edges;
+            for triangle in top.chunks(3) {
+                let [a, b, c] = [xy(triangle[0]), xy(triangle[1]), xy(triangle[2])];
+                let twice = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+                assert!(twice > 0.0, "step {step}: triangle {triangle:?} not counter-clockwise");
+                area += twice / 2.0;
+                for (from, to) in [(0, 1), (1, 2), (2, 0)] {
+                    let (u, v): (u32, u32) = (triangle[from], triangle[to]);
+                    *edges.entry((u.min(v), u.max(v))).or_default() += 1;
+                }
+            }
+            assert!((area - (quads * quads) as f64).abs() < 1e-9, "step {step} area {area}");
+            // Edges used once are the boundary: exactly the unit edges of the
+            // full grid's outer ring, so neighbours see an identical edge.
+            let boundary: std::collections::HashSet<_> = edges
+                .iter()
+                .filter(|(_, count)| **count == 1)
+                .map(|(edge, _)| *edge)
+                .collect();
+            let mut expected = std::collections::HashSet::new();
+            for k in 0..quads {
+                for (a, b) in [
+                    (k, k + 1),
+                    (quads * row + k, quads * row + k + 1),
+                    (k * row, (k + 1) * row),
+                    (k * row + quads, (k + 1) * row + quads),
+                ] {
+                    expected.insert((a as u32, b as u32));
+                }
+            }
+            assert_eq!(boundary, expected, "step {step} boundary");
+            assert!(edges.values().all(|count| *count <= 2), "step {step} manifold");
+        }
+    }
     use glam::{DVec3, Vec3};
 
     use super::{

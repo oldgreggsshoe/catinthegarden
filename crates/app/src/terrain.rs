@@ -198,6 +198,18 @@ const MAX_RASTER_NEAR_FIELD_PREFETCH_PER_FRAME: usize = 4;
 /// source texels. At finer LODs the canonical grid already samples the source
 /// window at roughly one vertex per texel, so avoid paying for extra triangles.
 const NEAR_FIELD_DENSE_MAX_LEVEL: u8 = 10;
+/// A chunk whose canonical-grid cells project to fewer pixels than this draws
+/// its sea with a coarser interior (`PLANET_OCEAN_COARSE_STEP` 2 or 4 turns
+/// the feature on). Its outer ring of vertices is unchanged.
+fn ocean_coarse_cell_pixels() -> f64 {
+    static PIXELS: OnceLock<f64> = OnceLock::new();
+    *PIXELS.get_or_init(|| {
+        std::env::var("PLANET_OCEAN_COARSE_CELL_PIXELS")
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .unwrap_or(8.0)
+    })
+}
 /// The full 40x40 ocean lattice is an expensive visual diagnostic. Keep it
 /// opt-in until a topology solution removes its measured triangle increase.
 fn ocean_dense_grid_enabled() -> bool {
@@ -717,6 +729,8 @@ struct DrawBatch {
     tile_key: Option<TileKey>,
     near_field: bool,
     dense_near_field: bool,
+    /// Far ocean chunks draw with the coarse-interior index list.
+    ocean_coarse: bool,
 }
 
 fn push_draw_batch_instance(
@@ -724,12 +738,14 @@ fn push_draw_batch_instance(
     tile_key: Option<TileKey>,
     near_field: bool,
     dense_near_field: bool,
+    ocean_coarse: bool,
     instance_index: u32,
 ) {
     if let Some(batch) = batches.last_mut()
         && batch.tile_key == tile_key
         && batch.near_field == near_field
         && batch.dense_near_field == dense_near_field
+        && batch.ocean_coarse == ocean_coarse
         && batch.first_instance + batch.instance_count == instance_index
     {
         batch.instance_count += 1;
@@ -740,6 +756,7 @@ fn push_draw_batch_instance(
             tile_key,
             near_field,
             dense_near_field,
+            ocean_coarse,
         });
     }
 }
@@ -901,6 +918,9 @@ pub struct TerrainRenderer {
     chunk_vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+    /// Ocean chunks draw with a coarser interior and the identical boundary.
+    ocean_index_buffer: wgpu::Buffer,
+    ocean_index_count: u32,
     near_field_vertex_buffer: wgpu::Buffer,
     near_field_index_buffer: wgpu::Buffer,
     near_field_index_count: u32,
@@ -1234,6 +1254,25 @@ impl TerrainRenderer {
             contents: bytemuck::cast_slice(&topology.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
+        let ocean_coarse_step = std::env::var("PLANET_OCEAN_COARSE_STEP")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .map(|step| if matches!(step, 2 | 4) { step } else { 0 })
+            .unwrap_or(2);
+        let ocean_indices = if ocean_coarse_step == 0 {
+            topology.indices.clone()
+        } else {
+            crate::planet::coarse_interior_indices(
+                &topology.indices,
+                CHUNK_GRID_QUADS,
+                ocean_coarse_step,
+            )
+        };
+        let ocean_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("shared ocean chunk indices"),
+            contents: bytemuck::cast_slice(&ocean_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
         let near_field_topology =
             build_chunk_mesh_with_quads(QuadtreeNode::root(0), NEAR_FIELD_GRID_QUADS);
         let near_field_vertex_buffer =
@@ -1459,6 +1498,8 @@ impl TerrainRenderer {
             chunk_vertex_buffer,
             index_buffer,
             index_count: topology.indices.len() as u32,
+            ocean_index_buffer,
+            ocean_index_count: ocean_indices.len() as u32,
             near_field_vertex_buffer,
             near_field_index_buffer,
             near_field_index_count: near_field_topology.indices.len() as u32,
@@ -3106,11 +3147,26 @@ impl TerrainRenderer {
             };
             let ocean_dense_near_field = ocean_dense_grid_enabled()
                 || (near_field && render_node.node.level <= NEAR_FIELD_DENSE_MAX_LEVEL);
+            // Chunks whose nearest point is beyond the coarse range draw the
+            // sea with a coarser interior; their outer ring is unchanged.
+            let chunk_edge_meters = std::f64::consts::FRAC_PI_2
+                * crate::planet::planet_radius_meters()
+                / f64::from(1_u32 << render_node.node.level);
+            let nearest_meters = camera_view_basis
+                .world_to_view(anchor_world - camera_world)
+                .length()
+                - 0.75 * chunk_edge_meters;
+            let fine_cell_pixels = chunk_edge_meters / CHUNK_GRID_QUADS as f64
+                / nearest_meters.max(1.0)
+                * f64::from(viewport[1])
+                / (2.0 * (0.5 * vertical_fov_radians).tan());
+            let ocean_coarse = fine_cell_pixels < ocean_coarse_cell_pixels();
             prepared_instances.push((
                 if near_field { None } else { tile_key },
                 near_field,
                 dense_near_field,
                 ocean_dense_near_field,
+                ocean_coarse,
                 TerrainInstance {
                     anchor_view_position: camera_view_basis
                         .world_to_view(anchor_world - camera_world)
@@ -3169,6 +3225,7 @@ impl TerrainRenderer {
                 near_field,
                 dense_near_field,
                 ocean_dense_near_field,
+                ocean_coarse,
                 _,
                 may_contain_ocean,
             )| {
@@ -3178,6 +3235,7 @@ impl TerrainRenderer {
                     *ocean_dense_near_field,
                     *tile_key,
                     !*may_contain_ocean,
+                    *ocean_coarse,
                 )
             },
         );
@@ -3187,6 +3245,7 @@ impl TerrainRenderer {
             near_field,
             dense_near_field,
             ocean_dense_near_field,
+            ocean_coarse,
             instance,
             may_contain_ocean,
         ) in prepared_instances
@@ -3197,6 +3256,7 @@ impl TerrainRenderer {
                 tile_key,
                 near_field,
                 dense_near_field,
+                false,
                 instance_index,
             );
             // Open sea always belongs to the complementary analytic shell.
@@ -3210,6 +3270,7 @@ impl TerrainRenderer {
                     tile_key,
                     near_field,
                     ocean_dense_near_field,
+                    ocean_coarse && !ocean_dense_near_field,
                     instance_index,
                 );
             }
@@ -3257,6 +3318,8 @@ impl TerrainRenderer {
             .map(|batch| {
                 let index_count = if batch.dense_near_field {
                     self.near_field_index_count
+                } else if batch.ocean_coarse {
+                    self.ocean_index_count
                 } else {
                     self.index_count
                 };
@@ -3418,11 +3481,19 @@ impl TerrainRenderer {
                     self.near_field_index_count,
                 )
             } else {
-                (
-                    &self.chunk_vertex_buffer,
-                    &self.index_buffer,
-                    self.index_count,
-                )
+                if batch.ocean_coarse {
+                    (
+                        &self.chunk_vertex_buffer,
+                        &self.ocean_index_buffer,
+                        self.ocean_index_count,
+                    )
+                } else {
+                    (
+                        &self.chunk_vertex_buffer,
+                        &self.index_buffer,
+                        self.index_count,
+                    )
+                }
             };
             render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
