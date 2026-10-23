@@ -12,6 +12,7 @@ mod debug;
 mod driving;
 mod flock_marker;
 mod frame_pacing;
+mod quality;
 mod forest;
 mod shadow_heights;
 mod gust;
@@ -5092,6 +5093,7 @@ impl State {
                                 "fixed"
                             },
                         ));
+                        ui.label(quality::status_text());
                         ui.label(format!(
                             "Post: AA {}  |  bloom {}  |  HDR curve {}",
                             if blur_enabled { "on" } else { "off" },
@@ -7314,6 +7316,14 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::F12) =>
                 {
                     state.manual_screenshot_requested = true;
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && event.physical_key == PhysicalKey::Code(KeyCode::F5) =>
+                {
+                    quality::cycle_saved();
+                    state.mark_hud_dirty();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }

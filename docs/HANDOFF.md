@@ -13763,3 +13763,9 @@ All scenario assertions pass at every budget. Pixel change vs 256 (>16 levels): 
 | forest_performance | 66.1 | 66.0 | 56.8 | 48.4 |
 
 Pixels >16 levels vs orig: High 0-1.5%; Medium 0-1.5% (+0.7% low_flight, 0.3-0.8% mountains); Low 0.3-3.3% (low_flight 3.1%). All assertions pass. Presets are not wired into any UI yet; mapping is env-only (`PLANET_MAX_ACTIVE_CHUNKS`, `PLANET_OCEAN_COARSE_STEP`, `PLANET_OCEAN_COARSE_CELL_PIXELS`).
+
+## Graphics quality setting (23 October)
+
+- `crates/app/src/quality.rs`: High (256 chunks, ocean coarse step 2 @ 8px; the previous default), Medium (192, 2 @ 8px), Low (128, 4 @ 16px). Chosen at startup (the budget sizes GPU buffers) from `PLANET_QUALITY=high|medium|low`, else the saved setting in `$XDG_CONFIG_HOME/planet/settings.json` (or `~/.config/planet/settings.json`), else High. Scenario runs and unit tests ignore the saved file; `PLANET_MAX_ACTIVE_CHUNKS`, `PLANET_OCEAN_COARSE_STEP`, `PLANET_OCEAN_COARSE_CELL_PIXELS` still override individual values.
+- F5 cycles and saves the setting for the next launch (no live switching); the F3 debug overlay shows "Quality: X now, Y after restart". F5 was free since the ray-path removal.
+- Verified: `PLANET_QUALITY=low` road scene terrain 589,824 -> 294,912 tris, ocean 268k -> 101k. Tests: preset ordering/cycle, config round trip; full app suite same 6 unrelated failures. F5 and the overlay line were not exercised live (would take over the display).

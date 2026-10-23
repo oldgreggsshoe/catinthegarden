@@ -80,7 +80,7 @@ pub fn max_active_chunks_from_env() -> usize {
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .map(|value| value.max(FACE_COUNT as usize))
-        .unwrap_or(DEFAULT_MAX_ACTIVE_CHUNKS)
+        .unwrap_or_else(|| crate::quality::active().chunk_budget())
 }
 pub const SKIRT_DEPTH_RATIO: f64 = 0.075;
 /// Coarse fallback chunks can span hundreds of kilometres. Keep their skirts

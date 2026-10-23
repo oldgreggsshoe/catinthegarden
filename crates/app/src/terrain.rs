@@ -207,7 +207,7 @@ fn ocean_coarse_cell_pixels() -> f64 {
         std::env::var("PLANET_OCEAN_COARSE_CELL_PIXELS")
             .ok()
             .and_then(|value| value.trim().parse::<f64>().ok())
-            .unwrap_or(8.0)
+            .unwrap_or_else(|| crate::quality::active().ocean_coarse_cell_pixels())
     })
 }
 /// The full 40x40 ocean lattice is an expensive visual diagnostic. Keep it
@@ -1258,7 +1258,7 @@ impl TerrainRenderer {
             .ok()
             .and_then(|value| value.trim().parse::<usize>().ok())
             .map(|step| if matches!(step, 2 | 4) { step } else { 0 })
-            .unwrap_or(2);
+            .unwrap_or_else(|| crate::quality::active().ocean_coarse_step());
         let ocean_indices = if ocean_coarse_step == 0 {
             topology.indices.clone()
         } else {
