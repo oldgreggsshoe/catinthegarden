@@ -10,8 +10,27 @@
   "planet_rotation_time_scale": 0,
   "fixed_exposure": true,
   "screenshot_times_seconds": [
-    2,
-    4
+    2.0,
+    2.1,
+    2.2,
+    2.3,
+    2.4,
+    2.5,
+    2.6,
+    2.7,
+    2.8,
+    2.9,
+    3.0,
+    3.1,
+    3.2,
+    3.3,
+    3.4,
+    3.5,
+    3.6,
+    3.7,
+    3.8,
+    3.9,
+    4.0
   ],
   "waypoints": [
     {
@@ -36,7 +55,7 @@
   ],
   "assertions": {
     "require_finite_metrics": true,
-    "expected_screenshots": 2,
+    "expected_screenshots": 21,
     "min_exposure": 0.9999,
     "max_exposure": 1.0001,
     "max_exposure_delta_per_frame": 0.0001

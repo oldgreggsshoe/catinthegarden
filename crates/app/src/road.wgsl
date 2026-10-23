@@ -56,8 +56,10 @@ fn lantern_noise(t: f32, seed: u32) -> f32 {
 fn lantern_light(seed: f32) -> vec3<f32> {
     let key=u32(seed*16777216.0);
     let time=max(camera.projection.z,0.0);
-    let strength=0.80+0.16*lantern_noise(time*0.9+seed*23.0,key)
-        +0.06*lantern_noise(time*2.7+seed*71.0,key^0x85ebca6bu);
+    // More visible oil-flame dips/flares, plus quick irregular flutter.
+    // Range0.45..1.37, expected mean0.91 as before; never switches off.
+    let strength=0.45+0.62*lantern_noise(time*1.7+seed*23.0,key)
+        +0.30*lantern_noise(time*7.0+seed*71.0,key^0x85ebca6bu);
     let amber=mix(vec3<f32>(1.0,0.33,0.12),vec3<f32>(1.0,0.29,0.10),seed);
     // Shared by visible flames and their cast light: two halvings of the prior radiance.
     return amber*strength*0.25;

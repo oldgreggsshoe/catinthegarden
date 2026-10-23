@@ -14,6 +14,24 @@ regional gateways, fitted decks on legs, cuts, covered bores and tree clearance.
 Generation is on demand: this does **not** claim that every region of the world
 has already passed a complete engineering audit.
 
+## Stronger lantern flutter and precise highway steering, 23 October
+
+Partial steering now uses a speed-dependent progressive response, separate
+from available wheel lock/grip. Low-speed behaviour is unchanged through
+36km/h; between36 and108km/h the near-centre gain smoothly decreases to30%
+of its old value. At full input the response is still full lock. There is no
+new dead zone or added delay:15ms mouse filtering,8rad/s countersteering,
+6.5m/s² lateral limit, brakes, acceleration and speed caps are retained.
+The L/R indicator continues to show actual wheel position after this curve.
+
+Lantern strength now combines1.7Hz slow noise and7Hz irregular flutter in a
+bounded0.45..1.37 envelope, replacing0.80..1.02. Expected mean remains0.91;
+quarter-intensity red-orange colour and indoor exposure are unchanged. Flame
+and cast light use the same seeded noise, independently per lantern. No lamp
+switches off; no new pass, per-frame upload or extra noise evaluations.
+The existing close-up replay now records21 frames at0.1s intervals from2–4s
+for motion/brightness review instead of only two isolated images.
+
 ## Cornering grip and steering feedback, 22 October
 
 The controller now uses one6.5m/s² lateral-acceleration limit for both the

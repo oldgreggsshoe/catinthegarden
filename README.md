@@ -107,7 +107,10 @@ reverse; **mouse movement/A/D** steer; hold **right mouse** to look around
 speed (default108km/h, reverse capped at29km/h). Mouse vertical motion and Q/E
 also look independently of steering.
 Mouse steering holds a bounded virtual wheel; move back to straighten, or use
-A/D to override and reset it. Losing capture resets mouse steering. **C** gets
+A/D to override and reset it. Small corrections become progressively gentler
+from36 to108km/h (about70% less sensitive near centre at108km/h); full lock,
+cornering grip and quick corrections remain available. Losing capture resets
+mouse steering. **C** gets
 out to walk; **G** returns to flight. The car can leave the
 road: gravity, four ground contacts and damped suspension replace the walking
 height clamp. Auto-hold keeps the stationary car parked on gradients. This is a test controller, not a rendered vehicle or full chassis,
@@ -133,7 +136,9 @@ those replays so they wait for signs, not an arbitrary frame count.
 
 Network bores have amber wall lights every20m, alternating left/right (40m per
 wall), with soft distance falloff. Each has a slight, stable reddish variation
-and smooth independent oil-lantern flutter (not on/off electrical flashing).
+and pronounced independent oil-lantern dips/flares with quicker flutter
+(not on/off electrical flashing). The wider0.45–1.37 intensity envelope keeps
+the same expected average brightness.
 Iron cages, pitched hoods, wall brackets, oil reservoirs and visible flames
 replace the flat panels. Flame and cast light share the same variation. Night-glowing road
 paint emits60% of its former radiance. Their surfaces and exit boards do not use

@@ -10,7 +10,18 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 22 October: cornering grip and steering feedback.**
+**Current phase, 23 October: stronger lantern flutter and precise highway steering.**
+
+- Partial steering gains a speed-progressive curve: unchanged below36km/h,
+  smoothly reduced to30% near-centre gain at108km/h. Full lock/grip, quick
+  reversal,15ms mouse filter, brakes/acceleration/speed caps unchanged.
+- Lamp noise is stronger/faster:0.45..1.37 versus0.80..1.02, same expected
+  mean0.91,1.7/7Hz noise. Red-orange colour/quarter intensity/exposure retained;
+  flame and illumination remain synchronized per independently seeded lamp.
+- Expanded close-up replay to21 captures,2..4s at0.1s. Validation below.
+  Separate concurrent frame-pacing/FFT experiments are not part of this task.
+
+**Previous phase, 22 October: cornering grip and steering feedback.**
 
 - One6.5m/s² cornering limit now feeds both speed-dependent wheel lock and
   curvature safety cap (was4). At100km/h full-lock radius~119m versus193m;
@@ -13642,3 +13653,31 @@ spatial log, for p99/stall claims. still_5s check: 179 samples, p50 16.7 ms
 (vsync-limited), p99 24.3 ms. Next: measure land/forest/coast/road/tunnel
 scenes with it (roads need PLANET_ROAD_EXPERIMENT=1, tunnel
 PLANET_ROAD_NETWORK_SITE=longest_undersea). FFT gate remains uncommitted.
+
+
+## 23 October — stronger flutter and highway precision validation
+
+- Production-controller red/green test first failed because near-centre demand
+  did not change with speed. Progressive gain now leaves<=36km/h unchanged,
+  smoothly reaches30% near-centre gain at108km/h, remains monotone/symmetric,
+  and retains full lock both ways. Existing reversal<=100ms, bend radii,
+  acceleration, grip/speed cap, suspension and steering-indicator checks pass.
+- Seventeen focused app driving checks and the road/camera-layout WGSL
+  validator pass. Full serial761 pass/6 known unrelated failures/68 ignored;
+  existing optical-zoom/FOV, shallow-turquoise and water-aboard failures remain.
+  Release builds; one existing unused-startup-helper warning.
+- Real close-up replay`road_network_lantern_close/1792713413-20836` passes all
+  21 captures with fixed1x exposure. Opened initial/bright2/dim7: flame and
+  wall illumination visibly dip/flutter together; wall ROI(20,20)-(160,150)
+  RGB mean ranges49.7..77.6. Motion artifact`test-runs/lantern-highway/flicker.gif`.
+  Diagnostic sampling of actual shader coefficients/noise over64 seeds/60s
+  gives mean0.9094 versus0.9105, std0.1709 versus0.0426 (~4x variation),
+  never blackout. This is a source-math probe, not a GPU timing measurement.
+- Same two noise evaluations, no extra GPU passes/buffers/CPU light updates;
+  quarter-intensity reddish colour and no tunnel paint emission unchanged.
+  No paired FPS claim. Existing interactive renderer was not stopped or given
+  synthetic input; the updated release takes effect after restart.
+- Separate local main.rs/frame-pacing/FFT experiments were not edited/staged
+  by this task. At validation time the uncommitted FFT-gate condition/comment
+  was in the post-LOD camera-correction block, not the FFT update call; its
+  owner should verify that placement before treating it as ocean gating.

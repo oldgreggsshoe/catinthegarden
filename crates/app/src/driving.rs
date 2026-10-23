@@ -71,7 +71,12 @@ impl Car {
         // curvature. Otherwise tiny highway inputs already hit the safety
         // clamp and all larger inputs steer identically.
         let lock = self.steering_lock();
-        let target = steer.clamp(-1.0, 1.0) * lock;
+        // Progressively soften small corrections from36 to108km/h without
+        // reducing full lock/grip or delaying a correction with more filtering.
+        let speed_blend = ((self.speed.abs() - 10.0) / 20.0).clamp(0.0, 1.0);
+        let centre_gain = 1.0 - 0.7 * speed_blend * speed_blend * (3.0 - 2.0 * speed_blend);
+        let input = steer.clamp(-1.0, 1.0);
+        let target = input * (centre_gain + (1.0 - centre_gain) * input * input) * lock;
         self.steering += (target - self.steering).clamp(-8.0 * STEP, 8.0 * STEP);
         let acceleration = if throttle * self.speed < -0.1 {
             8.0
@@ -273,6 +278,31 @@ mod tests {
             "100km/h radius {highway}"
         );
         assert!(highway > 50.0, "tight bends still need braking");
+    }
+    #[test]
+    fn high_speed_small_inputs_are_gentler_without_losing_lock_or_fast_reversal() {
+        let response = |speed, input| {
+            let mut car = Car {
+                grounded: true,
+                ..Car::default()
+            };
+            for _ in 0..120 {
+                car.speed = speed;
+                car.travel(0.0, input, false, 1.0);
+            }
+            car.speed = speed;
+            car.steering_fraction()
+        };
+        assert!((response(5.0, 0.1) - 0.1).abs() < 1e-12);
+        assert!(
+            response(30.0, 0.1) < response(5.0, 0.1) * 0.4,
+            "high-speed near-centre input still too sensitive"
+        );
+        assert!((response(30.0, 1.0) - 1.0).abs() < 1e-12);
+        assert!((response(30.0, -1.0) + 1.0).abs() < 1e-12);
+        for speed in [10.0, 15.0, 20.0, 25.0, 30.0] {
+            assert!((response(speed, -0.1) + response(speed, 0.1)).abs() < 1e-12);
+        }
     }
     #[test]
     fn engine_acceleration_is_six_metres_per_second_squared_in_both_directions() {

@@ -45,3 +45,15 @@ I would tighten three things:
 I’d treat the hardware examples as reference tiers, not buying advice or proof of1080p/60. The P50 remains useful for finding waste, even if it should not define the highest-quality target.
 
 **My order:** improve frame-time recording, measure the five scene families, then optimise the largest demonstrated cost. The review is a good roadmap—not yet evidence that a hardware upgrade alone solves performance.
+
+I’ll make the lantern flicker more pronounced and soften small steering inputs at high speed, while keeping quick countersteering and the improved cornering grip.
+
+The wheel lock already decreases with speed, but small inputs still use the same response curve. I’ll make that curve gentler near centre at high speed—not add delay or reduce grip.
+
+I’ll also widen the lanterns’ dim-to-bright range and speed up the flutter, keeping their average brightness unchanged. The changes will stay in the driving controller and road shader, with an expanded close-up replay for checking the flicker.
+
+Done and pushed. Restart the renderer to pick up the changes:
+- Stronger, quicker lantern flicker, without raising average brightness.
+- Gentler small steering corrections at high speed; full lock, grip and quick countersteering retained.
+
+The21-frame lantern replay and17 driving checks pass. Full suite:761 passes, six known unrelated failures.
