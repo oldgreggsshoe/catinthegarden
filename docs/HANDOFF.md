@@ -13721,3 +13721,11 @@ triangles) and need a quality decision.
 - Opt-in, NOT default: `PLANET_ABLATE=cheap_aerial` makes the terrain vertex aerial in-scatter use 1 sample instead of 2 (`aerial_perspective_components_n`, `CHEAP_VERTEX_AERIAL`). Matched 1280x720 Immediate p50: road_network_driving 77.90 -> 77.02 ms, village_pov 73.29 -> 72.56, ocean_hybrid_close 47.73 -> 46.63 (about 1-2%).
 - Picture: changes only distant terrain haze (village_pov capture-001: 4.5% of pixels >4 levels, max 22, all on the far mountain, slightly less haze; road driving 0.6%, max 20, far coast only; ocean_hybrid_close pixel-identical). Side-by-side/diff images were in the session scratchpad (cmp_village.png, cmp_road.png).
 - Conclusion: fog/aerial per-vertex terms are not a big lever; the in-scatter sample count is worth about 1 ms. A player-facing "atmosphere quality" option could expose it later.
+
+## LOD/triangle-count sweep (23 October)
+
+- New measurement hook `PLANET_LOD_SPLIT_PIXELS` (default 1.25; merge = half). 1280x720 Immediate p50, 2 reps each:
+  - Split threshold 1.25/1.5/2.0/3.0: road_network_driving 78.0/77.9/78.0/78.1, village_pov 73.3/73.3/73.2/73.2 -- NO effect. Triangles stay 589,824 terrain (= 256 x 2,304) every time: the 256-leaf budget binds, so thresholds are irrelevant in these scenes.
+  - `PLANET_MAX_ACTIVE_CHUNKS=128`: triangles halve (terrain 294,912; road ocean 571k -> 276k). road 78.0 -> 47.6 ms (-39%), village 73.3 -> 51.7 (-29%).
+  - Quality at 128: road scene >16-level pixel change 0.01-0.14%; village capture 1 10.7% (foreground ground-detail shapes shift, no cracks/holes seen), capture 2 1.2%. Images: scratchpad lod_village.png / lod_road.png.
+- Conclusion: triangle count is set by the chunk budget, not the split threshold. Budget is the quality knob; cracks/skirts untouched. Next: try 160/192, check mountain scenarios, then consider a graphics preset for it and a coarser far-ocean grid.

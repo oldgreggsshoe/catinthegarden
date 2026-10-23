@@ -1134,13 +1134,20 @@ pub struct LodPolicy {
 
 impl Default for LodPolicy {
     fn default() -> Self {
+        // `PLANET_LOD_SPLIT_PIXELS` is a measurement hook (and the seed of a
+        // future detail option); the merge threshold keeps the 2:1 band.
+        let split = std::env::var("PLANET_LOD_SPLIT_PIXELS")
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|value| *value > 0.0)
+            .unwrap_or(1.25);
         Self {
             // Lowering both pixel thresholds by the same factor moves every
             // split/merge boundary 20% farther from the camera while retaining
             // the established 2:1 hysteresis band. This brings the finest
             // terrain in before the player is almost on top of it.
-            split_pixels: 1.25,
-            merge_pixels: 0.625,
+            split_pixels: split,
+            merge_pixels: split * 0.5,
             max_level: MAX_LOD_LEVEL,
         }
     }
