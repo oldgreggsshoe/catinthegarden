@@ -15,6 +15,7 @@ struct Output {
     @builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@location(1) colour:vec3<f32>,
     @location(2) @interpolate(flat) light:f32,
     @location(3) @interpolate(flat) wood:f32,
+    @location(4) @interpolate(flat) night:f32,
 }
 @vertex fn vs_main(v:Input)->Output {
     let relative=v.origin.xyz+v.across.xyz*v.position.x+v.forward.xyz*v.position.y+v.up.xyz*v.position.z;
@@ -25,13 +26,21 @@ struct Output {
     if out.wood>0.5 {out.uv=vec2<f32>(-2.0-v.uv.x,v.uv.y);}
     out.light=0.40+1.4*max(dot(normal,normalize(camera.sun_direction.xyz)),0.0)*max(dot(v.up.xyz,normalize(camera.sun_direction.xyz)),0.0);
     if v.colour.z<0.0 {out.light=1.0;}
+    // Boards fluoresce violet once the sun is down (always inside bores).
+    out.night=1.0-smoothstep(-0.08,0.10,dot(normalize(v.up.xyz),normalize(camera.sun_direction.xyz)));
+    if v.colour.z<0.0 {out.night=1.0;}
     return out;
 }
 @fragment fn fs_main(v:Output)->@location(0) vec4<f32> {
     var alpha=1.0;
     var colour=v.colour;
-    if v.wood>0.5 {colour*=textureSample(wood_texture,wood_sampler,v.uv).rgb;}
+    var glow=vec3<f32>(0.0);
+    if v.wood>0.5 {
+        let grain=textureSample(wood_texture,wood_sampler,v.uv).rgb;
+        colour*=grain;
+        glow=vec3<f32>(0.20,0.04,0.55)*0.055*v.night*(0.5+1.0*dot(grain,vec3<f32>(0.3333)));
+    }
     else if v.uv.x>=0.0 {alpha=textureSample(atlas,atlas_sampler,v.uv).a;}
     if alpha<0.02 {discard;}
-    return vec4<f32>(colour*v.light,alpha);
+    return vec4<f32>(colour*v.light+glow,alpha);
 }

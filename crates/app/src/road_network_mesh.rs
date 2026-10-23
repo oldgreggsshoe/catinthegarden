@@ -821,7 +821,7 @@ pub fn snapshot(
                 {
                     // Only the interior shell/deck, never the outdoor shell.
                     if !v.colour.iter().all(|&c| c < 0.0) && v.colour[0] >= 0.0 {
-                        v.lighting = light_group as u32;
+                        v.lighting = (v.lighting & 0xffff_0000) | light_group as u32;
                     }
                 }
             }
@@ -1196,10 +1196,11 @@ fn deck(
         let la = ribbon.sides[0].lerp(ribbon.sides[1], start) * width;
         let lb = ribbon.sides[0].lerp(ribbon.sides[1], end) * width;
         let z = DVec3::Z * (high - low);
-        road::quad(
+        road::quad_with_heading(
             mesh,
             [a - la + z, a + la + z, b + lb + z, b - lb + z],
             colour,
+            b - a,
         );
         road::quad(mesh, [a + la, a - la, b - lb, b + lb], [0.32, 0.31, 0.29]);
         road::quad(
@@ -1230,72 +1231,13 @@ fn deck(
         }
     };
     slab(mesh, road::HALF_WIDTH, -1.0, 0.0, 0.0, colour, 0.0, 1.0);
-    // Low flush edge markings, not a parapet across junction mouths.
-    let marking = if s.tunnel {
-        [0.65, 0.65, -0.61]
-    } else {
-        [0.65, 0.65, 0.61]
-    };
-    let paint =
-        |mesh: &mut Vec<Vertex>, start: f64, end: f64, offset: f64, width: f64, height: f64| {
-            let a = ribbon.point(s, start, offset) + DVec3::Z * height;
-            let b = ribbon.point(s, end, offset) + DVec3::Z * height;
-            let la = ribbon.sides[0].lerp(ribbon.sides[1], start) * width;
-            let lb = ribbon.sides[0].lerp(ribbon.sides[1], end) * width;
-            road::quad(mesh, [a - la, a + la, b + lb, b - lb], marking);
-            // Paint is flat, so its normal lane carries each corner's signed
-            // half-width instead; road.wgsl widens sub-pixel strips with it.
-            let n = mesh.len() - 6;
-            for (k, half) in [(0, -la), (1, la), (2, lb), (3, -lb)] {
-                let half = half.as_vec3().to_array();
-                for slot in match k {
-                    0 => vec![0, 3],
-                    1 => vec![1],
-                    2 => vec![2, 4],
-                    _ => vec![5],
-                } {
-                    mesh[n + slot].normal = half;
-                }
-            }
-        };
-    for offset in [-4.7, 4.7] {
-        for (start, end) in exposed(ribbon, s, field, offset, 5.1) {
-            paint(mesh, start, end, offset, 0.10, 0.025);
-        }
-    }
+    // No painted markings: the deck is bare timber planking.
     // Retain edge protection right up to each real opening, also at village
     // approaches. Excavation floor depth is not a measure of the fall below.
     if !s.tunnel {
         for offset in [-4.82, 4.82] {
             for (start, end) in exposed(ribbon, s, field, offset, 4.82) {
                 slab(mesh, 0.18, 0.0, 0.9, offset, [0.32, 0.31, 0.29], start, end);
-            }
-        }
-    }
-    let [sa, sb] = ribbon.station;
-    let length = delta.length();
-    let from = if ribbon.branches[0] {
-        (7.0 / length).min(1.0)
-    } else {
-        0.0
-    };
-    let to = if ribbon.branches[1] {
-        (1.0 - 7.0 / length).max(0.0)
-    } else {
-        1.0
-    };
-    for dash in (sa.min(sb) / 9.0).floor() as i64..=(sa.max(sb) / 9.0).ceil() as i64 {
-        let a = (dash as f64 * 9.0 - sa) / (sb - sa);
-        let b = (dash as f64 * 9.0 + 3.0 - sa) / (sb - sa);
-        let start = a.min(b).max(from);
-        let end = a.max(b).min(to);
-        if end > start {
-            for (lo, hi) in exposed(ribbon, s, field, 0.0, 5.1) {
-                let a = start.max(lo);
-                let b = end.min(hi);
-                if b > a {
-                    paint(mesh, a, b, 0.0, 0.08, 0.035);
-                }
             }
         }
     }

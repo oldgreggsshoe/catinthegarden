@@ -94,33 +94,19 @@ fn project_vertex(input: Input) -> Output {
     if all(input.colour<vec3<f32>(0.0)) {output.network_kind=3.0;output.sheltered=0.0;}
     output.up = input.up;
     output.coverage = vec4<f32>(0.0);
-    // Road paint carries its signed half-width in the normal lane. A strip
-    // thinner than ~1.6px is widened so distant lines stay continuous
-    // instead of breaking into isolated pixels.
-    if all(abs(output.colour - vec3<f32>(0.65, 0.65, 0.61)) < vec3<f32>(0.004))
-        && output.network_kind < 0.5 && output.position.w > 0.05 {
-        let half = input.across.xyz * input.normal.x
-            + input.forward * input.normal.y + input.up * input.normal.z;
-        let viewport = max(vec2<f32>(input.origin.w, input.across.w), vec2<f32>(1.0));
-        let half_px = length(pixel_vector(half, output.position, viewport));
-        output.normal = input.up;
-        output.normal_local = vec3<f32>(0.0,0.0,1.0);
-        if half_px > 0.000001 && half_px < 0.8 {
-            let widened = relative + half * (min(0.8 / half_px, 60.0) - 1.0);
-            let view2 = vec3<f32>(dot(widened, camera.camera_right.xyz),
-                dot(widened, camera.camera_up.xyz), -dot(widened, camera.camera_forward.xyz));
-            output.position = camera.projection_matrix * vec4<f32>(view2, 1.0);
-        }
-    }
     return output;
 }
 
-const PAINT_GLOW = vec3<f32>(0.08, 0.60, 0.18) * 0.15;
+// Ultraviolet fluorescence of the timber: a dim violet that only shows where
+// the ordinary lighting is nearly dark (night, unlit bores), never by day.
+const WOOD_UV_GLOW = vec3<f32>(0.20, 0.04, 0.55) * 0.09;
+const DECK_PLANK_ALBEDO = vec3<f32>(0.20, 0.115, 0.055);
+const BEAM_ALBEDO = vec3<f32>(0.17, 0.10, 0.05);
 
 // Immutable nearby fixtures, never a search through the planetary network.
 // The finite soft cutoff removes light smoothly, without a bright/dark step.
 fn tunnel_irradiance(input: Output) -> vec3<f32> {
-    let base=input.lighting*25u;
+    let base=(input.lighting & 0xffffu)*25u;
     let count=min(u32(tunnel_lights[base].x),24u);
     var light=vec3<f32>(0.0); // illumination comes from actual lanterns only
     for (var i=0u;i<count;i+=1u) {
@@ -157,22 +143,83 @@ fn road_material_grain(p: vec3<f32>, frequency: f32, footprint: f32) -> f32 {
     let d = mix(road_material_hash(cell+vec3<i32>(0,1,1),period),road_material_hash(cell+vec3<i32>(1,1,1),period),t.x);
     return (mix(mix(a,b,t.y),mix(c,d,t.y),t.z) - 0.5) * weight;
 }
-fn road_material_albedo(colour: vec3<f32>, p: vec3<f32>, footprint: f32) -> vec3<f32> {
-    let asphalt = all(abs(colour - vec3<f32>(0.045,0.048,0.05)) < vec3<f32>(0.0005));
-    let concrete = all(abs(colour - vec3<f32>(0.32,0.31,0.29)) < vec3<f32>(0.0005))
-        || all(abs(colour - vec3<f32>(0.24,0.235,0.22)) < vec3<f32>(0.0005));
-    // Paint, metal, soil and emissive fixtures retain their own materials.
-    if (!asphalt && !concrete) || footprint >= 2.0 { return colour; }
-    let broad = road_material_grain(p, 0.5, footprint);
-    let grain = road_material_grain(p, 8.0, footprint);
-    let fine = road_material_grain(p, 64.0, footprint);
-    var variation = 0.10*broad + 0.14*grain + 0.65*fine;
-    if concrete {
-        // Casting mottles, aggregate and sparse pores, not painted stripes.
-        let pores = smoothstep(0.22,0.40,-fine);
-        variation = 0.30*broad + 0.22*grain + 0.16*fine - 0.35*pores;
+// Anisotropic trilinear value noise; unlike road_material_grain it takes its
+// scales from the caller so grain can be stretched along a board or timber.
+fn wood_value(q: vec3<f32>) -> f32 {
+    let cell = vec3<i32>(floor(q));
+    let f = fract(q);
+    let t = f * f * (3.0 - 2.0 * f);
+    let period = 1048576;
+    let a = mix(road_material_hash(cell, period), road_material_hash(cell+vec3<i32>(1,0,0),period),t.x);
+    let b = mix(road_material_hash(cell+vec3<i32>(0,1,0),period),road_material_hash(cell+vec3<i32>(1,1,0),period),t.x);
+    let c = mix(road_material_hash(cell+vec3<i32>(0,0,1),period),road_material_hash(cell+vec3<i32>(1,0,1),period),t.x);
+    let d = mix(road_material_hash(cell+vec3<i32>(0,1,1),period),road_material_hash(cell+vec3<i32>(1,1,1),period),t.x);
+    return mix(mix(a,b,t.y),mix(c,d,t.y),t.z) - 0.5;
+}
+fn plank_heading(code: u32) -> vec2<f32> {
+    let h = code >> 16u;
+    if h == 0u { return vec2<f32>(0.0, 1.0); }
+    let angle = f32(h - 1u) / 65534.0 * 6.2831853;
+    return vec2<f32>(cos(angle), sin(angle));
+}
+fn is_road_tag(colour: vec3<f32>, tag: vec3<f32>) -> bool {
+    return all(abs(colour - tag) < vec3<f32>(0.0005));
+}
+// Wood albedo (rgb) and a 0..1 fluorescence strength (a). Tags keep their old
+// meaning: the dark "asphalt" tag is the planked deck, the two "concrete" tags
+// are large timbers (parapets, deck edges, legs, bore lining, court walls).
+// Anything else (iron, soil, emissive fixtures) is not wood: a = -1.
+fn road_wood(input: Output, footprint: f32) -> vec4<f32> {
+    let deck = is_road_tag(input.colour, vec3<f32>(0.045,0.048,0.05));
+    let timber = is_road_tag(input.colour, vec3<f32>(0.32,0.31,0.29));
+    let lining = is_road_tag(input.colour, vec3<f32>(0.24,0.235,0.22));
+    if !deck && !timber && !lining { return vec4<f32>(input.colour, -1.0); }
+    let facing_up = dot(input.normal, input.up);
+    if deck && facing_up > 0.5 {
+        // Boards laid across the road in short courses with staggered ends.
+        let d = plank_heading(input.lighting);
+        let along = dot(input.local_position.xy, d);
+        let across = dot(input.local_position.xy, vec2<f32>(-d.y, d.x));
+        let width = 0.32;
+        let plank_length = 2.6;
+        let row = floor(along / width);
+        let row_f = fract(along / width);
+        let shift = road_material_hash(vec3<i32>(i32(row), 7, 3), 1048576) * plank_length;
+        let column = floor((across + shift) / plank_length);
+        let column_f = fract((across + shift) / plank_length);
+        let tone = road_material_hash(vec3<i32>(i32(row), i32(column), 11), 1048576);
+        let seam = min(min(row_f * width, (1.0 - row_f) * width),
+            min(column_f * plank_length, (1.0 - column_f) * plank_length) * 0.5);
+        let gap = 1.0 - smoothstep(0.004, 0.016, seam);
+        let board = vec3<f32>(across * 0.7, along * 26.0, tone * 40.0);
+        let grain = 0.6 * wood_value(board) + 0.4 * wood_value(board * vec3<f32>(3.1, 2.3, 1.0));
+        let weight = 1.0 - smoothstep(0.08, 0.30, footprint);
+        let shade = (0.80 + 0.40 * tone) * (1.0 + 0.55 * grain * weight);
+        let albedo = DECK_PLANK_ALBEDO * mix(1.0, shade * mix(1.0, 0.50, gap), weight);
+        return vec4<f32>(albedo, clamp(0.8 + 1.2 * grain * weight - 0.7 * gap * weight, 0.1, 1.2));
     }
-    return colour * clamp(1.0 + variation,0.55,1.30);
+    // Large squared timbers. Grain runs along the post on upright faces and
+    // along the beam elsewhere.
+    let up = normalize(input.up);
+    let helper = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(up.x) > 0.8);
+    let e1 = normalize(cross(up, helper));
+    let e2 = cross(up, e1);
+    let p = input.material_position;
+    let q = vec3<f32>(dot(p, e1), dot(p, e2), dot(p, up));
+    let upright = abs(facing_up) < 0.6;
+    var scale = vec3<f32>(0.6, 7.0, 7.0);
+    if upright { scale = vec3<f32>(5.0, 5.0, 0.45); }
+    let coarse = wood_value(q * scale);
+    let fine = wood_value(q * scale * 4.1 + vec3<f32>(17.0, 3.0, 9.0));
+    let weight = 1.0 - smoothstep(0.05, 0.25, footprint);
+    // Dark butt joints between stacked timbers every 2.4m up a leg.
+    var joint = 0.0;
+    if upright { let f = fract(q.z / 2.4); joint = 1.0 - smoothstep(0.01, 0.04, min(f, 1.0 - f) * 2.4); }
+    var base = BEAM_ALBEDO;
+    if lining { base = BEAM_ALBEDO * 0.8; }
+    let shade = 1.0 + (0.9 * coarse + 0.5 * fine) * weight;
+    let albedo = base * clamp(shade, 0.5, 1.6) * (1.0 - 0.6 * joint * weight);
+    return vec4<f32>(albedo, clamp(0.8 + 1.6 * coarse * weight - 0.6 * joint * weight, 0.1, 1.2));
 }
 
 fn lit_colour(input: Output) -> vec3<f32> {
@@ -189,14 +236,13 @@ fn lit_colour(input: Output) -> vec3<f32> {
     let interior = (0.10 + 0.04*(1.0-abs(vertical)) + 0.12*max(vertical,0.0))
         * vec3<f32>(1.0,0.96,0.90);
     var illumination=mix(direct + ambient, interior, input.sheltered);
-    if input.lighting>0u {illumination=tunnel_irradiance(input);}
-    let lit = road_material_albedo(input.colour,input.material_position,footprint) * illumination;
-    // White road paint (colour 0.65,0.65,0.61) also phosphoresces green;
-    // whichever of the lit paint and the glow is brighter is what shows.
-    let is_paint = all(abs(input.colour - vec3<f32>(0.65, 0.65, 0.61)) < vec3<f32>(0.004));
-    if is_paint && input.sheltered < 0.5 {
-        let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
-        if dot(PAINT_GLOW, luma) > dot(lit, luma) { return PAINT_GLOW; }
+    if (input.lighting & 0xffffu)>0u {illumination=tunnel_irradiance(input);}
+    let wood = road_wood(input, footprint);
+    let lit = wood.rgb * illumination;
+    // Timber fluoresces violet wherever the real light has all but gone.
+    if wood.a >= 0.0 && input.sheltered < 1.5 {
+        let luma = dot(lit, vec3<f32>(0.2126, 0.7152, 0.0722));
+        return lit + WOOD_UV_GLOW * wood.a * (1.0 - smoothstep(0.02, 0.14, luma));
     }
     return lit;
 }

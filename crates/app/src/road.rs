@@ -528,16 +528,6 @@ impl Viaduct {
             slab(HALF_WIDTH, -DECK_THICKNESS, 0.0, 0.0, [0.045, 0.048, 0.05]);
             slab(0.18, 0.0, 0.9, -HALF_WIDTH + 0.18, concrete);
             slab(0.18, 0.0, 0.9, HALF_WIDTH - 0.18, concrete);
-            for i in start..end {
-                let a = self.route.points[i] + DVec3::Z * 0.015;
-                let b = a.lerp(self.route.points[i + 1] + DVec3::Z * 0.015, 0.4);
-                let s = lateral(&self.route.points, i) * 0.07;
-                quad(
-                    &mut vertices,
-                    [a - s, a + s, b + s, b - s],
-                    [0.72, 0.68, 0.49],
-                );
-            }
             let y0 = self.route.points[start].y;
             let y1 = self.route.points[end].y;
             for pair in self
@@ -679,6 +669,24 @@ pub(crate) fn quad(mesh: &mut Vec<Vertex>, points: [DVec3; 4], colour: [f32; 3])
             normal: normal.to_array(),
             colour,
         });
+    }
+}
+
+/// Like `quad`, but records which way the road runs across this face in the
+/// high 16 bits of the otherwise per-tunnel `lighting` lane, so the shader can
+/// lay planks square to the road even on bends. 0 means "unknown".
+pub(crate) fn quad_with_heading(
+    mesh: &mut Vec<Vertex>,
+    points: [DVec3; 4],
+    colour: [f32; 3],
+    along: DVec3,
+) {
+    let start = mesh.len();
+    quad(mesh, points, colour);
+    let turn = along.y.atan2(along.x).rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU;
+    let code = 1 + (turn * 65534.0) as u32;
+    for v in &mut mesh[start..] {
+        v.lighting |= code << 16;
     }
 }
 

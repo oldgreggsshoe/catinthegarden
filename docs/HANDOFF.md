@@ -13890,3 +13890,12 @@ Those edits were preserved and excluded from the entrance commit. The eight
 GPU/full-suite/matched-image results above cover the entrance change on the
 recorded immutable before/after builds, not the later material edits. No test
 renderer remains running; the GPU is available again.
+
+## Wooden roads, no paint, ultraviolet night glow (23 October)
+
+- User request: no concrete/tarmac; deck of wooden planks, all former concrete (parapets, deck edges, legs/piers, tunnel lining, court walls) as large timbers; no painted lines; at night all wood glows dim ultraviolet instead of the green paint glow.
+- Mesh tags are unchanged (the dark "asphalt" tag = planked deck, the two "concrete" tags = timber), so geometry, collision, tests and routing are untouched. `road.wgsl` `road_wood` replaces `road_material_albedo`: boards across the road (0.32 m courses, 2.6 m staggered boards, grain, gaps), upright timbers with vertical grain and 2.4 m butt joints, horizontal timbers grained along the beam; detail fades with pixel footprint so the far ribbons and distance read as a mean brown.
+- Plank direction: `road::quad_with_heading` packs the road heading into the high 16 bits of the vertex `lighting` lane (0 = unknown); tunnel light groups use the low 16 bits (`& 0xffff` in the shader, mesh assignment preserves the high bits). Heading is exact per segment; plank phase can step slightly at batch borders.
+- Paint removed: edge lines and centre dashes in `road_network_mesh.rs`, the legacy pilot's dashes in `road.rs`, the shader's paint widening/glow.
+- Glow: `WOOD_UV_GLOW` (violet, ~0.09 peak) added only where lit luminance is below ~0.14, modulated by grain/gaps. Signs: wood faces of `road_signs.wgsl` glow the same way once the sun is down (always in bores); ink is unchanged.
+- Verified: 109 road tests pass (shader validation included); opened road_network_join/parking/overview (day) and tunnel_lighting (night) captures. No FPS measurement; shader cost is a few extra noise lookups on road pixels only.
