@@ -2768,10 +2768,11 @@ struct AerialPerspectiveComponents {
     in_scatter: vec3<f32>,
 }
 
-fn aerial_perspective_components(
+fn aerial_perspective_components_n(
     camera_relative_view_position: vec3<f32>,
     surface_direction: vec3<f32>,
     surface_altitude_meters: f32,
+    sample_count: u32,
 ) -> AerialPerspectiveComponents {
     let distance_meters = length(camera_relative_view_position);
     let camera_altitude_meters = camera.camera_planet_direction_view_altitude.w;
@@ -2827,9 +2828,9 @@ fn aerial_perspective_components(
     let closest_distance = clamp(-radial_dot_view, view_start, view_end);
     let closest_fraction = (closest_distance - view_start) / atmospheric_view_length;
     var in_scatter = vec3<f32>(0.0);
-    for (var index = 0u; index < AERIAL_IN_SCATTER_SAMPLE_COUNT; index += 1u) {
-        let interval_start = f32(index) / f32(AERIAL_IN_SCATTER_SAMPLE_COUNT);
-        let interval_end = f32(index + 1u) / f32(AERIAL_IN_SCATTER_SAMPLE_COUNT);
+    for (var index = 0u; index < sample_count; index += 1u) {
+        let interval_start = f32(index) / f32(sample_count);
+        let interval_end = f32(index + 1u) / f32(sample_count);
         let sample_start = aerial_density_sample_fraction(interval_start, closest_fraction);
         let sample_end = aerial_density_sample_fraction(interval_end, closest_fraction);
         let sample_fraction = 0.5 * (sample_start + sample_end);
@@ -2873,11 +2874,11 @@ fn aerial_perspective_components(
         let rayleigh_optical_depth = RAYLEIGH_COEFFICIENT
             * density(in_scatter_altitude, RAYLEIGH_SCALE_HEIGHT_METERS)
             * rayleigh_in_scatter_path_length
-            / f32(AERIAL_IN_SCATTER_SAMPLE_COUNT);
+            / f32(sample_count);
         let mie_optical_depth = MIE_COEFFICIENT
             * density(in_scatter_altitude, MIE_SCALE_HEIGHT_METERS)
             * mie_in_scatter_path_length
-            / f32(AERIAL_IN_SCATTER_SAMPLE_COUNT);
+            / f32(sample_count);
         let total_optical_depth = rayleigh_optical_depth + mie_optical_depth;
         let phase_weight = (
             rayleigh_optical_depth * phase_rayleigh(cos_theta)
@@ -2891,6 +2892,19 @@ fn aerial_perspective_components(
     }
     in_scatter *= SOLAR_RADIANCE * AERIAL_IN_SCATTER_GAIN;
     return AerialPerspectiveComponents(view_transmittance, in_scatter);
+}
+
+fn aerial_perspective_components(
+    camera_relative_view_position: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+) -> AerialPerspectiveComponents {
+    return aerial_perspective_components_n(
+        camera_relative_view_position,
+        surface_direction,
+        surface_altitude_meters,
+        AERIAL_IN_SCATTER_SAMPLE_COUNT,
+    );
 }
 
 fn aerial_perspective(
@@ -3254,15 +3268,19 @@ fn terrain_fog(
     // pass fogs its own low rays to (atmosphere.wgsl): toward the storm, take
     // the sky at the horizon in this azimuth rather than along the ray, so the
     // fogged sea meets the fogged sky without a step.
-    let fog_colour = mix(
-        physical_camera_sky_radiance(camera_to_surface_ray_view),
+    var fog_colour = physical_camera_sky_radiance(camera_to_surface_ray_view);
+    // The horizon lookup only matters once there is overcast to mix it in.
+    if storm_overcast() > 0.0 {
+        fog_colour = mix(
+        fog_colour,
         physical_camera_horizon_sky_radiance(camera_to_surface_ray_view),
         // Fully the horizon's colour well before a full storm: the sky pass's
         // low rays are completely fogged by then, and a linear mix left
         // (1 - overcast) of the below-horizon ray's darker sky in the sea's
         // fog, a visible step at the horizon (overcast 0.78 measured 70 vs 79).
         smoothstep(0.0, 0.3, storm_overcast()),
-    );
+        );
+    }
     return TerrainFog(
         fog_amount,
         storm_overcast_colour(fog_colour) + storm_lightning_fog(camera_to_surface_ray_view),

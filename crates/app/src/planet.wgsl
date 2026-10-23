@@ -957,10 +957,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // crosses the threshold, while the bounded atmospheric column already
     // fades naturally toward the camera.
     if !ABLATE_VERTEX_AERIAL {
-        aerial = aerial_perspective_components(
+        aerial = aerial_perspective_components_n(
             camera_relative_view_position,
             direction,
             surface_height,
+            select(AERIAL_IN_SCATTER_SAMPLE_COUNT, 1u, CHEAP_VERTEX_AERIAL),
         );
     }
     if flat_triangles {

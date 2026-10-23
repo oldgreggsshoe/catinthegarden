@@ -13714,3 +13714,10 @@ ocean_rough_horizon or ocean_hybrid_close); the FFT visibility gate (tour_desert
 village_pov A/B identical). Remaining levers all change the picture or the mesh
 (coarser far-ocean index buffer, cheaper per-vertex aerial/fog, fewer ocean
 triangles) and need a quality decision.
+
+## Cheaper fog/aerial trial (23 October)
+
+- Exact change kept: `terrain_fog` only evaluates the horizon-sky lookup when `storm_overcast() > 0` (it was mixed in with weight 0 otherwise). Output unchanged.
+- Opt-in, NOT default: `PLANET_ABLATE=cheap_aerial` makes the terrain vertex aerial in-scatter use 1 sample instead of 2 (`aerial_perspective_components_n`, `CHEAP_VERTEX_AERIAL`). Matched 1280x720 Immediate p50: road_network_driving 77.90 -> 77.02 ms, village_pov 73.29 -> 72.56, ocean_hybrid_close 47.73 -> 46.63 (about 1-2%).
+- Picture: changes only distant terrain haze (village_pov capture-001: 4.5% of pixels >4 levels, max 22, all on the far mountain, slightly less haze; road driving 0.6%, max 20, far coast only; ocean_hybrid_close pixel-identical). Side-by-side/diff images were in the session scratchpad (cmp_village.png, cmp_road.png).
+- Conclusion: fog/aerial per-vertex terms are not a big lever; the in-scatter sample count is worth about 1 ms. A player-facing "atmosphere quality" option could expose it later.

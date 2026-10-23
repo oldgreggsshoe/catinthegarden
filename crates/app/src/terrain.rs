@@ -163,7 +163,8 @@ const ABLATE_OCEAN_TRACE: bool = {};
 const ABLATE_OCEAN_FOAM: bool = {};
 const ABLATE_OCEAN_UNDERSIDE: bool = {};
 const ABLATE_OCEAN_SURFACE: bool = {};
-const ABLATE_OCEAN_LIGHTING: bool = {};",
+const ABLATE_OCEAN_LIGHTING: bool = {};
+const CHEAP_VERTEX_AERIAL: bool = {};",
         ablate("material"),
         ablate("tint"),
         ablate("ocean_vertex"),
@@ -173,6 +174,8 @@ const ABLATE_OCEAN_LIGHTING: bool = {};",
         ablate("ocean_underside"),
         ablate("ocean_surface"),
         ablate("ocean_lighting"),
+        // Not an ablation: a one-sample in-scatter estimate, for A/B pictures.
+        ablate("cheap_aerial"),
     );
     [
         crate::planet::shared_planet_shader_source(),
