@@ -13920,3 +13920,11 @@ Sign boards keep the base violet (no stable world position in their vertices). 1
 Opened `road_network_tunnel_lighting/1792790222-304137` (needs `PLANET_ROAD_NETWORK_SITE=longest_undersea`;
 without it the scenario shows only sea): pinker floor, bluer far end. Tune the three amplitudes/
 wavelengths and the two colour constants. No FPS claim (three sines per glowing road pixel).
+
+## Road edge kerb and tunnel edge floor (23 October)
+
+Walking: `Field::keep_on_deck` (road_network_field.rs, called from `State::road_constrain_motion`) stops a
+walker standing on a deck from stepping off its side onto ground >0.5 m lower, sliding them along the road
+instead; road ends, junctions (other decks) and flush ground-level accesses stay open. Tunnels: the walking
+floor between the ribbon edge and the lining is now deck level (was 6 m lower: the "gap at the edge").
+Two unit tests added; 112 road tests pass. Not tried live; parapet collision itself is still not simulated.

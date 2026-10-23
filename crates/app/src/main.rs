@@ -2891,7 +2891,11 @@ impl State {
     }
     fn road_constrain_motion(&self, from: glam::DVec3, to: glam::DVec3) -> glam::DVec3 {
         if let Some(roads) = &self.road_network {
-            roads.plan().constrain_motion(from, to)
+            let to = roads.plan().constrain_motion(from, to);
+            let eye = to.length() - planet::planet_radius_meters();
+            roads.plan().keep_on_deck(from, to, |d| {
+                self.terrain.raster_surface_height_meters_at(d, eye)
+            })
         } else {
             self.road
                 .as_ref()

@@ -405,7 +405,9 @@ impl Field {
                 .candidates(p.truncate())
                 .filter(|s| s.tunnel && s.void(p, 0.5) > 0.0)
                 .map(|s| {
-                    let z = s.nearest(p.truncate()).0.z - 6.0;
+                    // The bore is wider than the ribbon: keep the deck's own level
+                    // out to the lining so there is no unwalkable gap at the edge.
+                    let z = s.nearest(p.truncate()).0.z;
                     self.frame.world(DVec3::new(p.x, p.y, z)).length() - self.frame.radius
                 })
                 .reduce(f64::max)
@@ -413,6 +415,45 @@ impl Field {
         }
         self.deck_height(d, eye)
             .map_or(terrain, |deck| terrain.max(deck))
+    }
+    /// Open-road edges act as a kerb: a walker standing on a deck cannot step
+    /// sideways off it onto ground that is more than half a metre lower.
+    /// Motion along the road is kept (a slide), and road ends, junctions and
+    /// flush ground-level accesses (where the ground is not lower) stay open.
+    pub fn keep_on_deck(&self, from: DVec3, to: DVec3, terrain_height: impl Fn(DVec3) -> Option<f64>) -> DVec3 {
+        let (fd, td) = (from.normalize_or_zero(), to.normalize_or_zero());
+        if fd.dot(self.frame.up) < 0.99 || td.dot(self.frame.up) < 0.99 {
+            return to;
+        }
+        let from_eye = from.length() - self.frame.radius;
+        let Some(deck) = self.deck_height(fd, from_eye) else { return to };
+        if from_eye - deck > 3.0 {
+            return to;
+        }
+        let to_eye = (to.length() - self.frame.radius).max(from_eye);
+        if self.deck_height(td, to_eye).is_some() {
+            return to;
+        }
+        if !terrain_height(td).is_some_and(|ground| ground < deck - 0.5) {
+            return to;
+        }
+        let (a, b) = (self.frame.local(from), self.frame.local(to));
+        let Some(segment) = self
+            .candidates(a.truncate())
+            .filter(|s| !s.is_parking())
+            .min_by(|x, y| x.nearest(a.truncate()).1.total_cmp(&y.nearest(a.truncate()).1))
+        else {
+            return from;
+        };
+        let tangent = (segment.b - segment.a).truncate().normalize_or_zero();
+        let along = tangent * (b - a).truncate().dot(tangent);
+        let slid = DVec3::new(a.x + along.x, a.y + along.y, b.z);
+        let slid_world = self.frame.world(slid);
+        if self.deck_height(slid_world.normalize(), to_eye).is_some() {
+            slid_world
+        } else {
+            from
+        }
     }
     pub fn constrain_motion(&self, from: DVec3, to: DVec3) -> DVec3 {
         if (from + to).normalize_or_zero().dot(self.frame.up) < 0.99 {
@@ -502,6 +543,43 @@ mod tests {
         assert!((field.height(d, 1250.0) - 1204.0).abs() < 0.1);
         assert_eq!(field.height(-d, 1250.0), 1250.0);
         assert!(field.candidates(DVec2::ZERO).count() <= MAX_PER_CELL);
+    }
+    #[test]
+    fn deck_edges_stop_a_walker_but_let_them_slide_along_the_road() {
+        let f = Frame::new(DVec3::X, 4e6).unwrap();
+        let field = Field::build(
+            f,
+            vec![segment([-100.0, 0.0, 100.0], [100.0, 0.0, 100.0], false)],
+        )
+        .unwrap();
+        let low = |_: DVec3| Some(90.0);
+        let flush = |_: DVec3| Some(100.0);
+        let from = f.world(DVec3::new(0.0, 0.5, 101.7));
+        let off = f.world(DVec3::new(2.0, 40.0, 101.7));
+        let kept = f.local(field.keep_on_deck(from, off, low));
+        assert!(kept.y < 3.0, "stopped at the edge, got y={}", kept.y);
+        assert!(kept.x > 1.0, "kept the motion along the road, got x={}", kept.x);
+        // Flush ground (a ground-level access) is not a drop: no kerb.
+        assert_eq!(field.keep_on_deck(from, off, flush), off);
+        // Stepping along the deck is untouched.
+        let along = f.world(DVec3::new(3.0, 0.5, 101.7));
+        assert_eq!(field.keep_on_deck(from, along, low), along);
+    }
+    #[test]
+    fn tunnel_floor_reaches_the_lining_with_no_gap_at_the_edge() {
+        let f = Frame::new(DVec3::X, 4e6).unwrap();
+        let field = Field::build(
+            f,
+            vec![segment([-100.0, 0.0, 100.0], [100.0, 0.0, 100.0], true)],
+        )
+        .unwrap();
+        for y in [0.0, crate::road::HALF_WIDTH + 0.3, crate::road::HALF_WIDTH + 1.0] {
+            let p = f.world(DVec3::new(0.0, y, 101.7));
+            if field.tunnel_void(p.normalize(), p.length() - f.radius) > 0.0 {
+                let h = field.camera_surface_height(p.normalize(), p.length() - f.radius, 0.0);
+                assert!((h - 100.0).abs() < 0.05, "y={y} floor {h}");
+            }
+        }
     }
     #[test]
     fn network_field_branch_is_a_union_not_a_blocked_crossing() {
