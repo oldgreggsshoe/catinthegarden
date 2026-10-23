@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Undersea entrance profiling,23October: reproduced/opened stationary0km/h entrance; outdoor culling remains off, High submits589824 terrain/97344 ocean triangles. Timing attempts invalidated by concurrent Claude GPU benchmarks; no FPS conclusion or renderer changes. Exclusive-GPU ablations pending; see docs/TUNNEL_ENTRANCE_PROFILE.md.
+
 - Wooden road signs,23October: oak-grain junction/distance/branch/village/tunnel boards with black embedded EB Garamond12 Bold serif, closed wooden edges and unchanged sign text/placement/distances/mounts. Cached512px sRGB tile/10 mips in the existing single sign draw; no per-frame layout/decode or new dependency. Generated texture, font/OFL and prompt/provenance in assets/road_signs. Opened daylight1792756520-184086 and both tunnel directions1792756476-183926;4 focused sign and real photographed-junction checks pass. Full766 pass/same6 failures/68ignored. Concurrent quality commits carried prototype code/tests; ff5c67f adds assets, completion docs follow. No FPS claim; see HANDOFF.
 
 - Graphics quality setting, 23 October: High/Medium/Low presets (256/192/128 chunks, ocean coarsening 2@8px/2@8px/4@16px) in `quality.rs`; `PLANET_QUALITY` or saved settings.json at startup, F5 cycles it live (and saves), F3 overlay shows it; scenarios/tests ignore the saved file. Low roughly 25-45% faster than original in measured scenes. See HANDOFF.

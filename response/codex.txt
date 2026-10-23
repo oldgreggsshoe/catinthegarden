@@ -15,3 +15,16 @@ Done and pushed: weathered oak boards with black EB Garamond serif lettering. Ju
 Wood texture: `assets/road_signs/oak.png`. Full generation prompt and font credits: `assets/road_signs/CREDITS.md`.
 
 Four sign checks pass; full suite766 passes, with six known unrelated failures.
+
+
+Confirmed the starting location, stationary at0km/h. Because you’re still outside the tunnel mouth, the deep-tunnel optimisation does not activate. High quality still submits about590000 terrain triangles and97000 ocean triangles there.
+
+Options to investigate:
+1. Entrance-aware visibility: avoid drawing hidden outdoor scenery while preserving the visible approach/cut bank.
+2. Cheaper terrain excavation: measure the road-cut shader cost separately.
+3. Tunnel geometry/lighting: isolate its cost before changing lanterns.
+4. Medium/Low quality: available now, with a terrain-detail trade-off.
+
+I cannot give trustworthy FPS comparisons yet: Claude’s benchmarks overlapped both attempts. Those timings are discarded, and I’ve closed my renderer to avoid interference. No renderer changes made.
+
+Findings saved in docs/TUNNEL_ENTRANCE_PROFILE.md. Please arrange a short GPU-idle window with Claude so I can finish the matched comparisons.

@@ -13831,3 +13831,13 @@ The debug panel had grown taller than the 640x360 surface, hiding its lower line
 - That CPU time is hidden when the GPU is the bottleneck: adding a 10 ms sleep to every frame left road_network_driving at 1280x720 unchanged (60.6 -> 60.4 ms p50). When the GPU is fast it shows: tour_coast at Low/640x360 went 13.7 -> 20.1 ms (+6.4) with the same sleep. So the CPU floor matters only on light scenes -- i.e. Low quality / fast GPUs -- and not at all for the heavy scenes measured so far.
 - Heavy-scene cost is therefore GPU: terrain vertex work (normals ~5, aerial ~4.3, fog ~4.5, detail ~1.7 of ~25 ms at 640x360 with the ocean off) plus the ocean. No exact (output-identical) saving was found for those; skirts are 12% of vertices/11% of triangles but their normals/aerial/fog differ slightly from their top-edge twins, so shortcutting them would change pixels.
 - Candidates, in order: (1) ship physics: skip/step less when the hull is far from the eye and invisible, or cache the CPU wave surface samples (changes simulation cadence, needs care); (2) LOD update 7 ms (re-run balancing only when the camera moved enough); (3) GPU: cache per-tile normals instead of 4 extra height taps per vertex (not exact, the filter distance varies per frame).
+
+## 23 October — stationary undersea entrance profiling, incomplete
+
+User requested location-specific profiling/options while Claude does general
+performance work. Actual parked entrance capture opened; outside-mouth
+visibility correctly does not enable deep-tunnel culling. Settled High1280x800
+counts589824 terrain/97344 ocean triangles,0km/h. Both attempted timings
+contaminated by concurrent Claude GPU replays; discarded, our renderer closed.
+No behaviour/source changes. Evidence, options and exact next experiments in
+`docs/TUNNEL_ENTRANCE_PROFILE.md`; obtain an exclusive GPU window before timing.
