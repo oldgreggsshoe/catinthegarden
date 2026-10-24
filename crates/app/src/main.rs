@@ -2904,6 +2904,37 @@ impl State {
                 .map_or(to, |road| road.plan.constrain_tunnel_motion(from, to))
         }
     }
+    /// True when any corner of the car would roll off a road deck onto ground
+    /// that is lower (the hard road edge). The corners sit slightly outside
+    /// the wheels so the body, not just the tyres, stops at the kerb.
+    fn car_leaves_road(
+        &self,
+        from: glam::DVec3,
+        from_heading: glam::DVec3,
+        to: glam::DVec3,
+        to_heading: glam::DVec3,
+    ) -> bool {
+        let Some(roads) = &self.road_network else { return false };
+        let corner = |position: glam::DVec3, heading: glam::DVec3, ahead: f64, across: f64| {
+            let up = position.normalize();
+            let right = heading.cross(up).normalize();
+            position
+                + heading * (ahead * (driving::WHEELBASE * 0.5 + 0.3))
+                + right * (across * (driving::TRACK * 0.5 + 0.25))
+        };
+        [(1.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (-1.0, 1.0)]
+            .into_iter()
+            .any(|(ahead, across)| {
+                let (a, b) = (
+                    corner(from, from_heading, ahead, across),
+                    corner(to, to_heading, ahead, across),
+                );
+                let eye = b.length() - planet::planet_radius_meters();
+                roads.plan().steps_off_deck(a, b, |d| {
+                    self.terrain.raster_surface_height_meters_at(d, eye)
+                })
+            })
+    }
     fn in_road_tunnel(&self, d: glam::DVec3, eye: f64) -> bool {
         self.road_network
             .as_ref()
@@ -3199,7 +3230,10 @@ impl State {
             let rise = ground.iter().sum::<f64>() * 0.25 - old_ground.iter().sum::<f64>() * 0.25;
             let constrained = self.road_constrain_motion(previous, candidate);
             let (position, heights) =
-                if rise > 0.5 + distance.abs() * 0.8 || constrained.distance(candidate) > 0.01 {
+                if rise > 0.5 + distance.abs() * 0.8
+                    || constrained.distance(candidate) > 0.01
+                    || self.car_leaves_road(previous, self.flight_local_tangent, candidate, heading)
+                {
                     self.car.speed = 0.0;
                     (previous, old_ground)
                 } else {

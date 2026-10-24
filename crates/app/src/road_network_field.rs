@@ -420,23 +420,27 @@ impl Field {
     /// sideways off it onto ground that is more than half a metre lower.
     /// Motion along the road is kept (a slide), and road ends, junctions and
     /// flush ground-level accesses (where the ground is not lower) stay open.
-    pub fn keep_on_deck(&self, from: DVec3, to: DVec3, terrain_height: impl Fn(DVec3) -> Option<f64>) -> DVec3 {
+    pub fn steps_off_deck(&self, from: DVec3, to: DVec3, terrain_height: impl Fn(DVec3) -> Option<f64>) -> bool {
         let (fd, td) = (from.normalize_or_zero(), to.normalize_or_zero());
         if fd.dot(self.frame.up) < 0.99 || td.dot(self.frame.up) < 0.99 {
-            return to;
+            return false;
         }
         let from_eye = from.length() - self.frame.radius;
-        let Some(deck) = self.deck_height(fd, from_eye) else { return to };
+        let Some(deck) = self.deck_height(fd, from_eye) else { return false };
         if from_eye - deck > 3.0 {
-            return to;
+            return false;
         }
         let to_eye = (to.length() - self.frame.radius).max(from_eye);
         if self.deck_height(td, to_eye).is_some() {
+            return false;
+        }
+        terrain_height(td).is_some_and(|ground| ground < deck - 0.5)
+    }
+    pub fn keep_on_deck(&self, from: DVec3, to: DVec3, terrain_height: impl Fn(DVec3) -> Option<f64>) -> DVec3 {
+        if !self.steps_off_deck(from, to, &terrain_height) {
             return to;
         }
-        if !terrain_height(td).is_some_and(|ground| ground < deck - 0.5) {
-            return to;
-        }
+        let to_eye = (to.length() - self.frame.radius).max(from.length() - self.frame.radius);
         let (a, b) = (self.frame.local(from), self.frame.local(to));
         let Some(segment) = self
             .candidates(a.truncate())
@@ -564,6 +568,23 @@ mod tests {
         // Stepping along the deck is untouched.
         let along = f.world(DVec3::new(3.0, 0.5, 101.7));
         assert_eq!(field.keep_on_deck(from, along, low), along);
+    }
+    #[test]
+    fn a_car_corner_rolling_off_the_deck_is_flagged_only_over_a_drop() {
+        let f = Frame::new(DVec3::X, 4e6).unwrap();
+        let field = Field::build(
+            f,
+            vec![segment([-100.0, 0.0, 100.0], [100.0, 0.0, 100.0], false)],
+        )
+        .unwrap();
+        let low = |_: DVec3| Some(90.0);
+        let flush = |_: DVec3| Some(100.0);
+        let from = f.world(DVec3::new(0.0, 0.5, 101.7));
+        let off = f.world(DVec3::new(2.0, 40.0, 101.7));
+        let along = f.world(DVec3::new(3.0, 0.5, 101.7));
+        assert!(field.steps_off_deck(from, off, low));
+        assert!(!field.steps_off_deck(from, off, flush));
+        assert!(!field.steps_off_deck(from, along, low));
     }
     #[test]
     fn tunnel_floor_reaches_the_lining_with_no_gap_at_the_edge() {
