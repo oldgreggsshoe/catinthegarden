@@ -13954,3 +13954,7 @@ Two unit tests added; 112 road tests pass. Not tried live; parapet collision its
 ## Tunnel deck flush to the walls, with kerbs (24 October)
 
 User screenshot (car stopped in a bore) showed the tunnel deck stopping 1.5 m short of each wall (deck half-width 5 m in a 6.5 m bore, trench to the -6 m floor) and no raised edges. `deck()` in `road_network_mesh.rs` now widens the deck to `road_tunnel::HALF_WIDTH` inside bores and adds continuous 0.9 m timber kerbs at +-4.82 m with the sheltered (negative) colour tag, so no outdoor wood glow; slab side faces follow the tag. Physics already treated the gap as deck level (`camera_surface_height`), so only the mesh changed. Opened `road_network_tunnel_lighting/1792844285-488937`: flush floor, continuous kerbs, no violet. 114 road tests pass. The exact reason the car stopped was not isolated (replay start missed the bore); kerbs are visual, not collision, like open-road parapets. Not driven live.
+
+## Car stop-reason log (24 October)
+
+User got stuck again in the bore after the flush-deck fix (`manual/1792852374-504695`, 0 km/h, 1 m altitude, bend where the right wall angles in; no stop cause in the log). `State::log_car_stop` now writes one `planet::driving` "car stopped" record whenever a moving car (>0.5 m/s) is zeroed, naming the rule: no ground contacts (start/ahead), step rise too high, road/tunnel wall constrain (with push distance), or deck edge with no slide, plus pose and heading. No behaviour change. Next: drive into the same spot, read the `car stopped` line in log.jsonl, fix that rule.

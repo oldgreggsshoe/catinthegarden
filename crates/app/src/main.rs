@@ -3253,6 +3253,22 @@ impl State {
             .set_world_pose_with_up(eye, eye + to_world * look, to_world * body_up);
     }
 
+    /// Names the rule that just brought a moving car to rest, once per stop.
+    fn log_car_stop(&self, speed_before: f64, reason: &str, at: glam::DVec3, rise: f64, wall: f64) {
+        if speed_before.abs() < 0.5 {
+            return;
+        }
+        tracing::info!(
+            target: "planet::driving",
+            reason,
+            speed_before,
+            rise,
+            wall_push_meters = wall,
+            position = ?[at.x, at.y, at.z],
+            heading = ?[self.flight_local_tangent.x, self.flight_local_tangent.y, self.flight_local_tangent.z],
+            "car stopped"
+        );
+    }
     fn advance_driving_camera(&mut self, delta_seconds: f64, rotation: f64) {
         self.surface_pending_seconds =
             (self.surface_pending_seconds + delta_seconds.max(0.0)).min(0.25);
@@ -3261,7 +3277,9 @@ impl State {
             let previous = self.flight_local_position;
             let radial = previous.normalize();
             let heading = self.flight_local_tangent;
+            let speed_before = self.car.speed;
             let Some(old_ground) = self.driving_contacts(previous, heading) else {
+                self.log_car_stop(speed_before, "no ground contacts at start", previous, 0.0, 0.0);
                 self.car.speed = 0.0;
                 break;
             };
@@ -3279,6 +3297,7 @@ impl State {
             let moved_radial = candidate.normalize();
             let heading = transport_flight_tangent(heading, radial, moved_radial);
             let Some(ground) = self.driving_contacts(candidate, heading) else {
+                self.log_car_stop(speed_before, "no ground contacts ahead", previous, 0.0, 0.0);
                 self.car.speed = 0.0;
                 break;
             };
@@ -3288,6 +3307,18 @@ impl State {
             let blocked = rise > 0.5 + distance.abs() * 0.8
                 || constrained.distance(candidate) > 0.01;
             let (position, heights) = if blocked {
+                let reason = if rise > 0.5 + distance.abs() * 0.8 {
+                    "step rise too high"
+                } else {
+                    "road/tunnel wall constrain"
+                };
+                self.log_car_stop(
+                    speed_before,
+                    reason,
+                    previous,
+                    rise,
+                    constrained.distance(candidate),
+                );
                 self.car.speed = 0.0;
                 (previous, old_ground)
             } else if !self.car_leaves_road(previous, self.flight_local_tangent, candidate, heading) {
@@ -3301,6 +3332,7 @@ impl State {
                 self.flight_local_tangent = slid_heading;
                 (slid, slid_ground)
             } else {
+                self.log_car_stop(speed_before, "deck edge, no slide", previous, rise, 0.0);
                 self.car.speed = 0.0;
                 (previous, old_ground)
             };
