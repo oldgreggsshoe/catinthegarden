@@ -1627,6 +1627,9 @@ struct State {
     /// whole steps and does not depend on where frame boundaries fell.
     surface_pending_seconds: f64,
     car: driving::Car,
+    /// Walking pose at the start of the last physics step, so the camera can be
+    /// drawn between it and the current pose by the unspent part of a step.
+    surface_previous_position: glam::DVec3,
     driving_brake: bool,
     driving_mouse: driving::MouseSteering,
     /// Ocean-clock time the swimmer has been carried up to (NaN: not swimming).
@@ -2263,6 +2266,7 @@ impl State {
             surface_jump_requested: false,
             surface_pending_seconds: 0.0,
             car: driving::Car::default(),
+            surface_previous_position: glam::DVec3::ZERO,
             driving_brake: false,
             driving_mouse: driving::MouseSteering::default(),
             swimmer_carry_time_seconds: f64::NAN,
@@ -2935,6 +2939,40 @@ impl State {
                 })
             })
     }
+    /// The car met the road edge: the part of its step that runs along the
+    /// road, if that is clear. Returns the new position, heading, wheel heights
+    /// and the fraction of the step kept (the speed scrapes off by the rest).
+    fn car_slide_along_road(
+        &self,
+        previous: glam::DVec3,
+        candidate: glam::DVec3,
+        heading: glam::DVec3,
+    ) -> Option<(glam::DVec3, glam::DVec3, [f64; 4], f64)> {
+        let roads = self.road_network.as_ref()?;
+        let tangent = roads.plan().deck_tangent(previous)?;
+        let step = candidate - previous;
+        if step.length_squared() < 1e-12 {
+            return None;
+        }
+        let along = tangent * step.dot(tangent);
+        let kept = (along.length() / step.length()).clamp(0.0, 1.0);
+        let moved = previous + along;
+        let slid = moved.normalize() * previous.length();
+        // Steer through the slide if the turned body still clears the edge;
+        // otherwise keep the old heading and only slide.
+        for slid_heading in [heading, self.flight_local_tangent] {
+            if self.car_leaves_road(previous, self.flight_local_tangent, slid, slid_heading) {
+                continue;
+            }
+            let ground = self.driving_contacts(slid, slid_heading)?;
+            let constrained = self.road_constrain_motion(previous, slid);
+            if constrained.distance(slid) > 0.01 {
+                return None;
+            }
+            return Some((slid, slid_heading, ground, kept));
+        }
+        None
+    }
     fn in_road_tunnel(&self, d: glam::DVec3, eye: f64) -> bool {
         self.road_network
             .as_ref()
@@ -3041,14 +3079,32 @@ impl State {
         self.bird_camera_enabled && self.bird_camera_riding
     }
 
+    /// The walking eye as drawn: between the last two physics-step poses by the
+    /// unspent part of a step (see `advance_surface_camera`). Jumps larger than
+    /// a metre (teleports, the road kerb snapping) are drawn as they are.
+    fn surface_render_position(&self) -> glam::DVec3 {
+        let blend = (self.surface_pending_seconds / SURFACE_CAMERA_STEP_SECONDS).clamp(0.0, 1.0);
+        let (from, to) = (self.surface_previous_position, self.flight_local_position);
+        if from.length_squared() > 0.0 && from.distance(to) < 1.0 {
+            from.normalize().lerp(to.normalize(), blend).normalize()
+                * (from.length() + (to.length() - from.length()) * blend)
+        } else {
+            to
+        }
+    }
+
     fn sync_surface_camera_pose(&mut self, planet_rotation_radians: f64) {
+        self.sync_surface_camera_pose_at(planet_rotation_radians, self.flight_local_position);
+    }
+
+    fn sync_surface_camera_pose_at(&mut self, planet_rotation_radians: f64, position: glam::DVec3) {
         if self.player_camera_is_suppressed() {
             return;
         }
         let local_radial = self.flight_local_position.normalize();
         let local_view_direction = self.low_flight_view_direction(local_radial);
         let planet_to_world = glam::DQuat::from_rotation_y(planet_rotation_radians);
-        let world_position = planet_to_world.mul_vec3(self.flight_local_position);
+        let world_position = planet_to_world.mul_vec3(position);
         let world_direction = planet_to_world.mul_vec3(local_view_direction);
         let world_up = planet_to_world.mul_vec3(local_radial);
         self.camera.set_world_pose_with_up(
@@ -3229,17 +3285,25 @@ impl State {
             // Do not climb vertical walls by snapping the body onto their top.
             let rise = ground.iter().sum::<f64>() * 0.25 - old_ground.iter().sum::<f64>() * 0.25;
             let constrained = self.road_constrain_motion(previous, candidate);
-            let (position, heights) =
-                if rise > 0.5 + distance.abs() * 0.8
-                    || constrained.distance(candidate) > 0.01
-                    || self.car_leaves_road(previous, self.flight_local_tangent, candidate, heading)
-                {
-                    self.car.speed = 0.0;
-                    (previous, old_ground)
-                } else {
-                    self.flight_local_tangent = heading;
-                    (candidate, ground)
-                };
+            let blocked = rise > 0.5 + distance.abs() * 0.8
+                || constrained.distance(candidate) > 0.01;
+            let (position, heights) = if blocked {
+                self.car.speed = 0.0;
+                (previous, old_ground)
+            } else if !self.car_leaves_road(previous, self.flight_local_tangent, candidate, heading) {
+                self.flight_local_tangent = heading;
+                (candidate, ground)
+            } else if let Some((slid, slid_heading, slid_ground, kept)) =
+                self.car_slide_along_road(previous, candidate, heading)
+            {
+                // The road edge is a wall: keep only the motion along it.
+                self.car.speed *= kept;
+                self.flight_local_tangent = slid_heading;
+                (slid, slid_ground)
+            } else {
+                self.car.speed = 0.0;
+                (previous, old_ground)
+            };
             let height = self
                 .car
                 .support(position.length() - planet::planet_radius_meters(), heights);
@@ -3272,6 +3336,7 @@ impl State {
         while self.surface_pending_seconds >= SURFACE_CAMERA_STEP_SECONDS {
             let step_seconds = SURFACE_CAMERA_STEP_SECONDS;
             let previous_tunnel_position = self.flight_local_position;
+            self.surface_previous_position = previous_tunnel_position;
             self.surface_pending_seconds -= step_seconds;
             let local_radial = self.flight_local_position.normalize();
             let eye_altitude_meters =
@@ -3383,7 +3448,13 @@ impl State {
             self.flight_surface_height_meters = environment.visible_surface_height_meters();
             // The step is already deducted from the pending backlog above.
         }
-        self.sync_surface_camera_pose(planet_rotation_radians);
+        // The physics runs in fixed steps but frames do not, so drawing the
+        // latest step's pose made the eye advance by whole steps (a visible
+        // judder at running speed). Draw it between the last two step poses by
+        // the unspent part of a step instead; any jump (a teleport, the road
+        // kerb snapping) is drawn as it is.
+        let position = self.surface_render_position();
+        self.sync_surface_camera_pose_at(planet_rotation_radians, position);
     }
 
     /// Floats the ship on the same analytic swell the ocean mesh is displaced
@@ -4025,7 +4096,8 @@ impl State {
                 .max(0.0);
         }
         self.flight_surface_height_meters = environment.visible_surface_height_meters();
-        self.sync_surface_camera_pose(planet_rotation_radians);
+        let position = self.surface_render_position();
+        self.sync_surface_camera_pose_at(planet_rotation_radians, position);
         previous_position.distance_squared(self.flight_local_position) > f64::EPSILON
     }
 

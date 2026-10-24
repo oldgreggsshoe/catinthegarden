@@ -436,6 +436,18 @@ impl Field {
         }
         terrain_height(td).is_some_and(|ground| ground < deck - 0.5)
     }
+    /// Unit direction (world) of the open road nearest `p`, for sliding a
+    /// vehicle along a road edge it cannot cross.
+    pub fn deck_tangent(&self, p: DVec3) -> Option<DVec3> {
+        let a = self.frame.local(p);
+        let segment = self
+            .candidates(a.truncate())
+            .filter(|s| !s.is_parking())
+            .min_by(|x, y| x.nearest(a.truncate()).1.total_cmp(&y.nearest(a.truncate()).1))?;
+        let t = (segment.b - segment.a).truncate().normalize_or_zero();
+        let along = (self.frame.world(a + DVec3::new(t.x, t.y, 0.0)) - p).normalize_or_zero();
+        (along != DVec3::ZERO).then_some(along)
+    }
     pub fn keep_on_deck(&self, from: DVec3, to: DVec3, terrain_height: impl Fn(DVec3) -> Option<f64>) -> DVec3 {
         if !self.steps_off_deck(from, to, &terrain_height) {
             return to;
@@ -585,6 +597,18 @@ mod tests {
         assert!(field.steps_off_deck(from, off, low));
         assert!(!field.steps_off_deck(from, off, flush));
         assert!(!field.steps_off_deck(from, along, low));
+    }
+    #[test]
+    fn deck_tangent_follows_the_road_so_a_car_can_slide_along_its_wall() {
+        let f = Frame::new(DVec3::X, 4e6).unwrap();
+        let field = Field::build(
+            f,
+            vec![segment([-100.0, 0.0, 100.0], [100.0, 0.0, 100.0], false)],
+        )
+        .unwrap();
+        let t = field.deck_tangent(f.world(DVec3::new(0.0, 1.0, 101.0))).unwrap();
+        let along = (f.world(DVec3::new(1.0, 1.0, 101.0)) - f.world(DVec3::new(0.0, 1.0, 101.0))).normalize();
+        assert!(t.dot(along).abs() > 0.999, "tangent {t:?} vs {along:?}");
     }
     #[test]
     fn tunnel_floor_reaches_the_lining_with_no_gap_at_the_edge() {

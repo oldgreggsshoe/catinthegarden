@@ -13,19 +13,21 @@ fn wood_glow_visibility(sun_elevation: f32, sheltered: f32) -> f32 {
 }
 struct Input {
     @location(0) position:vec3<f32>,@location(1) normal:vec3<f32>,@location(2) uv:vec2<f32>,@location(3) colour:vec3<f32>,
-    @location(4) origin:vec4<f32>,@location(5) across:vec4<f32>,@location(6) forward:vec4<f32>,@location(7) up:vec4<f32>,
+    @location(4) origin:vec4<f32>,@location(5) across:vec4<f32>,@location(6) forward:vec4<f32>,@location(7) up:vec4<f32>,@location(8) hue:f32,
 }
 struct Output {
     @builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@location(1) colour:vec3<f32>,
     @location(2) @interpolate(flat) light:vec3<f32>,
     @location(3) @interpolate(flat) wood:f32,
     @location(4) @interpolate(flat) glow:f32,
+    @location(5) @interpolate(flat) hue:f32,
 }
 @vertex fn vs_main(v:Input)->Output {
     let relative=v.origin.xyz+v.across.xyz*v.position.x+v.forward.xyz*v.position.y+v.up.xyz*v.position.z;
     let view=vec3<f32>(dot(relative,camera.camera_right.xyz),dot(relative,camera.camera_up.xyz),-dot(relative,camera.camera_forward.xyz));
     let normal=normalize(v.across.xyz*v.normal.x+v.forward.xyz*v.normal.y+v.up.xyz*v.normal.z);
     var out:Output;out.position=camera.projection_matrix*vec4<f32>(view,1.0);out.uv=v.uv;out.colour=abs(v.colour);
+    out.hue=v.hue;
     out.wood=select(0.0,1.0,v.uv.x < -1.5);
     if out.wood>0.5 {out.uv=vec2<f32>(-2.0-v.uv.x,v.uv.y);}
     // The road's own lighting (road.wgsl lit_colour): flat sun plus sky ambient,
@@ -53,7 +55,10 @@ struct Output {
     var lit=colour*v.light;
     // Same daylight/twilight/tunnel gating as the road, not surface luminance.
     if wood_grain>=0.0 {
-        lit+=vec3<f32>(0.20,0.04,0.55)*0.09*(0.5+1.0*wood_grain)*v.glow;
+        // Same family as the road's wood_glow_colour: violet drifting to blue or red per board.
+        let glow_colour=mix(vec3<f32>(0.20,0.04,0.55),
+            select(vec3<f32>(0.07,0.09,0.70),vec3<f32>(0.46,0.03,0.42),v.hue>0.0),abs(v.hue));
+        lit+=glow_colour*0.09*(0.5+1.0*wood_grain)*v.glow;
     }
     return vec4<f32>(lit,alpha);
 }

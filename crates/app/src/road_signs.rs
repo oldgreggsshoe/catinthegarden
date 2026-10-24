@@ -14,6 +14,8 @@ pub struct Vertex {
     normal: [f32; 3],
     uv: [f32; 2],
     colour: [f32; 3],
+    // Night glow drift, -1 (blue) .. 1 (red); one value per board.
+    hue: f32,
 }
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -173,6 +175,10 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
                 }
             }
         }
+        let hue = glow_hue(board.centre);
+        for v in &mut mesh.vertices[first_vertex..] {
+            v.hue = hue;
+        }
         if board.kind == Kind::Tunnel {
             // Boards inside bores are tagged so they take the sheltered (sunless) lighting.
             for v in &mut mesh.vertices[first_vertex..] {
@@ -198,6 +204,16 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
     tracing::info!(kinds=?mesh.counts,vertices=mesh.vertices.len(),"road sign meshes built (junction/distance/village/tunnel/branch)");
     Ok(mesh)
 }
+/// Stable per-board glow drift in -1..1 from where the board stands, so a sign
+/// keeps its hue across rebuilds and neighbouring boards differ.
+fn glow_hue(centre: DVec3) -> f32 {
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
+    for c in centre.to_array() {
+        h = (h ^ (c.round() as i64 as u64)).wrapping_mul(0x0000_0100_0000_01b3);
+        h ^= h >> 29;
+    }
+    ((h >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0) as f32
+}
 fn vertex(frame: Frame, p: DVec3, n: DVec3, uv: [f32; 2], colour: [f32; 3]) -> Vertex {
     Vertex {
         position: frame.local(p).to_array().map(|v| v as f32),
@@ -208,6 +224,7 @@ fn vertex(frame: Frame, p: DVec3, n: DVec3, uv: [f32; 2], colour: [f32; 3]) -> V
         ],
         uv,
         colour,
+        hue: 0.0,
     }
 }
 fn solid(out: &mut Vec<Vertex>, f: Frame, p: [DVec3; 4], c: [f32; 3]) {
@@ -357,7 +374,7 @@ impl Renderer {
         let pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
             label:Some("cached road signs"),layout:Some(&pipeline_layout),
             vertex:wgpu::VertexState{module:&shader,entry_point:Some("vs_main"),compilation_options:Default::default(),buffers:&[
-                wgpu::VertexBufferLayout{array_stride:size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2,3=>Float32x3]},
+                wgpu::VertexBufferLayout{array_stride:size_of::<Vertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2,3=>Float32x3,8=>Float32]},
                 wgpu::VertexBufferLayout{array_stride:64,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![4=>Float32x4,5=>Float32x4,6=>Float32x4,7=>Float32x4]}]},
             fragment:Some(wgpu::FragmentState{module:&shader,entry_point:Some("fs_main"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format,blend:Some(wgpu::BlendState::ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
             primitive:wgpu::PrimitiveState{cull_mode:Some(wgpu::Face::Back),..Default::default()},
