@@ -91,6 +91,7 @@ struct Upload {
 }
 pub struct NetworkRenderer {
     worker: Worker,
+    material: crate::road_material::Material,
     active: Scene,
     pending: Option<Upload>,
     pipeline: wgpu::RenderPipeline,
@@ -143,7 +144,8 @@ impl NetworkRenderer {
             mapped_at_creation: false,
         });
         let overlay = crate::road_overlay::Renderer::new(device, format, camera, &instance);
-        let mut active = Self::allocate(device, snapshot);
+        let material = crate::road_material::Material::new(device, queue);
+        let mut active = Self::allocate(device, snapshot, &material);
         if !active.snapshot.vertices.is_empty() {
             queue.write_buffer(
                 &active.vertices,
@@ -166,6 +168,7 @@ impl NetworkRenderer {
             pending_signs: None,
             sign_pose: None,
             worker,
+            material,
             active,
             pending: None,
             pipeline,
@@ -188,7 +191,11 @@ impl NetworkRenderer {
         }
         Ok(renderer)
     }
-    fn allocate(device: &wgpu::Device, snapshot: Snapshot) -> Scene {
+    fn allocate(
+        device: &wgpu::Device,
+        snapshot: Snapshot,
+        material: &crate::road_material::Material,
+    ) -> Scene {
         let vertices = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("streamed static network geometry"),
             size: (snapshot.vertices.len() * size_of::<crate::road::Vertex>()).max(36) as u64,
@@ -196,7 +203,7 @@ impl NetworkRenderer {
             mapped_at_creation: false,
         });
         let visible = vec![(false, false); snapshot.chunks.len()];
-        let lighting = crate::road_lighting::binding(device, &snapshot.lighting);
+        let lighting = crate::road_lighting::binding(device, &snapshot.lighting, material);
         Scene {
             lighting,
             snapshot,
@@ -282,7 +289,7 @@ impl NetworkRenderer {
                     Ok(snapshot) => {
                         self.pending = Some(Upload {
                             generation,
-                            scene: Self::allocate(device, snapshot),
+                            scene: Self::allocate(device, snapshot, &self.material),
                             copied: 0,
                         })
                     }

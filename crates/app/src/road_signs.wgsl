@@ -7,6 +7,10 @@ struct Camera {
 @group(1) @binding(1) var atlas_sampler:sampler;
 @group(1) @binding(2) var wood_texture:texture_2d<f32>;
 @group(1) @binding(3) var wood_sampler:sampler;
+fn wood_glow_visibility(sun_elevation: f32, sheltered: f32) -> f32 {
+    if sheltered > 0.5 { return 0.0; }
+    return 1.0 - smoothstep(-0.12, 0.0, sun_elevation);
+}
 struct Input {
     @location(0) position:vec3<f32>,@location(1) normal:vec3<f32>,@location(2) uv:vec2<f32>,@location(3) colour:vec3<f32>,
     @location(4) origin:vec4<f32>,@location(5) across:vec4<f32>,@location(6) forward:vec4<f32>,@location(7) up:vec4<f32>,
@@ -15,6 +19,7 @@ struct Output {
     @builtin(position) position:vec4<f32>,@location(0) uv:vec2<f32>,@location(1) colour:vec3<f32>,
     @location(2) @interpolate(flat) light:vec3<f32>,
     @location(3) @interpolate(flat) wood:f32,
+    @location(4) @interpolate(flat) glow:f32,
 }
 @vertex fn vs_main(v:Input)->Output {
     let relative=v.origin.xyz+v.across.xyz*v.position.x+v.forward.xyz*v.position.y+v.up.xyz*v.position.z;
@@ -27,6 +32,7 @@ struct Output {
     // nothing self-lit. Boards inside bores (negative tag) get the sheltered level.
     let up=normalize(v.up.xyz);let sun=normalize(camera.sun_direction.xyz);
     let elevation=clamp(dot(sun,up),0.0,1.0);
+    out.glow=wood_glow_visibility(dot(sun,up),select(0.0,1.0,v.colour.z<0.0));
     let direct=vec3<f32>(1.9,1.78,1.6)*elevation*max(dot(normal,sun),0.0);
     let ambient=mix(vec3<f32>(0.05,0.055,0.06),vec3<f32>(0.24,0.29,0.36),0.5+0.5*dot(normal,up))*(0.25+0.75*elevation);
     out.light=direct+ambient;
@@ -45,10 +51,9 @@ struct Output {
     else if v.uv.x>=0.0 {alpha=textureSample(atlas,atlas_sampler,v.uv).a;}
     if alpha<0.02 {discard;}
     var lit=colour*v.light;
-    // Same dim violet fluorescence as the road timber, only where the light has all but gone.
+    // Same daylight/twilight/tunnel gating as the road, not surface luminance.
     if wood_grain>=0.0 {
-        let luma=dot(lit,vec3<f32>(0.2126,0.7152,0.0722));
-        lit+=vec3<f32>(0.20,0.04,0.55)*0.09*(0.5+1.0*wood_grain)*(1.0-smoothstep(0.02,0.14,luma));
+        lit+=vec3<f32>(0.20,0.04,0.55)*0.09*(0.5+1.0*wood_grain)*v.glow;
     }
     return vec4<f32>(lit,alpha);
 }

@@ -32,6 +32,7 @@ mod road;
 mod road_construction;
 mod road_lighting;
 mod road_navigation;
+mod road_material;
 mod road_signs;
 #[cfg(test)]
 mod road_gpu_tests;
@@ -1991,6 +1992,7 @@ impl State {
             (road::enabled() && body::active() == body::PLANET && !network_active).then(|| {
                 road_render::RoadRenderer::new(
                     &device,
+                    &queue,
                     hdr::HdrRenderer::SCENE_FORMAT,
                     &camera_bind_group_layout,
                     &mut terrain,

@@ -346,32 +346,64 @@ fn fixture(mesh: &mut Vec<Vertex>, mount: DVec3, inward: DVec3, seed: f32) {
 
 pub fn layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("cached tunnel light lists"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        label: Some("cached tunnel lights and timber"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        }],
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
     })
 }
-pub fn binding(device: &wgpu::Device, data: &[[f32; 4]]) -> wgpu::BindGroup {
+pub fn binding(
+    device: &wgpu::Device,
+    data: &[[f32; 4]],
+    material: &crate::road_material::Material,
+) -> wgpu::BindGroup {
     let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("immutable tunnel light lists"),
         contents: bytemuck::cast_slice(data),
         usage: wgpu::BufferUsages::STORAGE,
     });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("tunnel lights"),
+        label: Some("tunnel lights and shared timber"),
         layout: &layout(device),
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: buffer.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&material.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&material.sampler),
+            },
+        ],
     })
 }
 

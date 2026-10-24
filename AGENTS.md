@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Filtered timber and outdoor-only glow,24October: cached oak texture with linear-light mips/8x anisotropy, narrow staggered plank joints and shallow grain relief replaces smeared noise. Wood/sign glow is OFF in tunnels and daylight, fades in outdoors after sunset; lanterns unchanged. Opened tunnel and all four twilight captures;106 focused road and9 Vulkan checks pass. Matched High1280x800 X11/Immediate entrance63.144->62.954ms (effectively unchanged), deep tunnel4.474->4.038ms, one pair only. See HANDOFF; Claude walking work preserved.
+
 - Entrance excavation fast paths,23October: open-road/court cell flag skips bore-only scans; unchanged first cut avoids an identical second pass, same buffer and geometry. High1280x800 X11/Immediate stationary replay68.1–68.3 ->63.8–63.9ms; actual parked driving72.8 ->68.3ms (~13.7 ->14.6FPS), a modest6–7% gain.37960 GPU points bit-identical;8 Vulkan checks, full769 pass/same6 failures/69ignored. Matched entrance and6 portal/walk captures pixel-identical/opened. New road_network_entrance_performance; see docs/TUNNEL_ENTRANCE_PROFILE.md. Claude work retained; no quality or draw-order changes.
 
 - Undersea entrance profiling,23October: reproduced/opened stationary0km/h entrance; outdoor culling remains off, High submits589824 terrain/97344 ocean triangles. Timing attempts invalidated by concurrent Claude GPU benchmarks; no FPS conclusion or renderer changes. Exclusive-GPU ablations pending; see docs/TUNNEL_ENTRANCE_PROFILE.md.

@@ -78,6 +78,7 @@ pub struct RoadRenderer {
 impl RoadRenderer {
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         camera_layout: &wgpu::BindGroupLayout,
         terrain: &mut TerrainRenderer,
@@ -194,6 +195,7 @@ impl RoadRenderer {
             lighting: crate::road_lighting::binding(
                 device,
                 &[[0.0; 4]; crate::road_lighting::MAX_LIGHTS + 1],
+                &crate::road_material::Material::new(device, queue),
             ),
             chunks,
         }

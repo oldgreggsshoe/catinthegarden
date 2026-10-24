@@ -306,8 +306,11 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let lighting =
-        crate::road_lighting::binding(&device, &[[0.0; 4]; crate::road_lighting::MAX_LIGHTS + 1]);
+    let lighting = crate::road_lighting::binding(
+        &device,
+        &[[0.0; 4]; crate::road_lighting::MAX_LIGHTS + 1],
+        &crate::road_material::Material::new(&device, &queue),
+    );
     let render = |angle: f64, phase: f32, clear_depth: f32, camera_plane: bool| {
         let tangent = DVec3::new(angle.sin(), angle.cos(), 0.0);
         let mut vertices = Vec::new();
@@ -415,6 +418,8 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
         readback.unmap();
         pixels
     };
+    // Coverage energy depends on the timber mip mean, not the former asphalt.
+    let mean_red = crate::road_material::mean_red_albedo();
     for angle in [0.0, 0.35, std::f64::consts::FRAC_PI_4] {
         let mut energies = Vec::new();
         let mut peak = 0.0_f64;
@@ -440,7 +445,7 @@ fn gpu_far_road_retains_subpixel_coverage_without_black_specks() {
             energies.push(energy / 48.0);
         }
         eprintln!("angle {angle:.3}, coverage energies {energies:?}, peak darkness {peak:.3}");
-        let expected = 0.2 * (1.0 - 0.045 * (1.9 + 0.24)) / angle.cos();
+        let expected = 0.2 * (1.0 - mean_red * (1.9 + 0.24)) / angle.cos();
         assert!(
             energies.iter().all(|v| (v / expected - 1.0).abs() < 0.08),
             "lost/overweighted subpixel road: {energies:?}, expected {expected}"
@@ -838,6 +843,48 @@ fn gpu_excavation_fast_paths_preserve_height_normals_flags_and_ownership() {
         assert!(
             results.iter().any(|r| r[3] < 0.5),
             "must exercise unchanged terrain"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan; daylight and tunnel fluorescence gating"]
+fn gpu_wood_glow_is_outdoor_twilight_only() {
+    let function = |s: &str| {
+        let start = s.find("fn wood_glow_visibility(").unwrap();
+        let end = start + s[start..].find("\n}\n").unwrap() + 3;
+        s[start..end].to_owned()
+    };
+    let road = function(include_str!("road.wgsl"));
+    assert_eq!(
+        road,
+        function(include_str!("road_signs.wgsl")),
+        "sign and timber policy must agree"
+    );
+    let source = format!(
+        r#"{road}
+        @group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;
+        @group(0) @binding(1) var<storage,read> profile: array<vec4<f32>>;
+        @group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;
+        @compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id:vec3<u32>) {{
+            let c=cases[id.x];
+            results[id.x]=vec4<f32>(wood_glow_visibility(c.x,c.y),profile[0].xyz);
+        }}"#
+    );
+    let mut cases = Vec::new();
+    for sheltered in [0.0, 1.0] {
+        for elevation in [-1.0, -0.12, -0.09, -0.06, -0.03, 0.0, 0.01, 0.5, 1.0] {
+            cases.push([elevation, sheltered, 0.0, 0.0]);
+        }
+    }
+    let results = execute_cut_shader(&[[0.0; 4]], &cases, source);
+    let expected = [1.0, 1.0, 0.84375, 0.5, 0.15625, 0.0, 0.0, 0.0, 0.0];
+    for (i, r) in results.iter().enumerate() {
+        let value = if i < 9 { expected[i] } else { 0.0 };
+        assert!(
+            (r[0] - value).abs() < 0.00001,
+            "case {:?}: {r:?}, expected {value}",
+            cases[i]
         );
     }
 }

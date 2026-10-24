@@ -1,0 +1,87 @@
+{
+  "name": "road_wood_twilight",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 8,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2,
+    4,
+    6,
+    8
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3863737.4505090006,
+        738086.0673652064,
+        -725865.7148844422
+      ],
+      "look_at": [
+        3863738.8472065236,
+        738048.7489927115,
+        -725865.9772767137
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.7025869985563105,
+        -0.6992492596212653,
+        -0.1319923572740004
+      ]
+    },
+    {
+      "time_s": 2,
+      "direction": [
+        0.7025869985563105,
+        -0.6992492596212653,
+        -0.1319923572740004
+      ]
+    },
+    {
+      "time_s": 4,
+      "direction": [
+        0.18134835077847603,
+        -0.9828286032701612,
+        -0.03406922752207419
+      ]
+    },
+    {
+      "time_s": 6,
+      "direction": [
+        0.12204143701749118,
+        -0.9922601569753926,
+        -0.022927462351397983
+      ]
+    },
+    {
+      "time_s": 8,
+      "direction": [
+        0.010861144645877369,
+        -0.9999389342020081,
+        -0.0020404420925987238
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 50
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4
+  },
+  "drive_on_surface": false,
+  "ocean_storm_intensity_override": 0.0
+}

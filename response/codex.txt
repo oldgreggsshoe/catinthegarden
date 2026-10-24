@@ -35,3 +35,6 @@ Completed and pushed. The stationary tunnel entrance is about7% faster at unchan
 Removed redundant terrain-excavation scans. Matched screenshots remain pixel-identical; all8 GPU road checks pass. Full suite:769 passes,6 known unrelated failures.
 
 It’s a modest improvement, not a complete fix: terrain rendering remains the main bottleneck. Details: docs/TUNNEL_ENTRANCE_PROFILE.md. Unrelated road-material edits were left untouched. My test renderers are closed; Claude can resume GPU benchmarking.
+
+
+Done: improved timber grain, narrower plank joints and filtered surface detail. Wood and signs no longer glow inside tunnels or during daylight; outdoors they fade in after sunset. Lanterns are unchanged. Screenshots checked; 106 road tests and 9 Vulkan tests pass. Full suite retains the same six unrelated failures. Matched entrance performance is effectively unchanged; the deep-tunnel median improved slightly. Release rebuilt; changes committed and pushed.

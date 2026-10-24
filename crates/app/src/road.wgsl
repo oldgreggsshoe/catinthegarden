@@ -1,5 +1,5 @@
 // Same camera prefix and flat sunlight/hemisphere convention as village.wgsl.
-// The pilot only binds the camera. Streamed roads also query the resident
+// Both paths bind the camera and cached timber/light material. Streamed roads query the resident
 // excavation field to clip internal bore walls and overlapping cut banks.
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -14,6 +14,8 @@ struct Camera {
 }
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(0) var<storage, read> tunnel_lights: array<vec4<f32>>;
+@group(1) @binding(1) var timber_texture: texture_2d<f32>;
+@group(1) @binding(2) var timber_sampler: sampler;
 
 struct Input {
     @location(0) position: vec3<f32>,
@@ -97,8 +99,7 @@ fn project_vertex(input: Input) -> Output {
     return output;
 }
 
-// Ultraviolet fluorescence of the timber: a dim violet that only shows where
-// the ordinary lighting is nearly dark (night, unlit bores), never by day.
+// Ultraviolet fluorescence of outdoor timber after sunset; never in bores.
 const WOOD_UV_GLOW = vec3<f32>(0.20, 0.04, 0.55) * 0.09;
 const WOOD_GLOW_BLUE = vec3<f32>(0.07, 0.09, 0.70) * 0.09;
 const WOOD_GLOW_RED = vec3<f32>(0.46, 0.03, 0.42) * 0.09;
@@ -112,8 +113,6 @@ fn wood_glow_colour(p: vec3<f32>) -> vec3<f32> {
         + 0.25 * sin(k * (3.0 * p.x + p.z) + 4.1), -1.0, 1.0);
     return mix(WOOD_UV_GLOW, select(WOOD_GLOW_BLUE, WOOD_GLOW_RED, t > 0.0), abs(t));
 }
-const DECK_PLANK_ALBEDO = vec3<f32>(0.20, 0.115, 0.055);
-const BEAM_ALBEDO = vec3<f32>(0.17, 0.10, 0.05);
 
 // Immutable nearby fixtures, never a search through the planetary network.
 // The finite soft cutoff removes light smoothly, without a bright/dark step.
@@ -141,33 +140,6 @@ fn road_material_hash(cell: vec3<i32>, period: i32) -> f32 {
     let q = vec3<u32>(((cell % period) + period) % period);
     return lantern_hash(q.x * 0x9e3779b9u ^ q.y * 0x85ebca6bu ^ q.z * 0xc2b2ae35u);
 }
-fn road_material_grain(p: vec3<f32>, frequency: f32, footprint: f32) -> f32 {
-    let weight = 1.0 - smoothstep(0.3, 1.0, footprint * frequency);
-    if weight < 0.001 { return 0.0; }
-    let scaled = p * frequency;
-    let cell = vec3<i32>(floor(scaled));
-    let f = fract(scaled);
-    let t = f * f * (3.0 - 2.0 * f);
-    let period = i32(256.0 * frequency);
-    let a = mix(road_material_hash(cell, period), road_material_hash(cell+vec3<i32>(1,0,0),period),t.x);
-    let b = mix(road_material_hash(cell+vec3<i32>(0,1,0),period),road_material_hash(cell+vec3<i32>(1,1,0),period),t.x);
-    let c = mix(road_material_hash(cell+vec3<i32>(0,0,1),period),road_material_hash(cell+vec3<i32>(1,0,1),period),t.x);
-    let d = mix(road_material_hash(cell+vec3<i32>(0,1,1),period),road_material_hash(cell+vec3<i32>(1,1,1),period),t.x);
-    return (mix(mix(a,b,t.y),mix(c,d,t.y),t.z) - 0.5) * weight;
-}
-// Anisotropic trilinear value noise; unlike road_material_grain it takes its
-// scales from the caller so grain can be stretched along a board or timber.
-fn wood_value(q: vec3<f32>) -> f32 {
-    let cell = vec3<i32>(floor(q));
-    let f = fract(q);
-    let t = f * f * (3.0 - 2.0 * f);
-    let period = 1048576;
-    let a = mix(road_material_hash(cell, period), road_material_hash(cell+vec3<i32>(1,0,0),period),t.x);
-    let b = mix(road_material_hash(cell+vec3<i32>(0,1,0),period),road_material_hash(cell+vec3<i32>(1,1,0),period),t.x);
-    let c = mix(road_material_hash(cell+vec3<i32>(0,0,1),period),road_material_hash(cell+vec3<i32>(1,0,1),period),t.x);
-    let d = mix(road_material_hash(cell+vec3<i32>(0,1,1),period),road_material_hash(cell+vec3<i32>(1,1,1),period),t.x);
-    return mix(mix(a,b,t.y),mix(c,d,t.y),t.z) - 0.5;
-}
 fn plank_heading(code: u32) -> vec2<f32> {
     let h = code >> 16u;
     if h == 0u { return vec2<f32>(0.0, 1.0); }
@@ -177,84 +149,104 @@ fn plank_heading(code: u32) -> vec2<f32> {
 fn is_road_tag(colour: vec3<f32>, tag: vec3<f32>) -> bool {
     return all(abs(colour - tag) < vec3<f32>(0.0005));
 }
-// Wood albedo (rgb) and a 0..1 fluorescence strength (a). Tags keep their old
-// meaning: the dark "asphalt" tag is the planked deck, the two "concrete" tags
-// are large timbers (parapets, deck edges, legs, bore lining, court walls).
-// Anything else (iron, soil, emissive fixtures) is not wood: a = -1.
-fn road_wood(input: Output, footprint: f32) -> vec4<f32> {
-    let deck = is_road_tag(input.colour, vec3<f32>(0.045,0.048,0.05));
-    let timber = is_road_tag(input.colour, vec3<f32>(0.32,0.31,0.29));
-    let lining = is_road_tag(input.colour, vec3<f32>(0.24,0.235,0.22));
-    if !deck && !timber && !lining { return vec4<f32>(input.colour, -1.0); }
-    let facing_up = dot(input.normal, input.up);
-    if deck && facing_up > 0.5 {
-        // Boards laid across the road in short courses with staggered ends.
-        let d = plank_heading(input.lighting);
-        let along = dot(input.local_position.xy, d);
-        let across = dot(input.local_position.xy, vec2<f32>(-d.y, d.x));
-        let width = 0.32;
-        let plank_length = 2.6;
-        let row = floor(along / width);
-        let row_f = fract(along / width);
-        let shift = road_material_hash(vec3<i32>(i32(row), 7, 3), 1048576) * plank_length;
-        let column = floor((across + shift) / plank_length);
-        let column_f = fract((across + shift) / plank_length);
-        let tone = road_material_hash(vec3<i32>(i32(row), i32(column), 11), 1048576);
-        let seam = min(min(row_f * width, (1.0 - row_f) * width),
-            min(column_f * plank_length, (1.0 - column_f) * plank_length) * 0.5);
-        let gap = 1.0 - smoothstep(0.004, 0.016, seam);
-        let board = vec3<f32>(across * 0.7, along * 26.0, tone * 40.0);
-        let grain = 0.6 * wood_value(board) + 0.4 * wood_value(board * vec3<f32>(3.1, 2.3, 1.0));
-        let weight = 1.0 - smoothstep(0.08, 0.30, footprint);
-        let shade = (0.80 + 0.40 * tone) * (1.0 + 0.55 * grain * weight);
-        let albedo = DECK_PLANK_ALBEDO * mix(1.0, shade * mix(1.0, 0.50, gap), weight);
-        return vec4<f32>(albedo, clamp(0.8 + 1.2 * grain * weight - 0.7 * gap * weight, 0.1, 1.2));
-    }
-    // Large squared timbers. Grain runs along the post on upright faces and
-    // along the beam elsewhere.
-    let up = normalize(input.up);
-    let helper = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(up.x) > 0.8);
-    let e1 = normalize(cross(up, helper));
-    let e2 = cross(up, e1);
-    let p = input.material_position;
-    let q = vec3<f32>(dot(p, e1), dot(p, e2), dot(p, up));
-    let upright = abs(facing_up) < 0.6;
-    var scale = vec3<f32>(0.6, 7.0, 7.0);
-    if upright { scale = vec3<f32>(5.0, 5.0, 0.45); }
-    let coarse = wood_value(q * scale);
-    let fine = wood_value(q * scale * 4.1 + vec3<f32>(17.0, 3.0, 9.0));
-    let weight = 1.0 - smoothstep(0.05, 0.25, footprint);
-    // Dark butt joints between stacked timbers every 2.4m up a leg.
-    var joint = 0.0;
-    if upright { let f = fract(q.z / 2.4); joint = 1.0 - smoothstep(0.01, 0.04, min(f, 1.0 - f) * 2.4); }
-    var base = BEAM_ALBEDO;
-    if lining { base = BEAM_ALBEDO * 0.8; }
-    let shade = 1.0 + (0.9 * coarse + 0.5 * fine) * weight;
-    let albedo = base * clamp(shade, 0.5, 1.6) * (1.0 - 0.6 * joint * weight);
-    return vec4<f32>(albedo, clamp(0.8 + 1.6 * coarse * weight - 0.6 * joint * weight, 0.1, 1.2));
+// Daylight gating is independent of face orientation/material darkness.
+// Sunset starts the fade; full glow by approximately seven degrees below it.
+fn wood_glow_visibility(sun_elevation: f32, sheltered: f32) -> f32 {
+    if sheltered > 0.5 { return 0.0; }
+    return 1.0 - smoothstep(-0.12, 0.0, sun_elevation);
 }
-
+struct WoodMaterial { albedo: vec3<f32>, fluorescence: f32, height: f32 }
+fn joint_coverage(distance: f32, footprint: f32) -> f32 {
+    // Integrate a 3mm joint rather than widening it into a distant black line.
+    let half_pixel=max(footprint*0.5,0.0001);
+    return clamp((min(distance+half_pixel,0.0015)-max(distance-half_pixel,-0.0015))
+        /(2.0*half_pixel),0.0,1.0);
+}
+fn road_wood(input: Output, dx: vec3<f32>, dy: vec3<f32>, wx: vec3<f32>, wy: vec3<f32>) -> WoodMaterial {
+    let deck=is_road_tag(input.colour,vec3<f32>(0.045,0.048,0.05));
+    let timber=is_road_tag(input.colour,vec3<f32>(0.32,0.31,0.29));
+    let lining=is_road_tag(input.colour,vec3<f32>(0.24,0.235,0.22));
+    if !deck && !timber && !lining { return WoodMaterial(input.colour,-1.0,0.0); }
+    var uv=vec2<f32>(0.0);var ux=uv;var uy=uv;
+    var joint=0.0;var tone=1.0;
+    let facing_up=dot(input.normal,input.up);
+    if deck && facing_up>0.5 {
+        let d=plank_heading(input.lighting);
+        let side=vec2<f32>(-d.y,d.x);
+        let along=dot(input.local_position.xy,d);
+        let across=dot(input.local_position.xy,side);
+        let row=floor(along/0.32);
+        let shift=road_material_hash(vec3<i32>(i32(row),7,3),1048576)*2.6;
+        let column=floor((across+shift)/2.6);
+        let seed=road_material_hash(vec3<i32>(i32(row),i32(column),11),1048576);
+        let flip=select(-1.0,1.0,seed>0.5);
+        uv=vec2<f32>(across*0.5*flip,along)+vec2<f32>(seed*17.0,seed*3.0);
+        ux=vec2<f32>(dot(dx.xy,side)*0.5*flip,dot(dx.xy,d));
+        uy=vec2<f32>(dot(dy.xy,side)*0.5*flip,dot(dy.xy,d));
+        let along_width=abs(dot(dx.xy,d))+abs(dot(dy.xy,d));
+        let across_width=abs(dot(dx.xy,side))+abs(dot(dy.xy,side));
+        let row_distance=min(fract(along/0.32),1.0-fract(along/0.32))*0.32;
+        let end_distance=min(fract((across+shift)/2.6),1.0-fract((across+shift)/2.6))*2.6;
+        let detail=1.0-smoothstep(0.10,0.32,max(along_width,across_width));
+        joint=max(joint_coverage(row_distance,along_width),joint_coverage(end_distance,across_width))*detail;
+        tone=mix(1.0,0.91+0.18*seed,detail);
+    } else {
+        // Dominant-face mapping: one texture lookup, no stretched 3D noise or
+        // three-sample triplanar blend. Posts retain grain up their length.
+        let up=normalize(input.up);
+        let helper=select(vec3<f32>(1.0,0.0,0.0),vec3<f32>(0.0,1.0,0.0),abs(up.x)>0.8);
+        let e1=normalize(cross(up,helper));let e2=cross(up,e1);
+        var u=e1;var v=e2;
+        if abs(facing_up)<0.6 {
+            u=up;v=select(e1,e2,abs(dot(input.normal,e1))>abs(dot(input.normal,e2)));
+            let height=dot(input.material_position,up);
+            let distance=min(fract(height/2.4),1.0-fract(height/2.4))*2.4;
+            joint=joint_coverage(distance,abs(dot(wx,up))+abs(dot(wy,up)));
+        }
+        uv=vec2<f32>(dot(input.material_position,u)*0.5,dot(input.material_position,v));
+        ux=vec2<f32>(dot(wx,u)*0.5,dot(wx,v));
+        uy=vec2<f32>(dot(wy,u)*0.5,dot(wy,v));
+        tone=select(0.88,0.76,lining);
+    }
+    // Gradients are from continuous metre coordinates, not per-board random
+    // offsets: joints cannot select blurry mip levels or sparkle in motion.
+    let tex=textureSampleGrad(timber_texture,timber_sampler,uv,ux,uy);
+    let albedo=tex.rgb*tone*(1.0-0.55*joint);
+    let grain=dot(tex.rgb,vec3<f32>(0.2126,0.7152,0.0722));
+    return WoodMaterial(albedo,clamp(0.65+grain*0.65-0.25*joint,0.25,1.05),
+        tex.a*0.0012-joint*0.0008);
+}
+fn grain_normal(normal: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>, height_dx: f32, height_dy: f32) -> vec3<f32> {
+    let r1=cross(dy,normal);let r2=cross(normal,dx);
+    let determinant=dot(dx,r1);
+    let gradient=(r1*height_dx+r2*height_dy)*sign(determinant)/max(abs(determinant),0.00000001);
+    // Shallow relief only; no jagged silhouettes or high-contrast normal noise.
+    return normalize(normal-gradient*min(1.0,0.16/max(length(gradient),0.00001)));
+}
 fn lit_colour(input: Output) -> vec3<f32> {
-    // Derivatives outside material branches remain valid at primitive edges.
-    let width = fwidth(input.material_position);
-    let footprint = max(max(width.x,width.y),width.z);
-    let sun = normalize(camera.sun_direction.xyz);
-    let elevation = clamp(dot(sun, input.up), 0.0, 1.0);
-    let direct = vec3<f32>(1.9, 1.78, 1.6) * elevation * max(dot(input.normal, sun), 0.0);
-    let ambient = mix(vec3<f32>(0.05, 0.055, 0.06), vec3<f32>(0.24, 0.29, 0.36),
-        0.5 + 0.5 * dot(input.normal, input.up)) * (0.25 + 0.75 * elevation);
-    if input.sheltered > 1.5 { return input.colour; }
-    let vertical = dot(input.normal,input.up);
-    let interior = (0.10 + 0.04*(1.0-abs(vertical)) + 0.12*max(vertical,0.0))
-        * vec3<f32>(1.0,0.96,0.90);
-    var illumination=mix(direct + ambient, interior, input.sheltered);
-    if (input.lighting & 0xffffu)>0u {illumination=tunnel_irradiance(input);}
-    let wood = road_wood(input, footprint);
-    let lit = wood.rgb * illumination;
-    // Timber fluoresces violet wherever the real light has all but gone.
-    if wood.a >= 0.0 && input.sheltered < 1.5 {
-        let luma = dot(lit, vec3<f32>(0.2126, 0.7152, 0.0722));
-        return lit + wood_glow_colour(input.material_position) * wood.a * (1.0 - smoothstep(0.02, 0.14, luma));
+    // All derivatives are outside material/light branches.
+    let dx=dpdx(input.local_position);let dy=dpdy(input.local_position);
+    let wx=dpdx(input.material_position);let wy=dpdy(input.material_position);
+    let wood=road_wood(input,dx,dy,wx,wy);
+    let hx=dpdx(wood.height);let hy=dpdy(wood.height);
+    var shaded=input;
+    shaded.normal=grain_normal(input.normal,wx,wy,hx,hy);
+    shaded.normal_local=grain_normal(input.normal_local,dx,dy,hx,hy);
+    let sun=normalize(camera.sun_direction.xyz);
+    let sun_elevation=dot(sun,normalize(input.up));
+    let elevation=clamp(sun_elevation,0.0,1.0);
+    let direct=vec3<f32>(1.9,1.78,1.6)*elevation*max(dot(shaded.normal,sun),0.0);
+    let ambient=mix(vec3<f32>(0.05,0.055,0.06),vec3<f32>(0.24,0.29,0.36),
+        0.5+0.5*dot(shaded.normal,input.up))*(0.25+0.75*elevation);
+    if input.sheltered>1.5 { return input.colour; }
+    let vertical=dot(shaded.normal,input.up);
+    let interior=(0.10+0.04*(1.0-abs(vertical))+0.12*max(vertical,0.0))*vec3<f32>(1.0,0.96,0.90);
+    var illumination=mix(direct+ambient,interior,input.sheltered);
+    if (input.lighting & 0xffffu)>0u {illumination=tunnel_irradiance(shaded);}
+    let lit=wood.albedo*illumination;
+    if wood.fluorescence>=0.0 {
+        return lit+wood_glow_colour(input.material_position)*wood.fluorescence
+            *wood_glow_visibility(sun_elevation,input.sheltered);
     }
     return lit;
 }
