@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Tunnel bend stall fix, 24 October: stop log showed a 3.8 m 'step rise' where a wheel past the lining read the hillside above the bore; wheels in a bore are now clamped to the body's floor. Not driven live. See HANDOFF.
+
 - Car stop-reason log, 24 October: a moving car zeroed by any rule now logs `planet::driving` "car stopped" with the rule, pose and heading, to pin the tunnel stall. No behaviour change; release builds. See HANDOFF.
 
 - Tunnel deck flush to walls, 24 October: bore decks now run to the lining (was a 1.5 m trench each side) with continuous sheltered-tag timber kerbs at the carriageway edge. Opened capture, 114 road tests pass; not driven live. See HANDOFF.

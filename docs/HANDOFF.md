@@ -13958,3 +13958,7 @@ User screenshot (car stopped in a bore) showed the tunnel deck stopping 1.5 m sh
 ## Car stop-reason log (24 October)
 
 User got stuck again in the bore after the flush-deck fix (`manual/1792852374-504695`, 0 km/h, 1 m altitude, bend where the right wall angles in; no stop cause in the log). `State::log_car_stop` now writes one `planet::driving` "car stopped" record whenever a moving car (>0.5 m/s) is zeroed, naming the rule: no ground contacts (start/ahead), step rise too high, road/tunnel wall constrain (with push distance), or deck edge with no slide, plus pose and heading. No behaviour change. Next: drive into the same spot, read the `car stopped` line in log.jsonl, fix that rule.
+
+## Car stalls at tunnel bends (24 October)
+
+The stop log named it: `step rise too high`, rise ~3.8 m, at the first bore bend (`manual/1792864724-639837`). On a bend a wheel reaches past the lining, `camera_surface_height` falls back to the raster hillside above the roof, the rise check stops the car, and a later sample put the car on that terrain (launched out through the roof). `State::driving_contacts` now clamps any wheel more than 0.5 m above the body's own floor to that floor while the body is in a bore (walls stay enforced by `road_constrain_motion`). Not driven live.

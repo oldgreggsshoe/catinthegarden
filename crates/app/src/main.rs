@@ -3157,6 +3157,17 @@ impl State {
         let right = forward.cross(up).normalize();
         let altitude = position.length() - planet::planet_radius_meters();
         let mut heights = [0.0; 4];
+        // In a bore a wheel can reach past the lining on a bend, where the
+        // ground sampled is the hillside far above the roof: that is the wall,
+        // not a step, so such a wheel takes the body's own floor level.
+        let centre_floor = if self.in_road_tunnel(position.normalize(), altitude) {
+            let direction = position.normalize();
+            self.terrain
+                .raster_surface_height_meters_at(direction, altitude)
+                .map(|ground| self.road_camera_surface_height(direction, altitude, ground))
+        } else {
+            None
+        };
         for (i, (ahead, across)) in [(1.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (-1.0, 1.0)]
             .into_iter()
             .enumerate()
@@ -3169,6 +3180,11 @@ impl State {
                 .terrain
                 .raster_surface_height_meters_at(direction, altitude)?;
             heights[i] = self.road_camera_surface_height(direction, altitude, ground);
+            if let Some(floor) = centre_floor {
+                if heights[i] > floor + 0.5 {
+                    heights[i] = floor;
+                }
+            }
         }
         Some(heights)
     }
