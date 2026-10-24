@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Cart orb, 24 October: the magic motor is now a sprung 15 cm glowing violet orb hanging ahead of the cart, tied by two threads that sag or go taut; swings into bends, dims to an ember with the motor off. On by default in play. Visual only; checked in a driving replay, not in a bore. See HANDOFF.
+
 - Magic motor, 24 October: U toggles a placeholder magic drive for the car (14 m/s² and 45 m/s top vs 6 and 30; drains a charge shown as MAGIC %, recharges when parked). Substance/mechanics unworked; unit-tested, not driven live. See HANDOFF.
 
 - Solid tunnel kerbs, 24 October: body corners can't pass the kerb inner face in a bore (`Field::crosses_tunnel_kerb`), which also keeps the car out of the lining. Not climbable, not driven live. See HANDOFF.

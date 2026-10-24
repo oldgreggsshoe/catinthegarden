@@ -52,6 +52,7 @@ mod road_parking;
 mod road_render;
 mod road_route;
 mod road_signs;
+mod cart_orb;
 mod road_tunnel;
 mod road_vertical;
 mod scenario;
@@ -1624,6 +1625,9 @@ struct State {
     /// whole steps and does not depend on where frame boundaries fell.
     surface_pending_seconds: f64,
     car: driving::Car,
+    /// The orb that pulls the cart (the magic motor, seen).
+    cart_orb: cart_orb::Orb,
+    cart_orb_renderer: cart_orb::Renderer,
     /// Walking pose at the start of the last physics step, so the camera can be
     /// drawn between it and the current pose by the unspent part of a step.
     surface_previous_position: glam::DVec3,
@@ -2011,6 +2015,11 @@ impl State {
             .expect("village road network initial region must pass engineering")
         });
         startup_profile::mark("road");
+        let cart_orb_renderer = cart_orb::Renderer::new(
+            &device,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+        );
         let forest = forest::ForestRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -2263,6 +2272,8 @@ impl State {
             surface_jump_requested: false,
             surface_pending_seconds: 0.0,
             car: driving::Car::default(),
+            cart_orb: cart_orb::Orb::default(),
+            cart_orb_renderer,
             surface_previous_position: glam::DVec3::ZERO,
             driving_brake: false,
             driving_mouse: driving::MouseSteering::default(),
@@ -3196,7 +3207,13 @@ impl State {
         if horizontal.length_squared() > 1e-8 {
             self.flight_local_tangent = horizontal.normalize();
         }
+        // The orb pulls by default in play; replays keep the plain drive they
+        // were recorded with unless PLANET_CART_MAGIC=1. Charge carries over.
+        let spent = self.car.spent;
         self.car = driving::Car::default();
+        self.car.magic = self.scenario.is_none()
+            || std::env::var("PLANET_CART_MAGIC").is_ok_and(|v| v == "1");
+        self.car.spent = spent;
         self.driving_mouse = driving::MouseSteering::default();
         self.driving_brake = false;
         self.surface_pending_seconds = 0.0;
@@ -3253,16 +3270,21 @@ impl State {
         self.mark_hud_dirty();
     }
 
-    fn sync_driving_camera_pose(&mut self, rotation: f64) {
-        if self.player_camera_is_suppressed() {
-            return;
-        }
+    /// The car body's forward and up axes (pitched and rolled), planet frame.
+    fn driving_body_axes(&self) -> (glam::DVec3, glam::DVec3) {
         let up = self.flight_local_position.normalize();
         let heading = self.flight_local_tangent;
         let right = heading.cross(up).normalize();
         let forward = heading * self.car.pitch.cos() + up * self.car.pitch.sin();
         let body_up =
             glam::DQuat::from_axis_angle(forward, self.car.roll) * right.cross(forward).normalize();
+        (forward, body_up)
+    }
+    fn sync_driving_camera_pose(&mut self, rotation: f64) {
+        if self.player_camera_is_suppressed() {
+            return;
+        }
+        let (forward, body_up) = self.driving_body_axes();
         let look = flight_view_direction(
             body_up,
             forward,
@@ -3374,6 +3396,15 @@ impl State {
         }
         self.flight_speed.speed_meters_per_second = self.car.speed.abs();
         self.flight_travel_direction = self.flight_local_tangent * self.car.speed.signum();
+        self.cart_orb.advance(
+            delta_seconds,
+            f64::from(self.flight_movement.forward as u8)
+                - f64::from(self.flight_movement.backward as u8),
+            self.car.steering_fraction(),
+            self.car.speed,
+            self.car.magic && self.car.charge() > 0.0,
+            self.car.charge(),
+        );
         self.sync_driving_camera_pose(rotation);
     }
 
@@ -6273,6 +6304,18 @@ impl State {
                 [self.size.width, self.size.height],
             );
         }
+        if self.camera_mode == CameraMode::Driving {
+            let (forward, up) = self.driving_body_axes();
+            let (solid, additive) = self.cart_orb.geometry(
+                self.flight_local_position,
+                forward,
+                up,
+                camera_planet_frame_position,
+            );
+            self.cart_orb_renderer.upload(&self.queue, &solid, &additive);
+        } else {
+            self.cart_orb_renderer.clear();
+        }
         if let Some(road) = &mut self.road {
             road.update(
                 &self.queue,
@@ -6683,6 +6726,10 @@ impl State {
                     self.terrain.shared_bind_group(),
                     false,
                 );
+            }
+            if subsystem_enabled("cart_orb") {
+                self.cart_orb_renderer
+                    .draw(&mut render_pass, &self.camera_bind_group);
             }
             if !tunnel_enclosed && subsystem_enabled("forest") {
                 self.forest.draw(
