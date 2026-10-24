@@ -1471,19 +1471,22 @@ mod tests {
 
     #[test]
     fn road_tunnel_replays_cover_portals_walking_and_a_fixed_performance_pose() {
-        for name in ["road_tunnel_trial","road_tunnel_walk","road_tunnel_performance"] {
-            let replay=ScenarioRunner::load(name).unwrap();
+        for name in [
+            "road_tunnel_trial",
+            "road_tunnel_walk",
+            "road_tunnel_performance",
+        ] {
+            let replay = ScenarioRunner::load(name).unwrap();
             assert!(crate::road::is_replay(name));
             assert!(replay.uses_fixed_exposure());
         }
-        let walk=ScenarioRunner::load("road_tunnel_walk").unwrap();
+        let walk = ScenarioRunner::load("road_tunnel_walk").unwrap();
         assert!(walk.replays_surface_walk() && walk.replays_forward_flight());
-        assert_eq!(walk.expected_screenshots(),3);
+        assert_eq!(walk.expected_screenshots(), 3);
         // The interior is lining, not exposed terrain; the generic terrain
         // comparison-point count is not a meaningful performance assertion.
-        let performance=ScenarioRunner::load("road_tunnel_performance").unwrap();
-        assert_eq!(performance.assertions().min_surface_probe_points,None);
-
+        let performance = ScenarioRunner::load("road_tunnel_performance").unwrap();
+        assert_eq!(performance.assertions().min_surface_probe_points, None);
     }
 
     #[test]

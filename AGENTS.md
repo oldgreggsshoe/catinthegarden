@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Solid tunnel kerbs, 24 October: body corners can't pass the kerb inner face in a bore (`Field::crosses_tunnel_kerb`), which also keeps the car out of the lining. Not climbable, not driven live. See HANDOFF.
+
 - Tunnel bend stall fix, 24 October: stop log showed a 3.8 m 'step rise' where a wheel past the lining read the hillside above the bore; wheels in a bore are now clamped to the body's floor. Not driven live. See HANDOFF.
 
 - Car stop-reason log, 24 October: a moving car zeroed by any rule now logs `planet::driving` "car stopped" with the rule, pose and heading, to pin the tunnel stall. No behaviour change; release builds. See HANDOFF.

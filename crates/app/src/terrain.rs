@@ -1376,7 +1376,9 @@ impl TerrainRenderer {
             label: Some("cached road cut profile"),
             contents: bytemuck::cast_slice(&vec![
                 [0.0_f32; 4];
-                crate::road::CUT_BUFFER_FLOAT4S.max(crate::road_network_field::BUFFER_FLOAT4S)
+                crate::road::CUT_BUFFER_FLOAT4S.max(
+                    crate::road_network_field::BUFFER_FLOAT4S
+                )
             ]),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
@@ -1678,7 +1680,9 @@ impl TerrainRenderer {
         if let Some(cuts) = &self.network_road_cuts {
             cuts.height(direction, height)
         } else {
-            self.road_cuts.as_ref().map_or(height, |cuts| cuts.height(direction, height))
+            self.road_cuts
+                .as_ref()
+                .map_or(height, |cuts| cuts.height(direction, height))
         }
     }
 
@@ -2162,12 +2166,15 @@ impl TerrainRenderer {
     /// looks exactly like one whose detail has the wrong amplitude, until the
     /// two terms are reported separately.
     pub fn surface_height_breakdown_at(
-        &self, direction: DVec3, altitude: f64,
+        &self,
+        direction: DVec3,
+        altitude: f64,
     ) -> Option<SurfaceHeightBreakdown> {
-        self.uncut_surface_height_breakdown_at(direction, altitude).map(|mut sample| {
-            sample.height_meters = self.cut_surface_height(direction, sample.height_meters);
-            sample
-        })
+        self.uncut_surface_height_breakdown_at(direction, altitude)
+            .map(|mut sample| {
+                sample.height_meters = self.cut_surface_height(direction, sample.height_meters);
+                sample
+            })
     }
 
     fn uncut_surface_height_breakdown_at(
@@ -2253,12 +2260,16 @@ impl TerrainRenderer {
     /// runtime detail is signed, so neither the first patch nor the finest
     /// filter is a conservative collision surface.
     pub fn raster_surface_height_breakdown_at_distance(
-        &self, direction: DVec3, altitude: f64, distance: f64,
+        &self,
+        direction: DVec3,
+        altitude: f64,
+        distance: f64,
     ) -> Option<SurfaceHeightBreakdown> {
-        self.uncut_raster_surface_height_breakdown_at_distance(direction, altitude, distance).map(|mut sample| {
-            sample.height_meters = self.cut_surface_height(direction, sample.height_meters);
-            sample
-        })
+        self.uncut_raster_surface_height_breakdown_at_distance(direction, altitude, distance)
+            .map(|mut sample| {
+                sample.height_meters = self.cut_surface_height(direction, sample.height_meters);
+                sample
+            })
     }
 
     fn uncut_raster_surface_height_breakdown_at_distance(
@@ -2942,8 +2953,7 @@ impl TerrainRenderer {
                 let center = node.center_direction();
                 let size = node_angular_diagonal(node.level);
                 changed.iter().all(|(other_center, other_size)| {
-                    center.dot(*other_center).clamp(-1.0, 1.0).acos()
-                        > 2.0 * (size + other_size)
+                    center.dot(*other_center).clamp(-1.0, 1.0).acos() > 2.0 * (size + other_size)
                 })
             });
         }
@@ -3180,7 +3190,9 @@ impl TerrainRenderer {
                 *self
                     .stitch_cache
                     .entry(render_node.node)
-                    .or_insert_with(|| edge_stitch_info_indexed(render_node.node, &active_node_index))
+                    .or_insert_with(|| {
+                        edge_stitch_info_indexed(render_node.node, &active_node_index)
+                    })
             } else {
                 0
             };
@@ -3208,9 +3220,16 @@ impl TerrainRenderer {
                         footprint_cache_bits(source_uv_scale, source_uv_offset),
                     );
                     let heights = &self.raster_near_field_heights;
-                    !*self.land_footprint_cache.entry(cache_key).or_insert_with(|| {
-                        height_footprint_is_strictly_land(heights, source_uv_scale, source_uv_offset)
-                    })
+                    !*self
+                        .land_footprint_cache
+                        .entry(cache_key)
+                        .or_insert_with(|| {
+                            height_footprint_is_strictly_land(
+                                heights,
+                                source_uv_scale,
+                                source_uv_offset,
+                            )
+                        })
                 }
                 Some(key) => {
                     let tile = self
@@ -3228,13 +3247,16 @@ impl TerrainRenderer {
                                 0,
                                 footprint_cache_bits(source_uv_scale, source_uv_offset),
                             );
-                            *self.land_footprint_cache.entry(cache_key).or_insert_with(|| {
-                                height_footprint_is_strictly_land(
-                                    &tile.heights_meters,
-                                    source_uv_scale,
-                                    source_uv_offset,
-                                )
-                            })
+                            *self
+                                .land_footprint_cache
+                                .entry(cache_key)
+                                .or_insert_with(|| {
+                                    height_footprint_is_strictly_land(
+                                        &tile.heights_meters,
+                                        source_uv_scale,
+                                        source_uv_offset,
+                                    )
+                                })
                         };
                     !footprint_is_land
                 }
@@ -3254,10 +3276,10 @@ impl TerrainRenderer {
                 .world_to_view(anchor_world - camera_world)
                 .length()
                 - 0.75 * chunk_edge_meters;
-            let fine_cell_pixels = chunk_edge_meters / CHUNK_GRID_QUADS as f64
-                / nearest_meters.max(1.0)
-                * f64::from(viewport[1])
-                / (2.0 * (0.5 * vertical_fov_radians).tan());
+            let fine_cell_pixels =
+                chunk_edge_meters / CHUNK_GRID_QUADS as f64 / nearest_meters.max(1.0)
+                    * f64::from(viewport[1])
+                    / (2.0 * (0.5 * vertical_fov_radians).tan());
             let ocean_coarse =
                 self.ocean_coarse_step != 0 && fine_cell_pixels < self.ocean_coarse_cell_pixels;
             prepared_instances.push((
@@ -5230,7 +5252,12 @@ fn node_angular_diagonal(level: u8) -> f64 {
 }
 
 fn footprint_cache_bits(scale: [f32; 2], offset: [f32; 2]) -> [u32; 4] {
-    [scale[0].to_bits(), scale[1].to_bits(), offset[0].to_bits(), offset[1].to_bits()]
+    [
+        scale[0].to_bits(),
+        scale[1].to_bits(),
+        offset[0].to_bits(),
+        offset[1].to_bits(),
+    ]
 }
 
 fn height_footprint_is_strictly_land(

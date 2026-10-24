@@ -41,7 +41,11 @@ pub fn record(interval_ms: f32, excluded: bool) {
         pacing.stalls.push((frame, interval_ms, after_capture));
     }
     // The frame after a capture absorbs the screenshot readback wait too.
-    if excluded || after_capture || pacing.frames_seen <= WARMUP_FRAMES || pacing.intervals_ms.len() >= MAX_SAMPLES {
+    if excluded
+        || after_capture
+        || pacing.frames_seen <= WARMUP_FRAMES
+        || pacing.intervals_ms.len() >= MAX_SAMPLES
+    {
         return;
     }
     pacing.intervals_ms.push(interval_ms);
@@ -82,7 +86,11 @@ fn summary(intervals_ms: &[f32], stalls: &[(u32, f32, bool)]) -> String {
     for (frame, interval, after_capture) in stalls {
         stall_lines.push_str(&format!(
             "stall frame {frame} {interval:.1}ms{}\n",
-            if *after_capture { " (follows a capture frame)" } else { "" }
+            if *after_capture {
+                " (follows a capture frame)"
+            } else {
+                ""
+            }
         ));
     }
     format!(

@@ -109,7 +109,8 @@ fn report() {
     let total_ms = (Instant::now() - profile.started).as_secs_f64() * 1e3;
     let mut ranked: Vec<&(String, f64)> = profile.phases.iter().collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let mut text = format!("startup profile: {total_ms:.0} ms to the start of frame {REPORT_AFTER_FRAMES}\n");
+    let mut text =
+        format!("startup profile: {total_ms:.0} ms to the start of frame {REPORT_AFTER_FRAMES}\n");
     for (label, ms) in &ranked {
         text.push_str(&format!(
             "  {ms:9.1} ms  {:5.1}%  {label}\n",

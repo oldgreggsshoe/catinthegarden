@@ -3257,7 +3257,10 @@ mod tests {
         for step in [2usize, 4] {
             let coarse = crate::planet::coarse_interior_indices(&mesh.indices, quads, step);
             let top = &coarse[..coarse.len() - (mesh.indices.len() - quads * quads * 6)];
-            assert!(top.len() < full_top.len() / 2, "step {step} saves triangles");
+            assert!(
+                top.len() < full_top.len() / 2,
+                "step {step} saves triangles"
+            );
             let xy = |index: u32| ((index as usize % row) as f64, (index as usize / row) as f64);
             let mut area = 0.0;
             let mut edges = std::collections::HashMap::<(u32, u32), i32>::new();
@@ -3265,14 +3268,20 @@ mod tests {
             for triangle in top.chunks(3) {
                 let [a, b, c] = [xy(triangle[0]), xy(triangle[1]), xy(triangle[2])];
                 let twice = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
-                assert!(twice > 0.0, "step {step}: triangle {triangle:?} not counter-clockwise");
+                assert!(
+                    twice > 0.0,
+                    "step {step}: triangle {triangle:?} not counter-clockwise"
+                );
                 area += twice / 2.0;
                 for (from, to) in [(0, 1), (1, 2), (2, 0)] {
                     let (u, v): (u32, u32) = (triangle[from], triangle[to]);
                     *edges.entry((u.min(v), u.max(v))).or_default() += 1;
                 }
             }
-            assert!((area - (quads * quads) as f64).abs() < 1e-9, "step {step} area {area}");
+            assert!(
+                (area - (quads * quads) as f64).abs() < 1e-9,
+                "step {step} area {area}"
+            );
             // Edges used once are the boundary: exactly the unit edges of the
             // full grid's outer ring, so neighbours see an identical edge.
             let boundary: std::collections::HashSet<_> = edges
@@ -3292,7 +3301,10 @@ mod tests {
                 }
             }
             assert_eq!(boundary, expected, "step {step} boundary");
-            assert!(edges.values().all(|count| *count <= 2), "step {step} manifold");
+            assert!(
+                edges.values().all(|count| *count <= 2),
+                "step {step} manifold"
+            );
         }
     }
     use glam::{DVec3, Vec3};

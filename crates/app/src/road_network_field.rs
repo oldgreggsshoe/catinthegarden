@@ -21,6 +21,8 @@ pub struct Frame {
     pub forward: DVec3,
     pub radius: f64,
 }
+/// Distance from the bore centreline to the kerbs' inner face (mesh: 4.82 m, 0.18 m wide).
+const TUNNEL_KERB_INNER_FACE: f64 = 4.73;
 impl Frame {
     pub fn new(up: DVec3, radius: f64) -> Result<Self, String> {
         if !up.is_finite() || up.length_squared() < 0.5 || !radius.is_finite() || radius <= 0.0 {
@@ -416,17 +418,54 @@ impl Field {
         self.deck_height(d, eye)
             .map_or(terrain, |deck| terrain.max(deck))
     }
+    /// Sideways distance from the centreline of the bore carriageway under `p`
+    /// (world), or None outside every tunnel column or far off its deck level.
+    fn tunnel_lateral_offset(&self, p: DVec3) -> Option<f64> {
+        let a = self.frame.local(p);
+        self.candidates(a.truncate())
+            .filter(|s| s.tunnel && !s.is_parking())
+            .filter_map(|s| {
+                let delta = (s.b - s.a).truncate();
+                let t = (a - s.a).truncate().dot(delta) / delta.length_squared();
+                let (centre, distance) = s.nearest(a.truncate());
+                ((0.0..=1.0).contains(&t) && (a.z - centre.z).abs() < 3.0).then_some(distance)
+            })
+            .reduce(f64::min)
+    }
+    /// The timber kerbs inside a bore are solid: a body point may not move out
+    /// past their inner face (the lining lies beyond), but a point already out
+    /// there may still move back in.
+    pub fn crosses_tunnel_kerb(&self, from: DVec3, to: DVec3) -> bool {
+        if (from + to).normalize_or_zero().dot(self.frame.up) < 0.99 {
+            return false;
+        }
+        match (
+            self.tunnel_lateral_offset(from),
+            self.tunnel_lateral_offset(to),
+        ) {
+            (Some(a), Some(b)) => b > TUNNEL_KERB_INNER_FACE && b > a,
+            (None, Some(b)) => b > TUNNEL_KERB_INNER_FACE,
+            _ => false,
+        }
+    }
     /// Open-road edges act as a kerb: a walker standing on a deck cannot step
     /// sideways off it onto ground that is more than half a metre lower.
     /// Motion along the road is kept (a slide), and road ends, junctions and
     /// flush ground-level accesses (where the ground is not lower) stay open.
-    pub fn steps_off_deck(&self, from: DVec3, to: DVec3, terrain_height: impl Fn(DVec3) -> Option<f64>) -> bool {
+    pub fn steps_off_deck(
+        &self,
+        from: DVec3,
+        to: DVec3,
+        terrain_height: impl Fn(DVec3) -> Option<f64>,
+    ) -> bool {
         let (fd, td) = (from.normalize_or_zero(), to.normalize_or_zero());
         if fd.dot(self.frame.up) < 0.99 || td.dot(self.frame.up) < 0.99 {
             return false;
         }
         let from_eye = from.length() - self.frame.radius;
-        let Some(deck) = self.deck_height(fd, from_eye) else { return false };
+        let Some(deck) = self.deck_height(fd, from_eye) else {
+            return false;
+        };
         if from_eye - deck > 3.0 {
             return false;
         }
@@ -443,12 +482,21 @@ impl Field {
         let segment = self
             .candidates(a.truncate())
             .filter(|s| !s.is_parking())
-            .min_by(|x, y| x.nearest(a.truncate()).1.total_cmp(&y.nearest(a.truncate()).1))?;
+            .min_by(|x, y| {
+                x.nearest(a.truncate())
+                    .1
+                    .total_cmp(&y.nearest(a.truncate()).1)
+            })?;
         let t = (segment.b - segment.a).truncate().normalize_or_zero();
         let along = (self.frame.world(a + DVec3::new(t.x, t.y, 0.0)) - p).normalize_or_zero();
         (along != DVec3::ZERO).then_some(along)
     }
-    pub fn keep_on_deck(&self, from: DVec3, to: DVec3, terrain_height: impl Fn(DVec3) -> Option<f64>) -> DVec3 {
+    pub fn keep_on_deck(
+        &self,
+        from: DVec3,
+        to: DVec3,
+        terrain_height: impl Fn(DVec3) -> Option<f64>,
+    ) -> DVec3 {
         if !self.steps_off_deck(from, to, &terrain_height) {
             return to;
         }
@@ -457,7 +505,11 @@ impl Field {
         let Some(segment) = self
             .candidates(a.truncate())
             .filter(|s| !s.is_parking())
-            .min_by(|x, y| x.nearest(a.truncate()).1.total_cmp(&y.nearest(a.truncate()).1))
+            .min_by(|x, y| {
+                x.nearest(a.truncate())
+                    .1
+                    .total_cmp(&y.nearest(a.truncate()).1)
+            })
         else {
             return from;
         };
@@ -574,7 +626,11 @@ mod tests {
         let off = f.world(DVec3::new(2.0, 40.0, 101.7));
         let kept = f.local(field.keep_on_deck(from, off, low));
         assert!(kept.y < 3.0, "stopped at the edge, got y={}", kept.y);
-        assert!(kept.x > 1.0, "kept the motion along the road, got x={}", kept.x);
+        assert!(
+            kept.x > 1.0,
+            "kept the motion along the road, got x={}",
+            kept.x
+        );
         // Flush ground (a ground-level access) is not a drop: no kerb.
         assert_eq!(field.keep_on_deck(from, off, flush), off);
         // Stepping along the deck is untouched.
@@ -606,8 +662,11 @@ mod tests {
             vec![segment([-100.0, 0.0, 100.0], [100.0, 0.0, 100.0], false)],
         )
         .unwrap();
-        let t = field.deck_tangent(f.world(DVec3::new(0.0, 1.0, 101.0))).unwrap();
-        let along = (f.world(DVec3::new(1.0, 1.0, 101.0)) - f.world(DVec3::new(0.0, 1.0, 101.0))).normalize();
+        let t = field
+            .deck_tangent(f.world(DVec3::new(0.0, 1.0, 101.0)))
+            .unwrap();
+        let along = (f.world(DVec3::new(1.0, 1.0, 101.0)) - f.world(DVec3::new(0.0, 1.0, 101.0)))
+            .normalize();
         assert!(t.dot(along).abs() > 0.999, "tangent {t:?} vs {along:?}");
     }
     #[test]
@@ -618,7 +677,11 @@ mod tests {
             vec![segment([-100.0, 0.0, 100.0], [100.0, 0.0, 100.0], true)],
         )
         .unwrap();
-        for y in [0.0, crate::road::HALF_WIDTH + 0.3, crate::road::HALF_WIDTH + 1.0] {
+        for y in [
+            0.0,
+            crate::road::HALF_WIDTH + 0.3,
+            crate::road::HALF_WIDTH + 1.0,
+        ] {
             let p = f.world(DVec3::new(0.0, y, 101.7));
             if field.tunnel_void(p.normalize(), p.length() - f.radius) > 0.0 {
                 let h = field.camera_surface_height(p.normalize(), p.length() - f.radius, 0.0);

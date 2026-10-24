@@ -11,10 +11,8 @@ mod bubbles;
 mod debug;
 mod driving;
 mod flock_marker;
-mod frame_pacing;
-mod quality;
 mod forest;
-mod shadow_heights;
+mod frame_pacing;
 mod gust;
 mod haze;
 mod hdr;
@@ -25,17 +23,20 @@ mod ocean;
 mod ocean_fft;
 mod ocean_transmission;
 mod outmap;
+mod pipeline_cache;
 mod planet;
 mod probe;
+mod quality;
 mod rain;
+#[cfg(test)]
+mod relief_survey;
 mod road;
 mod road_construction;
-mod road_lighting;
-mod road_navigation;
-mod road_material;
-mod road_signs;
 #[cfg(test)]
 mod road_gpu_tests;
+mod road_lighting;
+mod road_material;
+mod road_navigation;
 mod road_network;
 mod road_network_align;
 mod road_network_field;
@@ -50,19 +51,18 @@ mod road_overlay;
 mod road_parking;
 mod road_render;
 mod road_route;
+mod road_signs;
 mod road_tunnel;
 mod road_vertical;
-#[cfg(test)]
-mod relief_survey;
 mod scenario;
 mod sea_sound;
+mod shadow_heights;
 mod ship;
-mod startup_profile;
 mod ship_model;
 mod ship_render;
-mod pipeline_cache;
 mod sky_moon;
 mod stars;
+mod startup_profile;
 mod sun;
 mod surface_camera;
 mod system_flight;
@@ -129,7 +129,9 @@ fn should_start_interactive_fullscreen(scenario_active: bool) -> bool {
 fn presentation_sync_enabled(value: Option<&str>, road_experiment: bool) -> bool {
     // Road launches need the frame-completion workaround on the affected
     // compositor/driver stack. Keep explicit overrides and non-road defaults.
-    value.map_or(road_experiment, |value| matches!(value.trim(), "1" | "true" | "on"))
+    value.map_or(road_experiment, |value| {
+        matches!(value.trim(), "1" | "true" | "on")
+    })
 }
 
 /// Consume the single pending image only after its own submission completes.
@@ -1329,12 +1331,7 @@ impl GpuProfiler {
         None
     }
 
-    fn begin_readback(
-        &mut self,
-        index: usize,
-        sim_time: f64,
-        luminance_enabled: bool,
-    ) {
+    fn begin_readback(&mut self, index: usize, sim_time: f64, luminance_enabled: bool) {
         let (sender, receiver) = mpsc::channel();
         self.slots[index]
             .readback_buffer
@@ -2366,9 +2363,7 @@ impl State {
                 &mut state,
                 &camera_bind_group_layout,
             ));
-        } else if sky_moon::enabled(state.scenario.is_some())
-            && body::active() == body::PLANET
-        {
+        } else if sky_moon::enabled(state.scenario.is_some()) && body::active() == body::PLANET {
             state.sky_moon_pending_layout = Some(camera_bind_group_layout.clone());
         }
         state
@@ -2550,10 +2545,12 @@ impl State {
         match complete_pending_present(
             &mut self.pending_present,
             |submission_index| {
-                device.poll(wgpu::PollType::Wait {
-                    submission_index: Some(submission_index),
-                    timeout: Some(Duration::from_secs(5)),
-                }).map(|_| ())
+                device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: Some(submission_index),
+                        timeout: Some(Duration::from_secs(5)),
+                    })
+                    .map(|_| ())
             },
             |output| output.present(),
         ) {
@@ -2918,7 +2915,9 @@ impl State {
         to: glam::DVec3,
         to_heading: glam::DVec3,
     ) -> bool {
-        let Some(roads) = &self.road_network else { return false };
+        let Some(roads) = &self.road_network else {
+            return false;
+        };
         let corner = |position: glam::DVec3, heading: glam::DVec3, ahead: f64, across: f64| {
             let up = position.normalize();
             let right = heading.cross(up).normalize();
@@ -2934,9 +2933,10 @@ impl State {
                     corner(to, to_heading, ahead, across),
                 );
                 let eye = b.length() - planet::planet_radius_meters();
-                roads.plan().steps_off_deck(a, b, |d| {
-                    self.terrain.raster_surface_height_meters_at(d, eye)
-                })
+                roads.plan().crosses_tunnel_kerb(a, b)
+                    || roads.plan().steps_off_deck(a, b, |d| {
+                        self.terrain.raster_surface_height_meters_at(d, eye)
+                    })
             })
     }
     /// The car met the road edge: the part of its step that runs along the
@@ -3295,7 +3295,13 @@ impl State {
             let heading = self.flight_local_tangent;
             let speed_before = self.car.speed;
             let Some(old_ground) = self.driving_contacts(previous, heading) else {
-                self.log_car_stop(speed_before, "no ground contacts at start", previous, 0.0, 0.0);
+                self.log_car_stop(
+                    speed_before,
+                    "no ground contacts at start",
+                    previous,
+                    0.0,
+                    0.0,
+                );
                 self.car.speed = 0.0;
                 break;
             };
@@ -3320,8 +3326,8 @@ impl State {
             // Do not climb vertical walls by snapping the body onto their top.
             let rise = ground.iter().sum::<f64>() * 0.25 - old_ground.iter().sum::<f64>() * 0.25;
             let constrained = self.road_constrain_motion(previous, candidate);
-            let blocked = rise > 0.5 + distance.abs() * 0.8
-                || constrained.distance(candidate) > 0.01;
+            let blocked =
+                rise > 0.5 + distance.abs() * 0.8 || constrained.distance(candidate) > 0.01;
             let (position, heights) = if blocked {
                 let reason = if rise > 0.5 + distance.abs() * 0.8 {
                     "step rise too high"
@@ -3337,7 +3343,8 @@ impl State {
                 );
                 self.car.speed = 0.0;
                 (previous, old_ground)
-            } else if !self.car_leaves_road(previous, self.flight_local_tangent, candidate, heading) {
+            } else if !self.car_leaves_road(previous, self.flight_local_tangent, candidate, heading)
+            {
                 self.flight_local_tangent = heading;
                 (candidate, ground)
             } else if let Some((slid, slid_heading, slid_ground, kept)) =
@@ -4349,7 +4356,10 @@ impl State {
     fn toggle_road_lines(&mut self) {
         if let Some(roads) = &mut self.road_network {
             let enabled = roads.toggle_lines();
-            tracing::info!(enabled, "road network overlay (red planned, green generated)");
+            tracing::info!(
+                enabled,
+                "road network overlay (red planned, green generated)"
+            );
             self.mark_hud_dirty();
         }
     }
@@ -5388,12 +5398,16 @@ impl State {
         );
         // Test hook for the live quality switch: `PLANET_QUALITY_SWITCH=300:low`
         // applies that preset once, 300 frames in, as F5 would.
-        if let Some((frames, level)) = std::env::var("PLANET_QUALITY_SWITCH")
-            .ok()
-            .and_then(|value| {
-                let (frames, level) = value.split_once(':')?;
-                Some((frames.trim().parse::<u64>().ok()?, quality::Quality::parse(level)?))
-            })
+        if let Some((frames, level)) =
+            std::env::var("PLANET_QUALITY_SWITCH")
+                .ok()
+                .and_then(|value| {
+                    let (frames, level) = value.split_once(':')?;
+                    Some((
+                        frames.trim().parse::<u64>().ok()?,
+                        quality::Quality::parse(level)?,
+                    ))
+                })
         {
             static FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             if FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == frames {
@@ -5435,8 +5449,8 @@ impl State {
                 let direction = position.normalize();
                 let altitude = position.length() - planet::planet_radius_meters();
                 if let Some(ground) = self.terrain.surface_height_meters_at(direction, altitude) {
-                    position = direction
-                        * (planet::planet_radius_meters() + altitude.max(ground + 60.0));
+                    position =
+                        direction * (planet::planet_radius_meters() + altitude.max(ground + 60.0));
                 }
             }
             // A waterline scenario authors where to stand and which way to
@@ -5468,16 +5482,20 @@ impl State {
                 }
                 None => (position, look_at),
             };
-            let (position, look_at) = match scenario_terrain_eye_height_meters.filter(|_| route_pose.is_none()) {
+            let (position, look_at) = match scenario_terrain_eye_height_meters
+                .filter(|_| route_pose.is_none())
+            {
                 Some(eye_height_meters) => {
                     let radial = position.normalize();
                     let local_radial = planet::planet_local_vector(radial, planet_rotation_radians);
                     let authored_altitude = position.length() - planet::planet_radius_meters();
-                    let ground = self.terrain
+                    let ground = self
+                        .terrain
                         .raster_surface_height_meters_at(local_radial, authored_altitude)
                         .and_then(|first| {
                             self.terrain.raster_surface_height_meters_at(
-                                local_radial, first + eye_height_meters,
+                                local_radial,
+                                first + eye_height_meters,
                             )
                         });
                     if let Some(ground) = ground {
@@ -6245,7 +6263,8 @@ impl State {
             road.update(
                 &self.queue,
                 camera_planet_frame_position,
-                self.camera.planet_frame_direction_dvec3(planet_rotation_radians),
+                self.camera
+                    .planet_frame_direction_dvec3(planet_rotation_radians),
                 [self.size.width, self.size.height],
             );
         }
@@ -6915,11 +6934,7 @@ impl State {
             self.gpu_profiler
                 .as_mut()
                 .expect("GPU profiler exists")
-                .begin_readback(
-                    slot_index,
-                    sim_time,
-                    auto_exposure_enabled,
-                );
+                .begin_readback(slot_index, sim_time, auto_exposure_enabled);
         }
         let gpu_timestamp_readback_ms = gpu_readback_started.elapsed().as_secs_f32() * 1_000.0;
         let present_started = Instant::now();
@@ -6985,10 +7000,8 @@ impl State {
                             terrain.raster_surface_height_breakdown_at_distance(
                                 direction,
                                 camera_sea_level_altitude_meters,
-                                geometry.raster_detail_distance_meters(
-                                    direction,
-                                    macro_height_meters,
-                                ),
+                                geometry
+                                    .raster_detail_distance_meters(direction, macro_height_meters),
                             )
                         },
                         |direction, _camera_distance_meters| probe::ProbeContext {
@@ -7798,9 +7811,10 @@ fn launch_options() -> Result<LaunchOptions, String> {
                 }
             }
             "--road-network-survey" => {
-                options.road_network_survey = Some(PathBuf::from(arguments.next().ok_or_else(
-                    || "--road-network-survey requires a new output file path".to_owned(),
-                )?));
+                options.road_network_survey =
+                    Some(PathBuf::from(arguments.next().ok_or_else(|| {
+                        "--road-network-survey requires a new output file path".to_owned()
+                    })?));
             }
             "--road-network-precompute" => {
                 options.road_precompute = Some(road_network_precompute::Options::new(
@@ -8049,12 +8063,12 @@ mod tests {
         STORM_OCEAN_START_DIRECTION, STORM_OCEAN_START_PITCH_RADIANS, adjusted_flight_speed_scale,
         advance_flight_position_on_sphere, advance_flight_speed, device_mouse_look_enabled,
         find_default_outmap, flight_look_angles_toward, flight_movement_direction,
-        flight_view_direction, initial_flight_tangent,
-        interactive_camera_delta_seconds, key_look_delta, low_flight_clearance_radius,
-        movement_key_latch_expired, render_size_for_surface_resize,
-        retimed_planet_rotation, ship_bridge_camera_planet_pose, ship_bridge_look_direction,
-        should_enter_fullscreen, should_start_interactive_fullscreen, surface_movement_direction,
-        swept_flight_clearance_lift, transport_flight_tangent, waterline_scenario_pose,
+        flight_view_direction, initial_flight_tangent, interactive_camera_delta_seconds,
+        key_look_delta, low_flight_clearance_radius, movement_key_latch_expired,
+        render_size_for_surface_resize, retimed_planet_rotation, ship_bridge_camera_planet_pose,
+        ship_bridge_look_direction, should_enter_fullscreen, should_start_interactive_fullscreen,
+        surface_movement_direction, swept_flight_clearance_lift, transport_flight_tangent,
+        waterline_scenario_pose,
     };
     use crate::planet::{PLANET_ROTATION_PERIOD_SECONDS, geographic_longitude_degrees};
 
@@ -8384,21 +8398,34 @@ mod tests {
     #[test]
     fn synchronized_presentation_overlaps_preparation_and_drains_before_acquisition() {
         let source = include_str!("main.rs");
-        let render = source.split("fn render(&mut self, window: &Window)").nth(1).unwrap();
+        let render = source
+            .split("fn render(&mut self, window: &Window)")
+            .nth(1)
+            .unwrap();
         let prepare = render.find("let egui_ms =").unwrap();
         let finish = render.find("self.finish_pending_present()").unwrap();
         let acquire = render.find("self.surface.get_current_texture()").unwrap();
         assert!(prepare < finish && finish < acquire);
-        let submitted = render.split("let submission_index = self.queue.submit").nth(1).unwrap();
+        let submitted = render
+            .split("let submission_index = self.queue.submit")
+            .nth(1)
+            .unwrap();
         let scheduled = submitted.split("let capture_started =").next().unwrap();
         assert!(scheduled.contains("self.pending_present = Some((output, submission_index))"));
-        assert!(!scheduled.contains("self.device.poll"), "do not serialize the new frame");
+        assert!(
+            !scheduled.contains("self.device.poll"),
+            "do not serialize the new frame"
+        );
         let resize = source.split("fn resize(&mut self, size:").nth(1).unwrap();
-        assert!(resize.find("self.finish_pending_present()").unwrap()
-            < resize.find("self.surface.configure").unwrap());
+        assert!(
+            resize.find("self.finish_pending_present()").unwrap()
+                < resize.find("self.surface.configure").unwrap()
+        );
         let complete = render.split("if scenario_complete {").nth(1).unwrap();
-        assert!(complete.find("self.finish_pending_present()").unwrap()
-            < complete.find("self.artifacts.finish").unwrap());
+        assert!(
+            complete.find("self.finish_pending_present()").unwrap()
+                < complete.find("self.artifacts.finish").unwrap()
+        );
     }
 
     #[test]

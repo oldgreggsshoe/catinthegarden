@@ -13962,3 +13962,7 @@ User got stuck again in the bore after the flush-deck fix (`manual/1792852374-50
 ## Car stalls at tunnel bends (24 October)
 
 The stop log named it: `step rise too high`, rise ~3.8 m, at the first bore bend (`manual/1792864724-639837`). On a bend a wheel reaches past the lining, `camera_surface_height` falls back to the raster hillside above the roof, the rise check stops the car, and a later sample put the car on that terrain (launched out through the roof). `State::driving_contacts` now clamps any wheel more than 0.5 m above the body's own floor to that floor while the body is in a bore (walls stay enforced by `road_constrain_motion`). Not driven live.
+
+## Solid tunnel kerbs (24 October)
+
+Screenshots `manual/1792865113-643843`: after the wheel-floor clamp the car could drive into the bore wall (seeing terrain undersides) and through the kerb. `Field::crosses_tunnel_kerb` (offset from the nearest tunnel carriageway centreline, inner face 4.73 m) is now part of `State::car_leaves_road`, so every body corner is stopped at the kerb face (the existing slide keeps along-road motion); a corner already past it may still move back in. The kerb is not climbable: wheels do not ride up it. Not driven live; no unit test of the field query.
