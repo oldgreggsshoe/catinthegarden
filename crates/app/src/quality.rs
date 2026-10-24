@@ -139,10 +139,7 @@ mod tests {
 
     #[test]
     fn presets_step_down_in_cost_and_cycle() {
-        assert_eq!(
-            Quality::High.chunk_budget(),
-            crate::planet::DEFAULT_MAX_ACTIVE_CHUNKS
-        );
+        assert_eq!(Quality::High.chunk_budget(), crate::planet::DEFAULT_MAX_ACTIVE_CHUNKS);
         assert!(Quality::High.chunk_budget() > Quality::Medium.chunk_budget());
         assert!(Quality::Medium.chunk_budget() > Quality::Low.chunk_budget());
         assert_eq!(Quality::High.next().next().next(), Quality::High);

@@ -882,7 +882,10 @@ pub fn beam_cells_around(camera_direction: DVec3, ring: i32) -> Vec<TileKey> {
 /// so a beam is on exactly the ground a village is sited on -- but it does not
 /// build or distance-cull houses, so it can run for cells far outside the
 /// drawing range. The village centre is the foot, not its first house.
-pub fn village_beam_sites_in_cell(terrain: &impl VillageSurface, key: TileKey) -> Vec<DVec3> {
+pub fn village_beam_sites_in_cell(
+    terrain: &impl VillageSurface,
+    key: TileKey,
+) -> Vec<DVec3> {
     let mut sites = Vec::new();
     for up in village_candidates_in_cell(key) {
         let reference = if up.y.abs() < 0.9 { DVec3::Y } else { DVec3::X };

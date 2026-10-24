@@ -300,64 +300,27 @@ mod tests {
     #[ignore = "asset-backed verified longest-undersea entrance, no display/GPU"]
     fn road_network_live_longest_undersea_start_is_at_the_mouth_facing_inside() {
         let initial = crate::road_network_render::longest_undersea_start_position();
-        let (_worker, snapshot) =
-            Worker::start(crate::find_default_outmap().unwrap(), initial).unwrap();
+        let (_worker, snapshot) = Worker::start(crate::find_default_outmap().unwrap(), initial).unwrap();
         let (eye, target) = snapshot.inspection.expect("entrance pose");
-        assert!(
-            eye.distance(initial) < 32.0,
-            "must use the inland mouth, not the village: {eye:?}"
-        );
+        assert!(eye.distance(initial) < 32.0, "must use the inland mouth, not the village: {eye:?}");
         let field = &snapshot.field;
         let local = field.frame.local(eye);
         let target = field.frame.local(target);
-        let approach = field
-            .segments
-            .iter()
-            .filter(|s| !s.tunnel)
-            .min_by(|a, b| {
-                a.nearest(local.truncate())
-                    .1
-                    .total_cmp(&b.nearest(local.truncate()).1)
-            })
-            .unwrap();
-        assert!(
-            eye.length() - field.frame.radius >= 7.0,
-            "start on the dry landward approach above sea level"
-        );
-        assert!(
-            !crate::road_network_survey::Surface::load(&crate::find_default_outmap().unwrap())
-                .unwrap()
-                .engineering_ground(eye.normalize())
-                .unwrap()
-                .ocean
-        );
+        let approach = field.segments.iter().filter(|s| !s.tunnel)
+            .min_by(|a,b| a.nearest(local.truncate()).1.total_cmp(&b.nearest(local.truncate()).1)).unwrap();
+        assert!(eye.length() - field.frame.radius >= 7.0,
+            "start on the dry landward approach above sea level");
+        assert!(!crate::road_network_survey::Surface::load(&crate::find_default_outmap().unwrap())
+            .unwrap().engineering_ground(eye.normalize()).unwrap().ocean);
         let (floor, across) = approach.nearest(local.truncate());
-        assert!(
-            across < 0.01 && (local.z - floor.z - 2.0).abs() < 0.05,
-            "eye must be on the open approach at the mouth"
-        );
-        let covered = field
-            .segments
-            .iter()
-            .filter(|s| s.tunnel)
-            .min_by(|a, b| {
-                a.nearest(target.truncate())
-                    .1
-                    .total_cmp(&b.nearest(target.truncate()).1)
-            })
-            .unwrap();
+        assert!(across < 0.01 && (local.z - floor.z - 2.0).abs() < 0.05, "eye must be on the open approach at the mouth");
+        let covered = field.segments.iter().filter(|s| s.tunnel)
+            .min_by(|a,b| a.nearest(target.truncate()).1.total_cmp(&b.nearest(target.truncate()).1)).unwrap();
         let (floor, across) = covered.nearest(target.truncate());
-        assert!(
-            across < 0.01 && (target.z - floor.z - 2.0).abs() < 0.05,
-            "look into the covered carriageway"
-        );
+        assert!(across < 0.01 && (target.z - floor.z - 2.0).abs() < 0.05, "look into the covered carriageway");
         let inside = field.frame.world(floor + DVec3::Z * 2.0);
         assert!(field.tunnel_void(inside.normalize(), inside.length() - field.frame.radius) > 0.0);
-        eprintln!(
-            "longest-undersea entrance eye={eye:?}, target={:?}, {} tunnel spans",
-            field.frame.world(target),
-            snapshot.tunnels
-        );
+        eprintln!("longest-undersea entrance eye={eye:?}, target={:?}, {} tunnel spans", field.frame.world(target), snapshot.tunnels);
     }
 
     #[test]
@@ -627,10 +590,7 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
-        eprintln!(
-            "neighbour generation took {:.1}s",
-            started.elapsed().as_secs_f64()
-        );
+        eprintln!("neighbour generation took {:.1}s", started.elapsed().as_secs_f64());
         assert_eq!(ready.keys.len(), nearby_keys(snapshot.build_centre).len());
         assert!(ready.villages >= snapshot.villages);
         assert!(ready.vertices.len() <= crate::road_network_mesh::MAX_VERTICES);

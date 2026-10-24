@@ -1743,15 +1743,13 @@ fn build_forest_proxy_patch(
             let extra_radius = (f64::from(width_meters) * 0.7 - 16.0).max(0.0);
             let blocked = terrain.road_clears_tree(card_direction, sample.height_meters)
                 || (extra_radius > 0.0
-                    && [tangent, -tangent, bitangent, -bitangent]
-                        .into_iter()
-                        .any(|axis| {
-                            terrain.road_clears_tree(
-                                (card_direction + axis * (extra_radius / planet_radius_meters()))
-                                    .normalize(),
-                                sample.height_meters,
-                            )
-                        }));
+                    && [tangent, -tangent, bitangent, -bitangent].into_iter().any(|axis| {
+                        terrain.road_clears_tree(
+                            (card_direction + axis * (extra_radius / planet_radius_meters()))
+                                .normalize(),
+                            sample.height_meters,
+                        )
+                    }));
             if blocked {
                 continue;
             }

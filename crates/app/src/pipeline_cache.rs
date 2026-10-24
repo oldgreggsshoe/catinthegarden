@@ -16,18 +16,15 @@ fn path(adapter_info: &wgpu::AdapterInfo) -> Option<std::path::PathBuf> {
 
 pub fn enabled() -> bool {
     !matches!(
-        std::env::var("PLANET_PIPELINE_CACHE")
-            .ok()
-            .as_deref()
-            .map(str::trim),
+        std::env::var("PLANET_PIPELINE_CACHE").ok().as_deref().map(str::trim),
         Some("0" | "false" | "off")
     )
 }
 
 pub fn init(device: &wgpu::Device, adapter_info: &wgpu::AdapterInfo) {
     let _ = PATH.set(path(adapter_info));
-    let cache =
-        (enabled() && device.features().contains(wgpu::Features::PIPELINE_CACHE)).then(|| {
+    let cache = (enabled() && device.features().contains(wgpu::Features::PIPELINE_CACHE))
+        .then(|| {
             let data = path(adapter_info).and_then(|p| std::fs::read(p).ok());
             tracing::info!(
                 target: "planet::startup",

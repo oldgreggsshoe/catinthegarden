@@ -1204,14 +1204,30 @@ fn deck(
             b - a,
         );
         road::quad(mesh, [a + la, a - la, b - lb, b + lb], side);
-        road::quad(mesh, [a - la, a - la + z, b - lb + z, b - lb], side);
-        road::quad(mesh, [a + la + z, a + la, b + lb, b + lb + z], side);
+        road::quad(
+            mesh,
+            [a - la, a - la + z, b - lb + z, b - lb],
+            side,
+        );
+        road::quad(
+            mesh,
+            [a + la + z, a + la, b + lb, b + lb + z],
+            side,
+        );
         if offset != 0.0 {
             if start > 1e-6 || !s.junction_a {
-                road::quad(mesh, [a - la, a + la, a + la + z, a - la + z], side);
+                road::quad(
+                    mesh,
+                    [a - la, a + la, a + la + z, a - la + z],
+                    side,
+                );
             }
             if end < 1.0 - 1e-6 || !s.junction_b {
-                road::quad(mesh, [b + lb, b - lb, b - lb + z, b + lb + z], side);
+                road::quad(
+                    mesh,
+                    [b + lb, b - lb, b - lb + z, b + lb + z],
+                    side,
+                );
             }
         }
     };

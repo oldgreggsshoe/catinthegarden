@@ -1591,11 +1591,7 @@ pub fn global_wave_probe(
         .map(|(wave, sample)| sample.slope * (wave.amplitude(blend) * amplitude_scale))
         .sum::<DVec3>()
         * breaking_rate_weight(radial_raw, other_depth_meters);
-    (
-        height,
-        vertical_velocity,
-        gradient - radial * gradient.dot(radial),
-    )
+    (height, vertical_velocity, gradient - radial * gradient.dot(radial))
 }
 
 pub fn global_wave_vertical_velocity_meters_per_second(
@@ -1680,12 +1676,8 @@ mod tests {
     fn the_fused_water_probe_matches_the_separate_queries_bit_for_bit() {
         for index in 0..40_u32 {
             let phase = f64::from(index) * 0.731;
-            let unit = DVec3::new(
-                phase.cos(),
-                phase.sin() * 0.6,
-                0.4 + 0.01 * f64::from(index),
-            )
-            .normalize();
+            let unit = DVec3::new(phase.cos(), phase.sin() * 0.6, 0.4 + 0.01 * f64::from(index))
+                .normalize();
             // Unit vectors (what the ship passes) and an unnormalised one.
             for direction in [unit, unit * 1.0000003] {
                 let time = 3.0 + 7.3 * f64::from(index);
@@ -1698,18 +1690,11 @@ mod tests {
                     );
                     assert_eq!(
                         velocity.to_bits(),
-                        super::global_wave_vertical_velocity_meters_per_second(
-                            direction,
-                            time,
-                            other_depth
-                        )
-                        .to_bits()
+                        super::global_wave_vertical_velocity_meters_per_second(direction, time, other_depth)
+                            .to_bits()
                     );
                     let expected = super::global_wave_slope(direction, time, other_depth);
-                    assert_eq!(
-                        slope.to_array().map(f64::to_bits),
-                        expected.to_array().map(f64::to_bits)
-                    );
+                    assert_eq!(slope.to_array().map(f64::to_bits), expected.to_array().map(f64::to_bits));
                 }
             }
         }

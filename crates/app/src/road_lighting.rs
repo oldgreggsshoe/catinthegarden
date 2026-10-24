@@ -486,13 +486,11 @@ mod tests {
         let per_lamp = baked.fixtures[0].len() / 5;
         assert!(per_lamp <= 240 && per_lamp >= 120);
         assert_eq!(baked.fixtures[0].len(), 5 * per_lamp);
-        assert!(
-            baked.fixtures[0].iter().all(|v| v
-                .position
-                .iter()
-                .chain(&v.normal)
-                .all(|x| x.is_finite()))
-        );
+        assert!(baked.fixtures[0].iter().all(|v| v
+            .position
+            .iter()
+            .chain(&v.normal)
+            .all(|x| x.is_finite())));
         for (i, light) in baked.fixtures[0].chunks_exact(per_lamp).enumerate() {
             let x = light.iter().map(|v| v.position[0]).sum::<f32>() / per_lamp as f32;
             assert_eq!(x.signum(), if i % 2 == 0 { -1.0 } else { 1.0 });
