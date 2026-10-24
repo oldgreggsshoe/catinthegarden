@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Tunnel deck flush to walls, 24 October: bore decks now run to the lining (was a 1.5 m trench each side) with continuous sheltered-tag timber kerbs at the carriageway edge. Opened capture, 114 road tests pass; not driven live. See HANDOFF.
+
 - Sign glow hue, smooth walk camera, car slides on the road wall, 24 October: per-board glow hue on signs (stable hash); walking eye drawn between physics steps (judder fix); the car keeps only its along-road motion at the deck edge instead of stopping dead. Tests pass, none seen live. See HANDOFF.
 
 - Hard road edge for the car, 24 October: all four car corners are tested against the deck edge (`Field::steps_off_deck`, `State::car_leaves_road`); a move that would roll any corner off onto lower ground is rejected like a wall, so a 3-point turn can't fall off. Open accesses unchanged. Unit-tested, not driven live. See HANDOFF.

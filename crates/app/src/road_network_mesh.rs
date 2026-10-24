@@ -1188,9 +1188,10 @@ fn deck(
                 low: f64,
                 high: f64,
                 offset: f64,
-                colour,
+                colour: [f32; 3],
                 start: f64,
                 end: f64| {
+        let side = [0.32, 0.31, 0.29 * colour[2].signum()];
         let a = ribbon.point(s, start, offset) + DVec3::Z * low;
         let b = ribbon.point(s, end, offset) + DVec3::Z * low;
         let la = ribbon.sides[0].lerp(ribbon.sides[1], start) * width;
@@ -1202,35 +1203,42 @@ fn deck(
             colour,
             b - a,
         );
-        road::quad(mesh, [a + la, a - la, b - lb, b + lb], [0.32, 0.31, 0.29]);
+        road::quad(mesh, [a + la, a - la, b - lb, b + lb], side);
         road::quad(
             mesh,
             [a - la, a - la + z, b - lb + z, b - lb],
-            [0.32, 0.31, 0.29],
+            side,
         );
         road::quad(
             mesh,
             [a + la + z, a + la, b + lb, b + lb + z],
-            [0.32, 0.31, 0.29],
+            side,
         );
         if offset != 0.0 {
             if start > 1e-6 || !s.junction_a {
                 road::quad(
                     mesh,
                     [a - la, a + la, a + la + z, a - la + z],
-                    [0.32, 0.31, 0.29],
+                    side,
                 );
             }
             if end < 1.0 - 1e-6 || !s.junction_b {
                 road::quad(
                     mesh,
                     [b + lb, b - lb, b - lb + z, b + lb + z],
-                    [0.32, 0.31, 0.29],
+                    side,
                 );
             }
         }
     };
-    slab(mesh, road::HALF_WIDTH, -1.0, 0.0, 0.0, colour, 0.0, 1.0);
+    // Inside a bore the deck runs flush to the lining: a narrower deck left a
+    // trench between its edge and the walls.
+    let deck_half_width = if s.tunnel {
+        crate::road_tunnel::HALF_WIDTH
+    } else {
+        road::HALF_WIDTH
+    };
+    slab(mesh, deck_half_width, -1.0, 0.0, 0.0, colour, 0.0, 1.0);
     // No painted markings: the deck is bare timber planking.
     // Retain edge protection right up to each real opening, also at village
     // approaches. Excavation floor depth is not a measure of the fall below.
@@ -1239,6 +1247,12 @@ fn deck(
             for (start, end) in exposed(ribbon, s, field, offset, 4.82) {
                 slab(mesh, 0.18, 0.0, 0.9, offset, [0.32, 0.31, 0.29], start, end);
             }
+        }
+    } else {
+        // Raised timber kerbs mark the carriageway edge inside the bore. The
+        // negative tag is the sheltered one: no outdoor wood glow in a tunnel.
+        for offset in [-4.82, 4.82] {
+            slab(mesh, 0.18, 0.0, 0.9, offset, [0.32, 0.31, -0.29], 0.0, 1.0);
         }
     }
     // The last metres at villages meet the ground; longer spans retain legs.
