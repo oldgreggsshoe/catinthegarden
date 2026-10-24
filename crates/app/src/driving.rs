@@ -6,6 +6,13 @@ pub const TRACK: f64 = 1.6;
 pub const STEP: f64 = 1.0 / 120.0;
 const GRAVITY: f64 = 9.80665;
 const MAX_LATERAL_ACCELERATION: f64 = 6.5;
+/// Placeholder numbers for the magic motor: its substance is not worked out
+/// yet, so it is just a charge that full throttle spends in `MAGIC_FULL_BURN_SECONDS`
+/// and a parked car slowly regains over `MAGIC_RECHARGE_SECONDS`.
+const MAGIC_ACCELERATION: f64 = 14.0;
+const MAGIC_TOP_SPEED: f64 = 45.0;
+const MAGIC_FULL_BURN_SECONDS: f64 = 90.0;
+const MAGIC_RECHARGE_SECONDS: f64 = 120.0;
 
 /// Relative mouse motion acts as a bounded virtual steering wheel. Keyboard
 /// steering overrides/recentres it; free-look never changes wheel position.
@@ -46,8 +53,20 @@ pub struct Car {
     pub roll: f64,
     pub grounded: bool,
     steering: f64,
+    /// The magic motor is switched in (otherwise the plain cart drive).
+    pub magic: bool,
+    /// Share of the magic charge spent, 0 full to 1 empty.
+    pub spent: f64,
 }
 impl Car {
+    /// Magic charge left, 0..=1.
+    pub fn charge(&self) -> f64 {
+        (1.0 - self.spent).clamp(0.0, 1.0)
+    }
+    fn magic_running(&self) -> bool {
+        self.magic && self.spent < 1.0
+    }
+
     fn steering_lock(&self) -> f64 {
         (MAX_LATERAL_ACCELERATION * WHEELBASE / self.speed.powi(2).max(1.0))
             .atan()
@@ -78,18 +97,28 @@ impl Car {
         let input = steer.clamp(-1.0, 1.0);
         let target = input * (centre_gain + (1.0 - centre_gain) * input * input) * lock;
         self.steering += (target - self.steering).clamp(-8.0 * STEP, 8.0 * STEP);
+        let magic = self.magic_running();
         let acceleration = if throttle * self.speed < -0.1 {
             8.0
+        } else if magic {
+            MAGIC_ACCELERATION
         } else {
             6.0
         };
+        if self.magic {
+            if throttle.abs() > 1e-6 {
+                self.spent = (self.spent + throttle.abs().min(1.0) * STEP / MAGIC_FULL_BURN_SECONDS).min(1.0);
+            } else if self.speed.abs() < 0.5 {
+                self.spent = (self.spent - STEP / MAGIC_RECHARGE_SECONDS).max(0.0);
+            }
+        }
         if self.grounded {
             self.speed +=
                 (throttle.clamp(-1.0, 1.0) * acceleration - GRAVITY * self.pitch.sin()) * STEP;
         }
         let drag = (if brake { 12.0 } else { 0.35 }) + 0.0015 * self.speed * self.speed;
         self.speed = self.speed.signum() * (self.speed.abs() - drag * STEP).max(0.0);
-        let maximum = 30.0 * scale.clamp(0.1, 2.0);
+        let maximum = if magic { MAGIC_TOP_SPEED } else { 30.0 } * scale.clamp(0.1, 2.0);
         self.speed = self.speed.clamp(-8.0, maximum);
         let curvature = (self.steering.tan() / WHEELBASE).clamp(
             -MAX_LATERAL_ACCELERATION / self.speed.powi(2).max(1.0),
@@ -436,5 +465,27 @@ mod tests {
             car.travel(0.0, 0.0, false, 1.0);
         }
         assert_eq!(car.speed, 0.0, "parked auto-hold on a 25% grade");
+    }
+
+    #[test]
+    fn magic_motor_is_faster_spends_charge_and_falls_back_when_empty() {
+        let run = |magic: bool, seconds: f64, spent: f64| {
+            let mut car = Car { grounded: true, magic, spent, ..Car::default() };
+            for _ in 0..(seconds / STEP) as usize {
+                car.travel(1.0, 0.0, false, 1.0);
+            }
+            car
+        };
+        let plain = run(false, 20.0, 0.0);
+        let magic = run(true, 20.0, 0.0);
+        assert!(magic.speed > plain.speed + 5.0, "{} vs {}", magic.speed, plain.speed);
+        assert!(magic.charge() < 1.0 && magic.charge() > 0.7);
+        let empty = run(true, 20.0, 1.0);
+        assert!((empty.speed - plain.speed).abs() < 1e-9);
+        let mut parked = Car { grounded: true, magic: true, spent: 0.5, ..Car::default() };
+        for _ in 0..(10.0 / STEP) as usize {
+            parked.travel(0.0, 0.0, false, 1.0);
+        }
+        assert!(parked.charge() > 0.5);
     }
 }

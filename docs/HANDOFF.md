@@ -13966,3 +13966,7 @@ The stop log named it: `step rise too high`, rise ~3.8 m, at the first bore bend
 ## Solid tunnel kerbs (24 October)
 
 Screenshots `manual/1792865113-643843`: after the wheel-floor clamp the car could drive into the bore wall (seeing terrain undersides) and through the kerb. `Field::crosses_tunnel_kerb` (offset from the nearest tunnel carriageway centreline, inner face 4.73 m) is now part of `State::car_leaves_road`, so every body corner is stopped at the kerb face (the existing slide keeps along-road motion); a corner already past it may still move back in. The kerb is not climbable: wheels do not ride up it. Not driven live; no unit test of the field query.
+
+## Magic motor (24 October)
+
+Key U while driving switches the car between the plain cart drive and a placeholder "magic motor" (`driving::Car::magic`, `spent`): acceleration 14 m/s² (was 6), top speed 45 m/s (was 30, both times the `[`/`]` scale). It spends a charge (full throttle empties it in 90 s; shown as purple `MAGIC nn%` under the speed) and falls back to the plain drive when empty; a parked car with the motor on recharges over 120 s. The substance, its source and any real mechanic are deliberately unworked: constants `MAGIC_*` in `driving.rs` are tuning placeholders. Unit-tested, not driven live; no visual/sound effect yet. Gravity luge not started.

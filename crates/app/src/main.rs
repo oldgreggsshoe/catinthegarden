@@ -3214,6 +3214,12 @@ impl State {
         }
     }
 
+    /// U: switch the car between the plain cart drive and the magic motor.
+    fn toggle_magic_motor(&mut self) {
+        if self.camera_mode == CameraMode::Driving {
+            self.car.magic = !self.car.magic;
+        }
+    }
     fn toggle_driving_mode(&mut self) {
         if self.scenario.is_some() {
             return;
@@ -5036,8 +5042,10 @@ impl State {
                 ocean_fft::wind_speed_from_environment(),
             )
         });
-        let driving_speed =
-            (self.camera_mode == CameraMode::Driving).then(|| driving_speed_text(self.car.speed));
+        let driving_speed = (self.camera_mode == CameraMode::Driving)
+            .then(|| driving_speed_text(self.car.speed));
+        let magic_charge = (self.camera_mode == CameraMode::Driving && self.car.magic)
+            .then(|| self.car.charge());
         let driving_steering = self.car.steering_fraction();
         self.compass_drawn_degrees = compass;
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
@@ -5053,6 +5061,12 @@ impl State {
                                 .color(egui::Color32::WHITE)
                                 .background_color(egui::Color32::from_black_alpha(150)));
                             draw_steering_indicator(ui, driving_steering);
+                            if let Some(charge) = magic_charge {
+                                ui.label(egui::RichText::new(format!("MAGIC {:.0}%", charge * 100.0))
+                                    .size(16.0).strong()
+                                    .color(egui::Color32::from_rgb(190, 130, 255))
+                                    .background_color(egui::Color32::from_black_alpha(150)));
+                            }
                         }
                     });
             }
@@ -7490,6 +7504,14 @@ impl ApplicationHandler for App {
                         && event.physical_key == PhysicalKey::Code(KeyCode::KeyC) =>
                 {
                     state.toggle_driving_mode();
+                    window.request_redraw();
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state.is_pressed()
+                        && !event.repeat
+                        && event.physical_key == PhysicalKey::Code(KeyCode::KeyU) =>
+                {
+                    state.toggle_magic_motor();
                     window.request_redraw();
                 }
                 WindowEvent::KeyboardInput { event, .. }

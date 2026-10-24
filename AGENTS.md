@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Magic motor, 24 October: U toggles a placeholder magic drive for the car (14 m/s² and 45 m/s top vs 6 and 30; drains a charge shown as MAGIC %, recharges when parked). Substance/mechanics unworked; unit-tested, not driven live. See HANDOFF.
+
 - Solid tunnel kerbs, 24 October: body corners can't pass the kerb inner face in a bore (`Field::crosses_tunnel_kerb`), which also keeps the car out of the lining. Not climbable, not driven live. See HANDOFF.
 
 - Tunnel bend stall fix, 24 October: stop log showed a 3.8 m 'step rise' where a wheel past the lining read the hillside above the bore; wheels in a bore are now clamped to the body's floor. Not driven live. See HANDOFF.
