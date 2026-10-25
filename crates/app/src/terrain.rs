@@ -2452,13 +2452,6 @@ impl TerrainRenderer {
         local_surface_direction: DVec3,
         camera_altitude_meters: f64,
     ) -> Option<f64> {
-        let sampled_height = self
-            .raster_surface_height_breakdown_at_distance(
-                local_surface_direction,
-                camera_altitude_meters,
-                0.0,
-            )
-            .map(|surface| surface.height_meters);
         let mesh_height = self
             .raster_mesh_surface_height_meters_at(local_surface_direction, camera_altitude_meters);
         // The mesh height is the triangle actually drawn, so it wins outright
@@ -2469,7 +2462,14 @@ impl TerrainRenderer {
         // sits above the drawn mesh, which on steep ground is metres of thin
         // air. The sampled field remains the fallback for directions the drawn
         // mesh does not cover.
-        mesh_height.or(sampled_height)
+        mesh_height.or_else(|| {
+            self.raster_surface_height_breakdown_at_distance(
+                local_surface_direction,
+                camera_altitude_meters,
+                0.0,
+            )
+            .map(|surface| surface.height_meters)
+        })
     }
 
     /// Intersects the camera's radial with the actual piecewise-planar raster

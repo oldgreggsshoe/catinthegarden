@@ -2621,6 +2621,7 @@ mod tests {
         .expect("forest shader validates");
         assert!(shader.contains("centre_and_height: vec4<f32>"));
         assert!(shader.contains("fn tree_mesh_vertex("));
+        assert!(shader.contains("if height <= 0.0 {"));
         assert!(shader.contains("let foliage_index = vertex_index - 60u;"));
         assert!(shader.contains("if vertex_index < 60u"));
         assert!(shader.contains("let cluster_vertex_index = foliage_index % 38u;"));

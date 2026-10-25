@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Exact-output performance audit,25October: rejected zero-height forest candidates exit vertex shading early (forest p50 55.766->53.616ms; undersea entrance59.525->58.150ms), terrain height sampling is lazy behind actual mesh hits, anchored FFT ships skip an overwritten horizontal-water query, and frame-pacing summary sorting/file I/O moves off the render thread (600k-history record hitch20.078->1.487ms).22 paired PNGs pixel-identical; tests/release in docs/PERFORMANCE_AUDIT_2026_10_25.md. Two unmeasurable shader/HUD trials removed; no quality reduction.
+
 - Spent orb and blue lakes, 25 October: the orb went dark because the magic charge was empty (90 s of throttle; refills only when stopped). The empty ember now glows dim violet (0.15, was a near-black 0.04) and the HUD says "MAGIC 0% - stop to recharge". The blue lumpy ground in the user's shot is an elevated baked lake (~2,250 m): lakes above sea level are drawn as relief-bumped land in the lake map colour, not as water. Not fixed. See HANDOFF.
 
 - Cart orb, 24 October: the magic motor is now a sprung 15 cm glowing violet orb hanging ahead of the cart, tied by two threads that sag or go taut; swings into bends, dims to an ember with the motor off. On by default in play. Visual only; checked in a driving replay, not in a bore. See HANDOFF.

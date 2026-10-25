@@ -1463,27 +1463,28 @@ fn step_ship_in_water(
     depth_meters: f64,
     ocean_time_seconds: f64,
 ) -> glam::DVec3 {
-    // One orbital-velocity query per step, at the hull: it varies over the
-    // swell's scale, not the hull's.
+    // Follow the held water label while afloat. Only sample the local orbital
+    // velocity if there is no valid anchor; the ordinary query is otherwise
+    // immediately overwritten (and expensive for the FFT surface).
     let direction = body.position.normalize();
     let afloat = !body.foundering && !body.on_seabed;
-    let mut water_horizontal =
-        ocean::global_wave_horizontal_velocity(direction, ocean_time_seconds);
     body.anchor_gap_meters = glam::DVec3::ZERO;
-    if afloat {
+    let water_horizontal = if afloat {
         let held = *label
             .get_or_insert_with(|| ocean::global_wave_label_meters(direction, ocean_time_seconds));
         let (velocity, gap) = ocean::global_wave_follow_label(held, direction, ocean_time_seconds);
         if gap.length() > ship::ANCHOR_MAXIMUM_GAP_METERS {
             // Moved some other way: take up the water beneath it now.
             *label = None;
+            ocean::global_wave_horizontal_velocity(direction, ocean_time_seconds)
         } else {
-            water_horizontal = velocity;
             body.anchor_gap_meters = gap;
+            velocity
         }
     } else {
         *label = None;
-    }
+        ocean::global_wave_horizontal_velocity(direction, ocean_time_seconds)
+    };
     // The surface's orbital motion fades with depth (as the hull's own forces
     // do), so a sunk hull reads still water, not the swell's.
     let hull_depth = (-(body.position.length() - planet::planet_radius_meters())).max(0.0);
@@ -8209,6 +8210,35 @@ mod tests {
         );
         assert!((forward - body.orientation * DVec3::X).length() < 1.0e-12);
         assert!((up - body.orientation * DVec3::Z).length() < 1.0e-12);
+    }
+
+    #[test]
+    #[ignore = "requires the FFT sea; verifies the broken-anchor fallback"]
+    fn ship_with_lost_water_anchor_uses_the_local_orbital_velocity() {
+        let hull = crate::ship::ShipHull::new();
+        let direction = super::STORM_OCEAN_START_DIRECTION.normalize();
+        let time = 1.25;
+        let height = crate::ocean::global_wave_height_meters(
+            direction,
+            time,
+            super::SHIP_FALLBACK_DEPTH_METERS,
+        );
+        let mut body = crate::ship::ShipBody::afloat_at(&hull, direction, DVec3::Y, height);
+        let hull_direction = body.position.normalize();
+        let held = crate::ocean::global_wave_label_meters(hull_direction, time);
+        let mut label = Some([held[0] + 1_000.0, held[1] + 1_000.0]);
+        let horizontal = crate::ocean::global_wave_horizontal_velocity(hull_direction, time);
+        let depth = (-(body.position.length() - crate::planet::planet_radius_meters())).max(0.0);
+        let expected = horizontal * (-crate::ship::WAVE_DECAY_PER_METER * depth).exp();
+        let actual = super::step_ship_in_water(
+            &hull,
+            &mut body,
+            &mut label,
+            super::SHIP_FALLBACK_DEPTH_METERS,
+            time,
+        );
+        assert!(label.is_none());
+        assert_eq!(actual.to_array().map(f64::to_bits), expected.to_array().map(f64::to_bits));
     }
 
     #[test]

@@ -3,7 +3,10 @@
 //! frame; the summary is rewritten to `test-runs/frame_pacing_latest.txt`
 //! every `REWRITE_EVERY` samples and by `write_summary` at exit.
 
-use std::sync::Mutex;
+use std::{
+    path::PathBuf,
+    sync::{mpsc, Mutex, OnceLock},
+};
 
 /// Frames dropped at the start (pipeline compilation, first uploads).
 const WARMUP_FRAMES: u32 = 120;
@@ -29,6 +32,43 @@ static PACING: Mutex<Pacing> = Mutex::new(Pacing {
     stalls: Vec::new(),
 });
 
+struct SummaryRequest {
+    intervals_ms: Vec<f32>,
+    stalls: Vec<(u32, f32, bool)>,
+    done: Option<mpsc::Sender<()>>,
+}
+
+static SUMMARY_WORKER: OnceLock<mpsc::Sender<SummaryRequest>> = OnceLock::new();
+
+fn spawn_summary_worker(path: PathBuf) -> mpsc::Sender<SummaryRequest> {
+    let (sender, receiver) = mpsc::channel::<SummaryRequest>();
+    std::thread::Builder::new()
+        .name("frame-pacing-summary".into())
+        .spawn(move || {
+            while let Ok(request) = receiver.recv() {
+                let text = summary(&request.intervals_ms, &request.stalls);
+                let _ = std::fs::write(&path, text);
+                if let Some(done) = request.done {
+                    let _ = done.send(());
+                }
+            }
+        })
+        .expect("frame-pacing summary worker must start");
+    sender
+}
+
+fn queue_summary(request: SummaryRequest) {
+    let worker = SUMMARY_WORKER.get_or_init(|| spawn_summary_worker(PATH.into()));
+    if let Err(error) = worker.send(request) {
+        // Still produce a final report if the worker has unexpectedly stopped.
+        let request = error.0;
+        let _ = std::fs::write(PATH, summary(&request.intervals_ms, &request.stalls));
+        if let Some(done) = request.done {
+            let _ = done.send(());
+        }
+    }
+}
+
 /// Records one frame interval. `excluded` marks frames that are not
 /// representative (screenshot readback); they still count toward warm-up.
 pub fn record(interval_ms: f32, excluded: bool) {
@@ -46,9 +86,15 @@ pub fn record(interval_ms: f32, excluded: bool) {
     }
     pacing.intervals_ms.push(interval_ms);
     if pacing.intervals_ms.len() % REWRITE_EVERY == 0 {
-        let text = summary(&pacing.intervals_ms, &pacing.stalls);
+        // A bounded snapshot is cheaper than sorting the entire growing
+        // history and writing a file on the render thread every 600 frames.
+        let request = SummaryRequest {
+            intervals_ms: pacing.intervals_ms.clone(),
+            stalls: pacing.stalls.clone(),
+            done: None,
+        };
         drop(pacing);
-        let _ = std::fs::write(PATH, text);
+        queue_summary(request);
     }
 }
 
@@ -57,9 +103,15 @@ pub fn write_summary() {
     if pacing.intervals_ms.is_empty() {
         return;
     }
-    let text = summary(&pacing.intervals_ms, &pacing.stalls);
+    let (done, completed) = mpsc::channel();
+    let request = SummaryRequest {
+        intervals_ms: pacing.intervals_ms.clone(),
+        stalls: pacing.stalls.clone(),
+        done: Some(done),
+    };
     drop(pacing);
-    let _ = std::fs::write(PATH, text);
+    queue_summary(request);
+    let _ = completed.recv();
 }
 
 fn percentile(sorted: &[f32], fraction: f64) -> f32 {
@@ -109,5 +161,41 @@ mod tests {
         assert!(text.contains("max_ms 100.000"), "{text}");
         assert!(text.contains("one_percent_low_fps 10.0"), "{text}");
         assert!(text.contains("frames_over_50ms 1"), "{text}");
+    }
+
+    #[test]
+    fn background_summaries_remain_ordered_and_final_flush_is_complete() {
+        let path = std::env::temp_dir().join(format!(
+            "planet-frame-pacing-test-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let worker = spawn_summary_worker(path.clone());
+        let first = vec![10.0; REWRITE_EVERY];
+        let mut last = first.clone();
+        last.push(100.0);
+        worker
+            .send(SummaryRequest {
+                intervals_ms: first,
+                stalls: Vec::new(),
+                done: None,
+            })
+            .unwrap();
+        let (done, completed) = mpsc::channel();
+        worker
+            .send(SummaryRequest {
+                intervals_ms: last.clone(),
+                stalls: vec![(42, 100.0, true)],
+                done: Some(done),
+            })
+            .unwrap();
+        completed.recv().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            summary(&last, &[(42, 100.0, true)])
+        );
     }
 }

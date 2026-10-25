@@ -381,6 +381,16 @@ fn tree_mesh_vertex(
 fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let centre = input.centre_and_height.xyz;
     let height = input.centre_and_height.w;
+    // Rejected GPU candidates have zero height. Do not shade a whole invisible
+    // mesh (or normalize its zero centre) for every rejected instance.
+    if height <= 0.0 {
+        return VertexOutput(
+            vec4<f32>(2.0, 2.0, 0.0, 1.0),
+            vec3<f32>(0.0), vec3<f32>(0.0), 0.0, 0.0, 0.0, 0.0,
+            1.0, vec4<f32>(0.0), vec3<f32>(0.0),
+            vec3<f32>(0.0), vec3<f32>(0.0),
+        );
+    }
     let width = input.width_shade_kind_seed.x;
     let shade = input.width_shade_kind_seed.y;
     let kind = input.width_shade_kind_seed.z;

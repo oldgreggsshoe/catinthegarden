@@ -1,4 +1,8 @@
-Added the orb: 15 cm glowing violet orb hanging ~1.5 m ahead of the cart, tied to its front corners by two glowing threads. Sprung so it swings into bends, strains ahead when you accelerate, bobs at rest; threads sag when slack, taut when pulling. Dims to an ember with U (motor off) or empty charge. Motor now on by default. Visual only (no collision, doesn't light the tunnel yet). Seen in a replay over open ground, not yet in a tunnel.
+Orb: it ran out of magic charge (the HUD shows MAGIC 0% in both shots). Holding W empties it in 90 s, and it only refills while the car is stopped with W released (about 2 minutes from empty). When it's empty the orb drops to an "ember" glow, which was so dim it looked like a dark ball. It now glows dim violet when empty, and the HUD says "MAGIC 0% - stop to recharge". The charge rules haven't changed. The tests pass, but I haven't seen the new ember glow in a picture yet. Pushed as 7493306.
+
+Blue terrain: it's a lake in the baked map, sitting in a basin about 2,250 m up. The game only draws lakes as water when they're at or below sea level. Above sea level it draws the ground with its usual bumps and colours it with the lake's map colour (blue), so you get blue hills instead of a flat lake. Every high lake looks like this. A fix would flatten those lakes and draw them as water; I haven't done that.
+
+Also in your log: the car stopped dead at the road edge 19 times ("deck edge, no slide"), at up to 59 m/s. I haven't looked into that yet.
 
 The empty regions could become a strength rather than something to fill uniformly. I’ll frame ideas around the planet you already have—ships, roads, villages, weather, driving and flight—and keep performance in mind.
 
@@ -14,3 +18,25 @@ I’d build it in layers:
 My recommended first playable slice is one village noticeboard, three expedition types (delivery, survey, rescue), one remote destination per type, and a map that records where the player has actually been. That tests whether travelling across this planet is fun before investing in hundreds of authored sites. No Man’s Sky uses expeditions and locale-specific missions to give vast spaces direction, while Outer Wilds centres exploration on meaningful mysteries rather than dense construction: https://www.nomanssky.com/2024/02/no-mans-sky-omega-update/ and https://www.mobiusdigitalgames.com/games.html.
 
 For FPS, generate destination metadata deterministically by region, stream only nearby structures/actors, and never simulate every remote site each frame. The performance-refactor audit from your previous request is paused at the baseline/candidate stage; I have not claimed that work complete.
+
+I’ll resume the performance audit. First I’ll check the current checkout and capture a fresh baseline, since other work has landed since the earlier build. Then I’ll test the strongest exact-output optimizations one at a time, keeping only measured gains with identical screenshots.
+
+The baseline is captured. I’m starting with the forest shader: it currently shades rejected tree candidates even though they produce no visible tree. I’ll add an early clipped return for those candidates, leaving valid trees untouched, then compare forest captures and frame times before trying the next change.
+
+The forest change saved about 2.1 ms in the forest replay, and both before/after screenshots are pixel-identical. Skipping overwritten terrain normals saved about 1.4 ms at the undersea entrance, again with identical captures. Next I’ll test the driving-height query, which currently computes a fallback result even when it has a valid rendered-mesh height.
+
+The lazy height fallback preserved the captures and reduced sampled simulation time at the entrance from about 9.8 ms to 9.1 ms, though total frame time there is still GPU-bound. I’m moving to the FFT ship path: while a ship remains anchored to its water patch, one horizontal-water query is computed and then discarded each physics step.
+
+The FFT ship change produced identical ship screenshots and reduced sampled CPU simulation time, but an isolated rerun did not show a reliable total-FPS gain because that view is GPU-bound. I’ll keep the avoided CPU work, then test one smaller deep-tunnel cost: wave statistics are calculated every frame even when neither the HUD nor the spatial log uses them.
+
+I found a long-session hitch in the frame-pacing recorder: every 600 frames it sorts the entire accumulated history on the render thread. A synthetic 600,000-frame history takes about 18 ms to summarize. I’ll move that summary and file write to one background worker, keep final shutdown flush synchronous, and verify the output format and replay captures.
+
+The main before/after replays are complete. Forest and road-entrance frame times improved, and all 15 matched screenshots checked so far are pixel-identical—including moving forest, coastal-portal and road-walk views. I’m finishing the FFT ocean comparisons and explicit GPU tests, then I’ll document the measured results and push the change.
+
+An isolated entrance rerun changed the attribution: the forest optimization accounts for essentially all of the measured gain there. The terrain-normal skip was too small to distinguish from noise, and the wave-stat gating showed no meaningful frame-time gain. I’m removing those two experiments and will revalidate the smaller set of changes that did demonstrate useful savings.
+
+The final source is built and checked: 22 matched screenshots are pixel-identical, plus three recaptures from the delivery binary. Forest and entrance timings improved; the deep-tunnel result is effectively unchanged. The full suite has the same six known failures, and the focused GPU and FFT fallback tests pass. I’m committing and pushing the verified changes now.
+
+Completed performance pass. Rejected trees now exit the vertex shader before expensive invisible work: forest p50 55.766 -> 53.616 ms and undersea entrance 59.525 -> 58.150 ms at High/1280x800 X11/Immediate. Terrain collision heights no longer calculate a discarded fallback when the rendered mesh has a hit. Anchored FFT ships skip a discarded horizontal-water query (sampled CPU simulation 9.40 -> 7.20 ms, but no reliable whole-frame FPS gain in that GPU-bound scene). Long-session frame-pacing report hitches fell from 20.078 -> 1.487 ms at 600,000 samples. Final report output is byte-identical.
+
+Visual validation: 22/22 before/after PNGs pixel-identical across moving forests, roads, tunnels and FFT ocean; another 3 final-delivery recaptures also match. Full app suite: 779 passed, the same 6 pre-existing failures, 71 ignored. All 9 explicit Vulkan road tests and the FFT broken-anchor test pass. Release rebuilt. Details and evidence: docs/PERFORMANCE_AUDIT_2026_10_25.md. Unmeasurable terrain-normal and wave-stat experiments were removed; no quality settings changed.
