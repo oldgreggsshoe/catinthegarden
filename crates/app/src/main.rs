@@ -5093,7 +5093,13 @@ impl State {
                                 .background_color(egui::Color32::from_black_alpha(150)));
                             draw_steering_indicator(ui, driving_steering);
                             if let Some(charge) = magic_charge {
-                                ui.label(egui::RichText::new(format!("MAGIC {:.0}%", charge * 100.0))
+                                // Spent, the orb only glows as an ember; say how to refill it.
+                                let text = if charge > 0.0 {
+                                    format!("MAGIC {:.0}%", charge * 100.0)
+                                } else {
+                                    "MAGIC 0% - stop to recharge".to_owned()
+                                };
+                                ui.label(egui::RichText::new(text)
                                     .size(16.0).strong()
                                     .color(egui::Color32::from_rgb(190, 130, 255))
                                     .background_color(egui::Color32::from_black_alpha(150)));

@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Spent orb and blue lakes, 25 October: the orb went dark because the magic charge was empty (90 s of throttle; refills only when stopped). The empty ember now glows dim violet (0.15, was a near-black 0.04) and the HUD says "MAGIC 0% - stop to recharge". The blue lumpy ground in the user's shot is an elevated baked lake (~2,250 m): lakes above sea level are drawn as relief-bumped land in the lake map colour, not as water. Not fixed. See HANDOFF.
+
 - Cart orb, 24 October: the magic motor is now a sprung 15 cm glowing violet orb hanging ahead of the cart, tied by two threads that sag or go taut; swings into bends, dims to an ember with the motor off. On by default in play. Visual only; checked in a driving replay, not in a bore. See HANDOFF.
 
 - Magic motor, 24 October: U toggles a placeholder magic drive for the car (14 m/s² and 45 m/s top vs 6 and 30; drains a charge shown as MAGIC %, recharges when parked). Substance/mechanics unworked; unit-tested, not driven live. See HANDOFF.

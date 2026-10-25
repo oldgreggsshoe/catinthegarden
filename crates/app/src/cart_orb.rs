@@ -17,6 +17,9 @@ const FRONT: f64 = driving::WHEELBASE * 0.5 + 0.3;
 /// damping so it swings out on a bend and settles with one small overshoot.
 const STIFFNESS: f64 = 30.0;
 const DAMPING_RATIO: f64 = 0.7;
+/// Glow with the motor off or the charge spent: a dim violet lamp, not a dark
+/// ball (0.04 read as a black disc in daylight, as if the orb were broken).
+const EMBER_GLOW: f64 = 0.15;
 const SEGMENTS: usize = 16;
 const RINGS: usize = 10;
 const THREAD_SEGMENTS: usize = 12;
@@ -79,7 +82,7 @@ impl Orb {
             *value += (target - *value) * (1.0 - (-rate * seconds).exp());
         };
         ease(&mut self.pull, if running { throttle.max(0.0) } else { 0.0 }, 4.0);
-        let glow = if running { (0.25 + 0.75 * charge) * (1.0 + 0.5 * self.pull) } else { 0.04 };
+        let glow = if running { (0.25 + 0.75 * charge) * (1.0 + 0.5 * self.pull) } else { EMBER_GLOW };
         ease(&mut self.glow, glow, 3.0);
         let tau = std::f64::consts::TAU;
         let target = DVec3::new(
@@ -314,7 +317,7 @@ mod tests {
         for _ in 0..300 {
             orb.advance(1.0 / 60.0, 1.0, 0.0, 5.0, false, 1.0);
         }
-        assert!(orb.glow < 0.06 && orb.pull < 0.05);
+        assert!((orb.glow - EMBER_GLOW).abs() < 0.02 && orb.pull < 0.05);
     }
 
     #[test]
