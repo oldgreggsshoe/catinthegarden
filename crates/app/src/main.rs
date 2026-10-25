@@ -1194,6 +1194,35 @@ fn advance_surface_position_on_sphere(
     glam::DQuat::from_axis_angle(axis, distance_meters / radius).mul_vec3(radial) * radius
 }
 
+/// On a bend, the nearest road tangent's full projected step can still put a
+/// car corner off the deck. Try a bounded shorter slide before treating the
+/// edge as a head-on wall. This only runs after the ordinary step hits an edge.
+fn find_clear_car_slide<T>(
+    previous: glam::DVec3,
+    along: glam::DVec3,
+    step_length: f64,
+    heading: glam::DVec3,
+    old_heading: glam::DVec3,
+    mut clear: impl FnMut(glam::DVec3, glam::DVec3) -> Option<T>,
+) -> Option<(glam::DVec3, glam::DVec3, T, f64)> {
+    if along.length_squared() < 1e-12 || step_length <= 0.0 {
+        return None;
+    }
+    for fraction in [1.0, 0.5, 0.25, 0.125] {
+        let moved = previous + along * fraction;
+        let slid = moved.normalize() * previous.length();
+        // Try steering through first; if the turned body collides, retain its
+        // old heading. A failed wall constraint must not skip this alternative.
+        for slid_heading in [heading, old_heading] {
+            if let Some(ground) = clear(slid, slid_heading) {
+                let kept = (along.length() * fraction / step_length).clamp(0.0, 1.0);
+                return Some((slid, slid_heading, ground, kept));
+            }
+        }
+    }
+    None
+}
+
 /// `position` carried along the sphere by the water's horizontal velocity
 /// `current` for `seconds`; its radial part is ignored (altitude is resolved
 /// elsewhere).
@@ -2967,23 +2996,23 @@ impl State {
             return None;
         }
         let along = tangent * step.dot(tangent);
-        let kept = (along.length() / step.length()).clamp(0.0, 1.0);
-        let moved = previous + along;
-        let slid = moved.normalize() * previous.length();
-        // Steer through the slide if the turned body still clears the edge;
-        // otherwise keep the old heading and only slide.
-        for slid_heading in [heading, self.flight_local_tangent] {
-            if self.car_leaves_road(previous, self.flight_local_tangent, slid, slid_heading) {
-                continue;
-            }
-            let ground = self.driving_contacts(slid, slid_heading)?;
-            let constrained = self.road_constrain_motion(previous, slid);
-            if constrained.distance(slid) > 0.01 {
-                return None;
-            }
-            return Some((slid, slid_heading, ground, kept));
-        }
-        None
+        find_clear_car_slide(
+            previous,
+            along,
+            step.length(),
+            heading,
+            self.flight_local_tangent,
+            |slid, slid_heading| {
+                if self.car_leaves_road(previous, self.flight_local_tangent, slid, slid_heading) {
+                    return None;
+                }
+                let constrained = self.road_constrain_motion(previous, slid);
+                if constrained.distance(slid) > 0.01 {
+                    return None;
+                }
+                self.driving_contacts(slid, slid_heading)
+            },
+        )
     }
     fn in_road_tunnel(&self, d: glam::DVec3, eye: f64) -> bool {
         self.road_network
@@ -8031,6 +8060,40 @@ mod tests {
         assert_eq!(super::driving_speed_text(0.0), "0 km/h");
     }
     use glam::DVec3;
+
+    #[test]
+    fn car_edge_slide_tries_old_heading_and_shorter_clear_motion() {
+        let previous = DVec3::new(4_000_000.0, 0.0, 0.0);
+        let new_heading = DVec3::Z;
+        let old_heading = DVec3::Y;
+        let mut attempts = Vec::new();
+        let (position, heading, ground, kept) = super::find_clear_car_slide(
+            previous,
+            DVec3::new(0.0, 0.4, 0.0),
+            0.5,
+            new_heading,
+            old_heading,
+            |position, heading| {
+                attempts.push((position.y, heading));
+                (position.y <= 0.21 && heading == old_heading).then_some([100.0; 4])
+            },
+        )
+        .expect("half-step with the old heading clears the bend");
+        assert_eq!(heading, old_heading);
+        assert_eq!(ground, [100.0; 4]);
+        assert!((position.y - 0.2).abs() < 1e-9);
+        assert!((kept - 0.4).abs() < 1e-9);
+        assert_eq!(attempts.len(), 4); // Both headings at full and half steps.
+        assert!(super::find_clear_car_slide(
+            previous,
+            DVec3::ZERO,
+            0.5,
+            new_heading,
+            old_heading,
+            |_, _| Some(()),
+        )
+        .is_none()); // A head-on kerb remains a stop.
+    }
 
     #[test]
     fn the_water_aboard_counter_reads_flooded_over_sinking_and_warns_as_it_nears() {
