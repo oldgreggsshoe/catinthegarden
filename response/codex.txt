@@ -1,40 +1,16 @@
-Cheaper fog/aerial trial: exact storm-horizon gate kept (no picture change); 1-sample aerial in-scatter is opt-in (PLANET_ABLATE=cheap_aerial), saves ~1 ms (1-2%), changes only distant mountain haze slightly (max 22 levels); no cracks/geometry touched. Not default, pending your call on a future graphics-options menu.
+Added the orb: 15 cm glowing violet orb hanging ~1.5 m ahead of the cart, tied to its front corners by two glowing threads. Sprung so it swings into bends, strains ahead when you accelerate, bobs at rest; threads sag when slack, taut when pulling. Dims to an ember with U (motor off) or empty charge. Motor now on by default. Visual only (no collision, doesn't light the tunnel yet). Seen in a replay over open ground, not yet in a tunnel.
 
-I’ll inspect the sign renderer and font atlas, then change the boards to textured wood with black lettering in a more natural font. I’ll keep the text, distances and placement unchanged and check screenshots before committing.
+The empty regions could become a strength rather than something to fill uniformly. I’ll frame ideas around the planet you already have—ships, roads, villages, weather, driving and flight—and keep performance in mind.
 
-I’ll use warm, weathered oak with visible grain and a traditional serif font for the black lettering. The wood texture will be cached in the existing sign draw pass, so this won’t add per-frame layout or another draw pass.
+I’d make the emptiness part of the game: **an expedition across a genuinely vast planet**, not a uniform scatter of buildings. The strongest loop for what we already have is: take a job in a village, plan a route, travel by road/ship/air through weather and difficult terrain, discover or deliver something, and get home. The journey—not merely the destination—becomes the challenge.
 
-The changes will be limited to the sign renderer/shader, its call site and tests, the new texture/font assets, and documentation.
+I’d build it in layers:
+1. **Sparse, memorable destinations:** occasional ruins, observatories, wrecks, caves, remote stations and unusual geological sites. Each should have a reason to visit and a small story or useful discovery, not just loot.
+2. **Travel decisions:** fuel/range, daylight, storms, steep roads, tunnels and water crossings create meaningful route choices. Remote shelters and repair points become valuable without filling every valley.
+3. **Survey and discovery:** map previously unknown terrain, photograph or scan rare formations, weather phenomena and wrecks, then bring findings back to a village. A discovery log gives exploration lasting value.
+4. **A living but thinly populated world:** a few moving vehicles, ships and weather-driven incidents—stranded travellers, closed routes, missing expeditions—make the network feel used. Spawn these near relevant routes, not everywhere.
+5. **Protected wilderness:** leave large stretches genuinely empty. Long sightlines, silence, storms and isolation create scale; high-interest places should be deliberately rare.
 
-The oak texture and serif lettering are ready. I also noticed the other assistant’s quality-settings commit picked up the in-progress sign code, so I’m adding the assets it references now, then finishing the tests and screenshot checks. I won’t alter the quality-setting work.
+My recommended first playable slice is one village noticeboard, three expedition types (delivery, survey, rescue), one remote destination per type, and a map that records where the player has actually been. That tests whether travelling across this planet is fun before investing in hundreds of authored sites. No Man’s Sky uses expeditions and locale-specific missions to give vast spaces direction, while Outer Wilds centres exploration on meaningful mysteries rather than dense construction: https://www.nomanssky.com/2024/02/no-mans-sky-omega-update/ and https://www.mobiusdigitalgames.com/games.html.
 
-The daylight and tunnel screenshots now show oak-grain boards with black serif lettering. The placement checks pass, and the tunnel distances are unchanged. I’m finishing the documentation and final commit.
-
-Done and pushed: weathered oak boards with black EB Garamond serif lettering. Junction and tunnel screenshots checked; placement and distances unchanged.
-
-Wood texture: `assets/road_signs/oak.png`. Full generation prompt and font credits: `assets/road_signs/CREDITS.md`.
-
-Four sign checks pass; full suite766 passes, with six known unrelated failures.
-
-
-Confirmed the starting location, stationary at0km/h. Because you’re still outside the tunnel mouth, the deep-tunnel optimisation does not activate. High quality still submits about590000 terrain triangles and97000 ocean triangles there.
-
-Options to investigate:
-1. Entrance-aware visibility: avoid drawing hidden outdoor scenery while preserving the visible approach/cut bank.
-2. Cheaper terrain excavation: measure the road-cut shader cost separately.
-3. Tunnel geometry/lighting: isolate its cost before changing lanterns.
-4. Medium/Low quality: available now, with a terrain-detail trade-off.
-
-I cannot give trustworthy FPS comparisons yet: Claude’s benchmarks overlapped both attempts. Those timings are discarded, and I’ve closed my renderer to avoid interference. No renderer changes made.
-
-Findings saved in docs/TUNNEL_ENTRANCE_PROFILE.md. Please arrange a short GPU-idle window with Claude so I can finish the matched comparisons.
-
-
-Completed and pushed. The stationary tunnel entrance is about7% faster at unchanged High quality (1280x800):72.8 to68.3ms/frame, roughly13.7 to14.6FPS.
-
-Removed redundant terrain-excavation scans. Matched screenshots remain pixel-identical; all8 GPU road checks pass. Full suite:769 passes,6 known unrelated failures.
-
-It’s a modest improvement, not a complete fix: terrain rendering remains the main bottleneck. Details: docs/TUNNEL_ENTRANCE_PROFILE.md. Unrelated road-material edits were left untouched. My test renderers are closed; Claude can resume GPU benchmarking.
-
-
-Done: improved timber grain, narrower plank joints and filtered surface detail. Wood and signs no longer glow inside tunnels or during daylight; outdoors they fade in after sunset. Lanterns are unchanged. Screenshots checked; 106 road tests and 9 Vulkan tests pass. Full suite retains the same six unrelated failures. Matched entrance performance is effectively unchanged; the deep-tunnel median improved slightly. Release rebuilt; changes committed and pushed.
+For FPS, generate destination metadata deterministically by region, stream only nearby structures/actors, and never simulate every remote site each frame. The performance-refactor audit from your previous request is paused at the baseline/candidate stage; I have not claimed that work complete.
