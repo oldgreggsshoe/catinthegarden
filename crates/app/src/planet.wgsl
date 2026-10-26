@@ -1480,12 +1480,12 @@ const FOREST_GROUND_CELL_FREQUENCY: f32 = 250000.0;
 const FOREST_GROUND_DARKENING_RADIUS_METERS: f32 = 14.0;
 const FOREST_GROUND_DARKENING_PER_TREE: f32 = 0.55;
 const FOREST_GROUND_DARKENING_MAX: f32 = 0.55;
-// Must mirror the GPU forest's 12,288 / 768 / 64 candidate tiers. Ground
+// Must mirror the GPU forest's 12,288 / 1,024 / 64 candidate tiers. Ground
 // treatment that assumes the full population while geometry deliberately
-// draws 1/16 or 1/192 of it produces large empty dark fields.
+// draws 1/12 or 1/192 of it produces large empty dark fields.
 const FOREST_GROUND_FULL_DISTANCE_METERS: f32 = 1500.0;
 const FOREST_GROUND_MEDIUM_DISTANCE_METERS: f32 = 4000.0;
-const FOREST_GROUND_MEDIUM_POPULATION: f32 = 1.0 / 16.0;
+const FOREST_GROUND_MEDIUM_POPULATION: f32 = 1.0 / 12.0;
 const FOREST_GROUND_SPARSE_POPULATION: f32 = 1.0 / 192.0;
 
 fn forest_ground_hash(cell: vec3<i32>) -> u32 {

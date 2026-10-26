@@ -46,3 +46,35 @@ The response file points to two open issues: raised lakes render as bumpy blue g
 The edge-slide fallback now tries the old heading when a turned car body collides, then progressively shorter along-road steps before giving up. The focused collision tests pass. For raised lakes, the baked map has the lake biome but not the water-surface height; shading those cells as water now would just produce shiny blue hills. I’m checking the bake path rather than applying that visual-only patch.
 
 Deck-edge recovery is implemented: a blocked car now tries its previous heading and shorter tangent slides instead of immediately stopping. The normal driving path and road geometry are unchanged. The new regression and 13 road-field tests pass; the full app suite has 780 passes and the same six existing failures, and the release builds. I could not replay your exact 19 stops, so please tell me if one still occurs. I did not disguise the elevated lake as water: its baked cells contain basin-floor heights, so a correct flat lake needs a staged procedural rebake and matching CPU/GPU shoreline work. The existing rebake script uses the wrong default terrain profile for this active outmap. I have asked whether to stage/install that migration before touching the 374 MB active planet data.
+
+I’ll make it a real elevated lake, not recoloured terrain. I’ll inspect the baker’s flood heights, the outmap format, and CPU/GPU surface queries; then I’ll change the smallest shared height and shading paths, test a staged bake, and replace the active outmap only after validation and a backup. I’ll compare wave options as I go. Reusing ocean displacement at 20% would save code, but not necessarily rendering work, and ocean swell may look wrong on a small inland lake.
+
+The bake revealed a constraint: about 1.75 million grid cells are currently tagged “lake,” including connected areas whose basin floors vary by kilometres. Flattening every tag to its spill height would flood huge highland regions. I’m tightening lake selection around actual local basins before changing rendering, so the photographed area becomes water without turning much of the planet into one. For waves, I’m leaning toward small lake-specific surface ripples rather than scaled ocean swell; the lake is terrain-owned and doesn’t use the ocean’s clipmap.
+
+I’ll pause the unfinished lake work and keep its changes isolated, then focus on forest density and render cost. I’ll inspect the forest candidate and LOD pipeline, capture matched baseline views and timings, and try the smallest density change that remains fast. I’ll compare the same views before and after rather than trading FPS for tree count unnoticed.
+
+The unfinished lake source edits are saved in git stash@{0} (WIP elevated-lake basin cap before forest priority). They are not in the working tree or release binary, and I have not touched the active outmap.
+
+The forest baseline is about 53.6 ms per frame (~19 FPS) at 1280×800 on this GPU. The renderer submits 12,672 tree candidates in that view, including rejected ones; it skips their shading now, but still issues their mesh vertices. I’ll first compact accepted trees on the GPU and draw only those. If that measurably cuts frame time, I can spend some of the saved budget on density.
+
+The compacted draw is pixel-identical to the original forest in matched captures and saves about 2.2 ms in the fixed forest view. I tried a broader density increase, but it put oversized crowns across the camera; doubling close-detail trees also erased the speed gain. I’ve kept close trees unchanged and doubled the medium-distance candidate budget instead. That makes the visible stands fuller while the measured frame time remains below baseline. I’m checking movement and night views before keeping it.
+
+Yes. I paused the unfinished lake work safely in git stash@{0}; the active planet data is unchanged. For forests, I implemented GPU compaction so rejected tree candidates are not drawn, then doubled medium-distance tree candidates while keeping close-detail trees unchanged. At 1280x800 on this GPU, the fixed forest view improved from 53.60 to 51.96 ms/frame (~18.7 to 19.2 FPS); the final forest-only overhead is about 3.0 ms. Matched screenshots for compaction alone were pixel-identical. The denser medium-distance screenshots have been inspected, and the forest travel replay passes. More aggressive density put huge crowns over the camera or erased the speed gain, so I rejected it. This is not yet committed or pushed: I still need final regression checks and documentation. The whole scene cannot become super-fast from forest work alone; with forests disabled it still takes about 48.94 ms/frame.
+
+I’ll profile the remaining forest cost and look for another small, measurable saving without reducing density or visual quality. I’ll also finish validation of the pending changes before committing and pushing them.
+
+The next target is off-screen trees inside otherwise visible forest cells. They still run the full tree-shape and lighting shader. I’ll test a conservative per-tree visibility check in forest.wgsl, add regression coverage in forest.rs, and keep it only if the captures remain identical and timings improve.
+
+The per-tree visibility check saved about 1 ms, with both matched screenshots pixel-identical. I also found wasted work in terrain shading beneath forests: it calculates distance and falloff for empty canopy samples, then multiplies the result by zero. I’ll test skipping those calculations next.
+
+I found another ~1 ms by skipping off-screen trees before their expensive vertex shading; the matched screenshots are pixel-identical. Two other trials did not give a measurable gain, so I removed them. I am finishing regression checks and repeat timings before committing.
+
+The repeat runs confirm another 1.1 ms saved: about 52.0 -> 50.9 ms/frame, keeping the denser forest. That is roughly 2.7 ms saved overall from the original version. All seven matched captures are pixel-identical. The 39 focused checks pass; the full suite has 781 passes and the same six pre-existing failures. I am documenting and committing the result now.
+
+Saved another **1.1 ms**: **52.0 -> 50.9 ms/frame**, retaining the denser forest. Total improvement from the original is about **2.7 ms**.
+
+- Seven matched screenshots: pixel-identical.
+- 39 focused tests pass; full suite retains six existing failures.
+- Release rebuilt; changes committed and pushed.
+
+Details: `docs/FOREST_PERFORMANCE_2026_10_26.md`.

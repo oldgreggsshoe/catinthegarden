@@ -58,9 +58,16 @@ struct GpuForestTree {
 @group(1) @binding(5)
 var<storage, read_write> gpu_forest_trees: array<GpuForestTree>;
 
-fn gpu_forest_invalid_tree() -> GpuForestTree {
-    return GpuForestTree(vec4<f32>(0.0), vec4<f32>(0.0));
+struct GpuForestIndirectDraw {
+    index_count: u32,
+    instance_count: atomic<u32>,
+    first_index: u32,
+    base_vertex: i32,
+    first_instance: u32,
 }
+
+@group(1) @binding(6)
+var<storage, read_write> gpu_forest_draws: array<GpuForestIndirectDraw, 3>;
 
 fn gpu_forest_generate(
     invocation_index: u32,
@@ -71,7 +78,6 @@ fn gpu_forest_generate(
     let candidate_in_cell = invocation_index % candidates_per_cell;
     let candidate_index = candidate_in_cell * candidate_stride;
     let cell = gpu_forest_cells[cell_index];
-    let output_index = cell.key.w + candidate_in_cell;
     let cell_seed = gpu_forest_cell_seed(cell);
     let candidate_seed = cell_seed ^ candidate_index;
     let local_uv = vec2<f32>(
@@ -88,7 +94,6 @@ fn gpu_forest_generate(
     let density = forest_density_at_direction(direction);
     let placement_seed = gpu_forest_hash(candidate_seed ^ 0x165667b1u);
     if placement_seed > density {
-        gpu_forest_trees[output_index] = gpu_forest_invalid_tree();
         return;
     }
 
@@ -101,7 +106,6 @@ fn gpu_forest_generate(
         || moisture < 0.38
         || macro_height <= 0.0
     {
-        gpu_forest_trees[output_index] = gpu_forest_invalid_tree();
         return;
     }
 
@@ -130,7 +134,6 @@ fn gpu_forest_generate(
     );
     let surface_height = base_height + detail.height_meters;
     if road_clears_tree(direction, surface_height) {
-        gpu_forest_trees[output_index] = gpu_forest_invalid_tree();
         return;
     }
     var surface_normal = displaced_surface_normal(
@@ -153,7 +156,6 @@ fn gpu_forest_generate(
         surface_normal,
         direction,
     ) {
-        gpu_forest_trees[output_index] = gpu_forest_invalid_tree();
         return;
     }
 
@@ -168,6 +170,8 @@ fn gpu_forest_generate(
         / max(slope_cosine, 1.0e-4);
     let sink = 0.45 + width * 0.5 * slope_tangent;
     let centre = direction * (PLANET_RADIUS_METERS + surface_height - sink);
+    let output_index = u32(cell.cell_uv_origin_span.w)
+        + atomicAdd(&gpu_forest_draws[cell.key.w].instance_count, 1u);
     gpu_forest_trees[output_index] = GpuForestTree(
         vec4<f32>(centre, height),
         vec4<f32>(width, shade, kind, placement_seed),
@@ -181,7 +185,7 @@ fn forest_gpu_compute_full(@builtin(global_invocation_id) id: vec3<u32>) {
 
 @compute @workgroup_size(64)
 fn forest_gpu_compute_medium(@builtin(global_invocation_id) id: vec3<u32>) {
-    gpu_forest_generate(id.x, 512u, 24u);
+    gpu_forest_generate(id.x, 1024u, 12u);
 }
 
 @compute @workgroup_size(64)

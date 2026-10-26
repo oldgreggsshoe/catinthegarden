@@ -46,7 +46,7 @@ const FOREST_MAX_RENDERABLE_PATCHES: usize = 128;
 const FOREST_MAX_CACHED_PATCHES: usize = 256;
 const FOREST_MAX_DRAW_INSTANCES: usize = 262_144;
 const FOREST_GPU_FULL_CANDIDATES: u32 = 4_096;
-const FOREST_GPU_MEDIUM_CANDIDATES: u32 = 512;
+const FOREST_GPU_MEDIUM_CANDIDATES: u32 = 1_024;
 const FOREST_GPU_SPARSE_CANDIDATES: u32 = 64;
 /// The camera may move this far before trees are regenerated: only their
 /// distance-filtered ground detail depends on it.
@@ -153,6 +153,40 @@ struct TreeInstance {
     centre_and_height: [f32; 4],
     width_shade_kind_seed: [f32; 4],
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ForestIndirectDraw {
+    index_count: u32,
+    instance_count: u32,
+    first_index: u32,
+    base_vertex: i32,
+    first_instance: u32,
+}
+
+const FOREST_INDIRECT_DRAWS: [ForestIndirectDraw; 3] = [
+    ForestIndirectDraw {
+        index_count: TREE_MESH_INDEX_COUNT,
+        instance_count: 0,
+        first_index: 0,
+        base_vertex: 0,
+        first_instance: 0,
+    },
+    ForestIndirectDraw {
+        index_count: TREE_MESH_MEDIUM_INDEX_COUNT,
+        instance_count: 0,
+        first_index: 0,
+        base_vertex: 0,
+        first_instance: 0,
+    },
+    ForestIndirectDraw {
+        index_count: TREE_MESH_SPARSE_INDEX_COUNT,
+        instance_count: 0,
+        first_index: 0,
+        base_vertex: 0,
+        first_instance: 0,
+    },
+];
 
 impl TreeInstance {
     const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
@@ -368,6 +402,8 @@ pub struct ForestRenderer {
     medium_index_buffer: wgpu::Buffer,
     sparse_index_buffer: wgpu::Buffer,
     gpu_cell_buffer: wgpu::Buffer,
+    gpu_indirect_buffer: wgpu::Buffer,
+    gpu_draw_bases: [u32; 3],
     instance_count: u32,
     proxy_instance_count: u32,
     draw_lod_counts: TreeLodCounts,
@@ -566,6 +602,13 @@ impl ForestRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let gpu_indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("compacted forest indirect draws"),
+            contents: bytemuck::cast_slice(&FOREST_INDIRECT_DRAWS),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_DST,
+        });
         let gpu_source_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("immediate GPU forest source bind group layout"),
@@ -627,6 +670,18 @@ impl ForestRenderer {
                             ty: wgpu::BufferBindingType::Storage { read_only: false },
                             has_dynamic_offset: false,
                             min_binding_size: NonZeroU64::new(size_of::<TreeInstance>() as u64),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(
+                                size_of::<ForestIndirectDraw>() as u64 * 3,
+                            ),
                         },
                         count: None,
                     },
@@ -702,6 +757,8 @@ impl ForestRenderer {
             medium_index_buffer,
             sparse_index_buffer,
             gpu_cell_buffer,
+            gpu_indirect_buffer,
+            gpu_draw_bases: [0; 3],
             instance_count: 0,
             proxy_instance_count: 0,
             draw_lod_counts: TreeLodCounts::default(),
@@ -1012,6 +1069,11 @@ impl ForestRenderer {
                 });
         }
 
+        let mut tier_capacity = [0_u32; 3];
+        for ((tier, _), batch_cells) in &grouped {
+            tier_capacity[*tier as usize] += batch_cells.len() as u32 * tier.candidates_per_cell();
+        }
+        self.gpu_draw_bases = [0, tier_capacity[0], tier_capacity[0] + tier_capacity[1]];
         let mut cells = Vec::<GpuForestCell>::new();
         let mut batches = Vec::with_capacity(grouped.len());
         let mut candidate_count = 0_u32;
@@ -1022,16 +1084,11 @@ impl ForestRenderer {
             let first_cell = cells.len();
             let cell_count = batch_cells.len() as u32;
             let candidates_per_cell = tier.candidates_per_cell();
-            cells.extend(
-                batch_cells
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, mut cell)| {
-                        cell.key[3] =
-                            candidate_count.saturating_add(index as u32 * candidates_per_cell);
-                        cell
-                    }),
-            );
+            cells.extend(batch_cells.into_iter().map(|mut cell| {
+                cell.cell_uv_origin_span[3] = self.gpu_draw_bases[tier as usize] as f32;
+                cell.key[3] = tier as u32;
+                cell
+            }));
             candidate_count =
                 candidate_count.saturating_add(cell_count.saturating_mul(candidates_per_cell));
             batches.push(GpuForestBatch {
@@ -1067,6 +1124,11 @@ impl ForestRenderer {
             self.gpu_generated_signature = Some(signature);
             self.gpu_generated_camera = camera_planet_position;
             self.gpu_generation_needed = true;
+            queue.write_buffer(
+                &self.gpu_indirect_buffer,
+                0,
+                bytemuck::cast_slice(&FOREST_INDIRECT_DRAWS),
+            );
         }
         self.gpu_minimum_source_level = batches.iter().map(|batch| batch.source_key.level).min();
         let active_sources = batches
@@ -1089,6 +1151,7 @@ impl ForestRenderer {
                 &self.gpu_cell_buffer,
                 forest_cell_binding_size,
                 &self.instance_buffer,
+                &self.gpu_indirect_buffer,
             ) {
                 self.gpu_source_bind_groups.insert(source_key, bind_group);
             }
@@ -1315,36 +1378,46 @@ impl ForestRenderer {
             return;
         }
         if self.gpu_resident {
-            let full_end = self.draw_lod_counts.full.min(self.gpu_candidate_count);
-            let medium_end = full_end
-                .saturating_add(self.draw_lod_counts.medium)
-                .min(self.gpu_candidate_count);
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, camera_bind_group, &[]);
             render_pass.set_bind_group(1, &self.bind_group, &[]);
             render_pass.set_bind_group(2, weather_field_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-            if full_end > 0 {
+            if self.draw_lod_counts.full > 0 {
+                render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
                 render_pass
                     .set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.draw_indexed(0..TREE_MESH_INDEX_COUNT, 0, 0..full_end);
+                render_pass.draw_indexed_indirect(&self.gpu_indirect_buffer, 0);
             }
-            if medium_end > full_end {
+            if self.draw_lod_counts.medium > 0 {
+                render_pass.set_vertex_buffer(
+                    0,
+                    self.instance_buffer.slice(
+                        u64::from(self.gpu_draw_bases[1]) * size_of::<TreeInstance>() as u64..,
+                    ),
+                );
                 render_pass.set_index_buffer(
                     self.medium_index_buffer.slice(..),
                     wgpu::IndexFormat::Uint16,
                 );
-                render_pass.draw_indexed(0..TREE_MESH_MEDIUM_INDEX_COUNT, 0, full_end..medium_end);
+                render_pass.draw_indexed_indirect(
+                    &self.gpu_indirect_buffer,
+                    size_of::<ForestIndirectDraw>() as u64,
+                );
             }
-            if self.gpu_candidate_count > medium_end {
+            if self.draw_lod_counts.sparse > 0 {
+                render_pass.set_vertex_buffer(
+                    0,
+                    self.instance_buffer.slice(
+                        u64::from(self.gpu_draw_bases[2]) * size_of::<TreeInstance>() as u64..,
+                    ),
+                );
                 render_pass.set_index_buffer(
                     self.sparse_index_buffer.slice(..),
                     wgpu::IndexFormat::Uint16,
                 );
-                render_pass.draw_indexed(
-                    0..TREE_MESH_SPARSE_INDEX_COUNT,
-                    0,
-                    medium_end..self.gpu_candidate_count,
+                render_pass.draw_indexed_indirect(
+                    &self.gpu_indirect_buffer,
+                    2 * size_of::<ForestIndirectDraw>() as u64,
                 );
             }
             return;
@@ -2610,6 +2683,34 @@ mod tests {
     }
 
     #[test]
+    fn forest_tree_frustum_guard_retains_spheres_touching_view_planes() {
+        let shader = forest_shader_source();
+        assert!(shader.contains("let radius = height * 1.25 + width + 2.0;"));
+        assert!(shader.contains("radius * sqrt(vec2<f32>(1.0) + tangent * tangent)"));
+        // For each side plane the unnormalised normal has length sqrt(1+t²).
+        // Test tangent spheres (including centres behind the eye), not merely
+        // point centres; rejecting these would pop crowns at the screen edge.
+        for fov in [20.0_f64, 60.0, 120.0] {
+            for aspect in [0.5, 1.0, 16.0 / 9.0, 3.0] {
+                for tangent in [(fov.to_radians() * 0.5).tan(),
+                    (fov.to_radians() * 0.5).tan() * aspect] {
+                    for radius in [2.0_f64, 20.0, 100.0] {
+                        for depth in [-radius * 0.5, 0.0, 10.0, 1000.0] {
+                            let limit = depth * tangent + radius * (1.0 + tangent * tangent).sqrt();
+                            let outside = |coordinate: f64| {
+                                depth < -radius || coordinate.abs() > limit
+                            };
+                            assert!(!outside(limit * (1.0 - 1.0e-10)));
+                            assert!(outside(limit + 0.001));
+                            assert!(outside(-limit - 0.001));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn forest_shader_is_a_depth_writing_three_dimensional_mesh() {
         let shader = forest_shader_source();
         let module = wgpu::naga::front::wgsl::parse_str(&shader).expect("forest shader parses");
@@ -2621,7 +2722,7 @@ mod tests {
         .expect("forest shader validates");
         assert!(shader.contains("centre_and_height: vec4<f32>"));
         assert!(shader.contains("fn tree_mesh_vertex("));
-        assert!(shader.contains("if height <= 0.0 {"));
+        assert!(shader.contains("if height <= 0.0 || outside {"));
         assert!(shader.contains("let foliage_index = vertex_index - 60u;"));
         assert!(shader.contains("if vertex_index < 60u"));
         assert!(shader.contains("let cluster_vertex_index = foliage_index % 38u;"));
@@ -2692,6 +2793,15 @@ mod tests {
         assert!(shader.contains("forest_gpu_compute_medium"));
         assert!(shader.contains("forest_gpu_compute_sparse"));
         assert!(shader.contains("candidate_index = candidate_in_cell * candidate_stride"));
+        assert!(shader.contains("atomicAdd(&gpu_forest_draws[cell.key.w].instance_count, 1u)"));
+        assert!(!shader.contains("gpu_forest_invalid_tree"));
+        assert_eq!(size_of::<ForestIndirectDraw>(), 20);
+        assert_eq!(FOREST_INDIRECT_DRAWS[0].index_count, TREE_MESH_INDEX_COUNT);
+        assert_eq!(FOREST_INDIRECT_DRAWS[1].index_count, TREE_MESH_MEDIUM_INDEX_COUNT);
+        assert_eq!(FOREST_INDIRECT_DRAWS[2].index_count, TREE_MESH_SPARSE_INDEX_COUNT);
+        assert!(FOREST_INDIRECT_DRAWS.iter().all(|draw| draw.instance_count == 0));
+        assert_eq!(FOREST_GPU_MEDIUM_CANDIDATES, 1_024);
+        assert_eq!(TREE_COUNT as u32 / FOREST_GPU_MEDIUM_CANDIDATES, 12);
     }
 
     #[test]

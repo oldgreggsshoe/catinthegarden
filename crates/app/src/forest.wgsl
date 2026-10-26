@@ -381,9 +381,19 @@ fn tree_mesh_vertex(
 fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let centre = input.centre_and_height.xyz;
     let height = input.centre_and_height.w;
+    let width = input.width_shade_kind_seed.x;
+    // Cell culling is deliberately coarse. Reject a whole tree before its
+    // procedural mesh and lighting when its generous bounding sphere misses
+    // the view. Re-evaluate against this frame's camera, not cached generation.
+    let centre_view = planet_to_view(centre - forest.camera_planet_position.xyz);
+    let radius = height * 1.25 + width + 2.0;
+    let tangent = vec2<f32>(camera.projection.x * camera.projection.y, camera.projection.y);
+    let depth = -centre_view.z;
+    let outside = depth < -radius
+        || any(abs(centre_view.xy) > depth * tangent + radius * sqrt(vec2<f32>(1.0) + tangent * tangent));
     // Rejected GPU candidates have zero height. Do not shade a whole invisible
     // mesh (or normalize its zero centre) for every rejected instance.
-    if height <= 0.0 {
+    if height <= 0.0 || outside {
         return VertexOutput(
             vec4<f32>(2.0, 2.0, 0.0, 1.0),
             vec3<f32>(0.0), vec3<f32>(0.0), 0.0, 0.0, 0.0, 0.0,
@@ -391,7 +401,6 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
             vec3<f32>(0.0), vec3<f32>(0.0),
         );
     }
-    let width = input.width_shade_kind_seed.x;
     let shade = input.width_shade_kind_seed.y;
     let kind = input.width_shade_kind_seed.z;
     let species_kind = kind - floor(kind * 0.5) * 2.0;

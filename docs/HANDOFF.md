@@ -13990,3 +13990,20 @@ See `docs/PERFORMANCE_AUDIT_2026_10_25.md`: four retained bounded changes, paire
 The user log `manual/1792929899-768782/log.jsonl` contains 19 `deck edge, no slide` stops, up to 59 m/s. The old `car_slide_along_road` tried only the full tangent-projected step: if that step still put a body corner over the edge, or if its wall constraint failed, it returned `None` and zeroed the car's speed. It could also return early on missing wheel contacts without trying the old heading. Now `find_clear_car_slide` first tests both headings at the full step, then at 1/2, 1/4 and 1/8 of it; every pose still goes through the same body-corner, bore kerb, road constraint and wheel-height checks. The returned speed retention is proportional to the safely moved fraction, and a zero along-road projection still stops. This error path does no work during normal on-deck travel. Focused regression and 13 road-field tests pass; full app 780 pass / same 6 unrelated failures / 71 ignored; release build passes. The original manual steering sequence was not recorded as an automated replay, so this is **not** a claim that all 19 stops have been eliminated in live driving.
 
 Raised blue lakes remain unresolved. The active outmap is a 4096x2048 procedural-terrain bake; its positive-lake biome cells contain basin-floor heights, not the priority-flood surface elevations. Shading those cells as water without changing the heights would yield shiny bumpy hills. A correct fix needs the baker to store/flatten to the flood level, the runtime CPU and GPU detail/shoreline treatment to agree, and a staged full rebake of the active procedural profile. `scripts/rebake-test-planet.sh` uses baker defaults (not the current `--procedural-terrain` profile), so it must not be run unchanged for this migration. No outmap or shader was changed in this phase.
+
+## Denser forest and GPU work reduction (26 October)
+
+See `docs/FOREST_PERFORMANCE_2026_10_26.md`. Accepted-tree GPU compaction replaces
+invalid-candidate mesh submission with three indirect tier draws; medium
+candidates double512->1024 (stride24->12), close/full4096 and sparse64 unchanged.
+A conservative current-camera tree-sphere guard skips off-screen vertex shading.
+Final balanced forest-performance pairs51.975->50.905 and52.014->50.894ms:
+~1.1ms extra, ~2.7ms overall versus the earlier original53.603ms. Same High,
+X11/Immediate, requested1280x800 (captured1280x647), no GPU timestamps.
+Seven final matched PNGs pixel-identical/opened;39 focused checks pass;
+full781 pass/same6 unrelated failures/71ignored; release built. Not a60FPS or
+all-planet/live-motion guarantee; forest-disabled view remains~49ms.
+Unmeasurable empty-ground-sample/conifer-branch trials reverted. Evidence in
+`test-runs/forest-speed-2026-10-26/`. No renderer left running. Lake work remains
+in stash@{0} (`WIP elevated-lake basin cap before forest priority`); active bake
+untouched. Do not pop it blindly over other changes.

@@ -1855,6 +1855,7 @@ impl TerrainRenderer {
         forest_cells: &wgpu::Buffer,
         forest_cell_binding_size: std::num::NonZeroU64,
         forest_trees: &wgpu::Buffer,
+        forest_draws: &wgpu::Buffer,
     ) -> Option<wgpu::BindGroup> {
         let tile = self.tile_cache.get(&source_key)?;
         let height_view = tile
@@ -1897,6 +1898,10 @@ impl TerrainRenderer {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: forest_trees.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: forest_draws.as_entire_binding(),
                 },
             ],
         }))
