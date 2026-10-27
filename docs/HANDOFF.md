@@ -14007,3 +14007,20 @@ Unmeasurable empty-ground-sample/conifer-branch trials reverted. Evidence in
 `test-runs/forest-speed-2026-10-26/`. No renderer left running. Lake work remains
 in stash@{0} (`WIP elevated-lake basin cap before forest priority`); active bake
 untouched. Do not pop it blindly over other changes.
+
+## Road rendering: exact-output mask shortcuts (27 October)
+
+See `docs/ROAD_RENDER_PERFORMANCE_2026_10_27.md`. Rendering's boolean bore mask
+now conservatively rejects outside segment boxes and returns on the first
+covering bore; terrain bore/deck/court checks share one spatial lookup, keeping
+all outer gates. Original signed distance remains for reference/other queries.
+No geometry, routes, materials, lighting, draw ranges, physics or presentation
+change. Entrance pairs56.048->54.881 and55.824->54.840ms; mountain walk
+76.830->75.538ms; parking88.397->86.926ms; coastal movement40.554->40.140ms;
+deep tunnel3.248->3.241ms (unchanged). High/X11/Immediate with road sync, requested
+1280x800 (captures1280x647); no GPU timestamps. Nine paired captures pixel-identical
+and opened; all10 final replays pass.114 focused road/10 explicit Vulkan tests
+pass (33,000 new boundary cases); full781 pass/same6 failures/72ignored. Release
+built; no renderer running. Normal-bypass/extra-plane trials removed as unmeasurable.
+Evidence and immutable before binary: `test-runs/road-speed-2026-10-27/`.
+Lake stash@{0} remains isolated, active outmap unchanged. No all-planet FPS claim.

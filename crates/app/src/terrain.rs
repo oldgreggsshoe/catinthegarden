@@ -6057,7 +6057,7 @@ mod tests {
         let bottom = terrain.find("let bottom_height").unwrap();
         // Road CSG deliberately precedes bathymetry so an undersea bore is
         // dry. The later open-ocean shell discard must still follow the bed.
-        assert!(terrain[..bottom].contains("road_tunnel_void(direction"));
+        assert!(terrain[..bottom].contains("road_terrain_fragment_hidden(direction"));
         let discard = bottom + terrain[bottom..].find("discard;").unwrap();
         assert!(
             bottom < discard,

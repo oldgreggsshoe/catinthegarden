@@ -78,3 +78,29 @@ Saved another **1.1 ms**: **52.0 -> 50.9 ms/frame**, retaining the denser forest
 - Release rebuilt; changes committed and pushed.
 
 Details: `docs/FOREST_PERFORMANCE_2026_10_26.md`.
+
+I will profile the roads in matched views, identify the expensive work, and test small optimisations without changing road geometry or visibility. I will compare screenshots and frame times before keeping any changes.
+
+The entrance test points to terrain excavation checks, not the road mesh: hiding the mesh saves about 1 ms, while disabling cuts and tunnel openings saves about 15 ms—though that breaks the scene, so it is only a diagnostic. I will test these in order: (1) stop tunnel-mask searches as soon as a covering tunnel is found; (2) avoid repeated spatial lookups; (3) skip unnecessary cut calculations. The first change is confined to the road-cut shader, its rendering call sites, and GPU regression tests. Road shapes, materials and draw distances will stay unchanged.
+
+The tunnel-mask shortcuts and shared lookup have saved about 1.1 ms at the entrance so far, with an identical screenshot. The GPU boundary tests also pass. Skipping an overwritten normal calculation did not help, so I am removing that trial and checking the last candidate before broader validation.
+
+The final comparisons show about 1 ms saved at the tunnel entrance, 1.3 ms while walking the mountain road, and 1.5 ms at the parking area. Deep-tunnel performance is unchanged. All nine matched screenshots are pixel-identical. The 114 focused road tests and 10 Vulkan tests pass; the full suite is running now. No geometry, textures, lighting or draw distances were reduced.
+
+Done—saved approximately:
+- **1 ms** at the tunnel entrance.
+- **1.3 ms** walking the mountain road.
+- **1.5 ms** at the parking area.
+
+**No quality reduction:** nine matched screenshots are pixel-identical. 114 road tests and 10 GPU tests pass; the full suite retains six existing failures.
+
+Release rebuilt, committed and pushed. Details: `docs/ROAD_RENDER_PERFORMANCE_2026_10_27.md`.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:152-152|note=[Followed measured performance and matched visual validation preference]
+</citation_entries>
+<rollout_ids>
+01a07103-79ca-7e92-99b9-5da47619e658
+</rollout_ids>
+</oai-mem-citation>

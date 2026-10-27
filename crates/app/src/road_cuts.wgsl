@@ -195,6 +195,36 @@ fn road_network_void_local(p: vec3<f32>) -> f32 {
     }
     return result;
 }
+// Rendering needs only containment, not the maximum signed distance. Keep
+// the distance query above for callers that need its magnitude. The padded
+// XY box is conservative even for diagonal end caps; exact planes still
+// decide every surviving sample, including the portal and lining margins.
+fn road_network_contains_local(p: vec3<f32>, inset: f32) -> bool {
+    // Uniform no-bore regions and open-only cells are the common case.
+    if road_cut_data[0].z<0.5 { return false; }
+    let list=road_network_cell(p.xy);
+    return road_network_contains_cell(p,inset,list);
+}
+fn road_network_contains_cell(p: vec3<f32>, inset: f32, list: vec3<u32>) -> bool {
+    if (list.z & 1u)==0u { return false; }
+    for (var j=0u; j<min(list.y,64u); j+=1u) {
+        let index=road_network_segment(list.x+j);
+        let a=road_cut_data[index];
+        let b=road_cut_data[index+1u];
+        if b.w<0.5 { continue; }
+        let padding=vec2<f32>(8.0+2.0*max(-inset,0.0));
+        if any(p.xy<min(a.xy,b.xy)-padding) || any(p.xy>max(a.xy,b.xy)+padding) { continue; }
+        let delta=b.xyz-a.xyz;
+        let length_xy=length(delta.xy);
+        let along=dot(p.xy-a.xy,delta.xy)/length_xy;
+        let offset=abs(dot(p.xy-a.xy,vec2<f32>(delta.y,-delta.x))/length_xy);
+        let z=p.z-a.z-along*delta.z/length_xy;
+        let roof=min(9.0-0.25*offset,12.8-1.2*offset);
+        let distance=min(min(min(7.0-offset,z+6.5),roof+0.5-z),min(along+0.5,length_xy+0.5-along));
+        if distance>inset { return true; }
+    }
+    return false;
+}
 fn road_terrain_cut(direction: vec3<f32>, uncut_height: f32) -> RoadTerrainCut {
     if !ROAD_CUTS_ENABLED { return RoadTerrainCut(uncut_height,direction,false,false); }
     if road_cut_data[0].w>1.5 { return road_network_terrain_cut(direction,uncut_height); }
@@ -256,6 +286,9 @@ fn road_network_open_cut_owns(direction: vec3<f32>, height: f32) -> bool {
     // interpolated terrain poking through the asphalt (and f32 radial error
     // can exceed the apron excavation itself).
     let list=road_network_cell(p.xy);
+    return road_network_open_cut_owns_cell(p,list);
+}
+fn road_network_open_cut_owns_cell(p: vec3<f32>, list: vec3<u32>) -> bool {
     if (list.z & 2u)==0u { return false; }
     for (var j=0u; j<min(list.y,64u); j+=1u) {
         let index=road_network_segment(list.x+j);
@@ -284,6 +317,23 @@ fn road_network_open_cut_owns(direction: vec3<f32>, height: f32) -> bool {
         if (p.z-cap)*weight>0.75 { return true; }
     }
     return false;
+}
+
+// Both fragment masks sample the same local position and spatial index. Share
+// that lookup; leave the two exact ownership predicates and their gates intact.
+fn road_terrain_fragment_hidden(direction: vec3<f32>, height: f32) -> bool {
+    if !ROAD_CUTS_ENABLED { return false; }
+    if road_cut_data[0].w<1.5 { return road_pilot_tunnel_void(direction,height)>0.0; }
+    let p=road_network_local(direction,height);
+    let bore=road_cut_data[0].z>0.5 && dot(direction,road_cut_data[3].xyz)>=0.99;
+    let open=road_cut_data[3].w>0.0
+        && distance(p.xy,vec2<f32>(road_cut_data[1].w,road_cut_data[2].w))<=road_cut_data[3].w;
+    // Preserve the cheap outer gates before touching the spatial hash, notably
+    // outside the mesh window in regions without any bores.
+    if !bore && !open { return false; }
+    let list=road_network_cell(p.xy);
+    if bore && road_network_contains_cell(p,0.0,list) { return true; }
+    return open && road_network_open_cut_owns_cell(p,list);
 }
 
 // Actual raster height, including LOD skirts and triangle chord sag. Avoid

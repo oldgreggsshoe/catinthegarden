@@ -315,7 +315,7 @@ fn create_pipeline_inner(
             // Close the union, not each individual tube at its junction.
             if ((input.network_kind > 0.5 && input.network_kind < 1.5)
                 || (input.network_kind > 2.5 && input.network_kind < 3.5))
-                && road_network_void_local(input.local_position) > 0.55 { discard; }
+                && road_network_contains_local(input.local_position, 0.55) { discard; }
             if input.network_kind > 1.5 && input.network_kind < 2.5 {
                 if input.removed < 0.25 { discard; }
                 let p = input.local_position;

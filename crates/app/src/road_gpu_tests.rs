@@ -774,7 +774,8 @@ fn gpu_excavation_fast_paths_preserve_height_normals_flags_and_ownership() {
         .replace("if (list.z & 2u)==0u { return result; }", "")
         .replace("if result.height==uncut { return result; }", "");
     let start = shader.find("fn road_network_open_cut_owns(").unwrap();
-    let end = start + shader[start..].find("\n}\n").unwrap() + 3;
+    let helper = shader.find("fn road_network_open_cut_owns_cell(").unwrap();
+    let end = helper + shader[helper..].find("\n}\n").unwrap() + 3;
     let reference_owns = shader[start..end]
         .replace("road_network_open_cut_owns", "reference_owns")
         .replace("if (list.z & 2u)==0u { return false; }", "");
@@ -886,5 +887,84 @@ fn gpu_wood_glow_is_outdoor_twilight_only() {
             "case {:?}: {r:?}, expected {value}",
             cases[i]
         );
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan; boolean bore mask must match the full signed-distance union"]
+fn gpu_bore_mask_matches_full_union_at_portals_walls_and_junctions() {
+    use crate::road_network_field::{Field, Frame, Segment};
+    let source = format!(
+        "const ROAD_CUTS_ENABLED: bool = true;\n{}\n{}",
+        include_str!("road_cuts.wgsl").replace("@group(2) @binding(21)", "@group(0) @binding(1)"),
+        r#"
+        @group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;
+        @group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;
+        @compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id: vec3<u32>) {
+            let c=cases[id.x];
+            let reference=road_network_void_local(c.xyz)>c.w;
+            let fast=road_network_contains_local(c.xyz,c.w);
+            let world=road_cut_data[3].xyz*(road_cut_data[0].x+c.z)
+                +road_cut_data[1].xyz*c.x+road_cut_data[2].xyz*c.y;
+            let direction=normalize(world);let height=length(world)-road_cut_data[0].x;
+            let old_hidden=road_tunnel_void(direction,height)>0.0
+                || road_network_open_cut_owns(direction,height);
+            let hidden=road_terrain_fragment_hidden(direction,height);
+            results[id.x]=vec4<f32>(select(0.0,1.0,fast==reference),
+                select(0.0,1.0,fast),select(0.0,1.0,old_hidden==hidden),0.0);
+        }"#
+    );
+    let segment = |a: DVec3, b: DVec3, tunnel| Segment {
+        a,
+        b,
+        tunnel,
+        reach: 48.0,
+        floor_depth: 6.0,
+        junction_a: false,
+        junction_b: false,
+    };
+    let mut segments = vec![
+        segment(
+            DVec3::new(-200.0, 80.0, 80.0),
+            DVec3::new(200.0, 80.0, 100.0),
+            false,
+        ),
+        crate::road_parking::segment(DVec3::new(160.0, -160.0, 110.0)),
+    ];
+    let mut cases = Vec::new();
+    for angle in [0.0_f64, 0.3, 0.7853981633974483, 1.6, 2.8] {
+        let axis = DVec3::new(angle.cos(), angle.sin(), 0.0);
+        let side = DVec3::new(-angle.sin(), angle.cos(), 0.0);
+        let a = -axis * 100.0 + DVec3::Z * 100.0;
+        let b = axis * 100.0 + DVec3::Z * 150.0;
+        segments.push(segment(a, b, true));
+        for along in [
+            -0.501, -0.5, -0.499, 0.0, 1.0, 100.0, 199.0, 200.0, 200.499, 200.5, 200.501,
+        ] {
+            for offset in [
+                -8.0, -7.001, -7.0, -6.999, -6.451, -6.45, -6.449, 0.0, 6.449, 6.45, 6.451, 6.999,
+                7.0, 7.001, 8.0,
+            ] {
+                for z in [
+                    -7.0, -6.501, -6.5, -6.499, 0.0, 8.95, 9.499, 9.5, 9.501, 1000.0,
+                ] {
+                    let p = a + axis * along + side * offset + DVec3::Z * (along * 0.25 + z);
+                    for threshold in [0.0, 0.55] {
+                        cases.push([p.x as f32, p.y as f32, p.z as f32, threshold]);
+                    }
+                }
+            }
+        }
+    }
+    let mut field = Field::build(Frame::new(DVec3::Z, 4e6).unwrap(), segments).unwrap();
+    for window in [0.0, 200.0] {
+        field.set_geometry_window(glam::DVec2::ZERO, window);
+        let results = execute_cut_shader(field.gpu_data(), &cases, source.clone());
+        for (case, result) in cases.iter().zip(&results) {
+            assert_eq!(result[0], 1.0, "boolean bore mask differs at {case:?}");
+            assert_eq!(result[2], 1.0, "shared fragment mask differs at {case:?}");
+        }
+        assert!(results.iter().any(|r| r[1] == 1.0));
+        assert!(results.iter().any(|r| r[1] == 0.0));
     }
 }

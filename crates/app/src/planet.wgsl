@@ -2632,9 +2632,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             normalize(camera.camera_planet_direction_view_altitude.xyz),
             camera.camera_planet_direction_view_altitude.w,PLANET_RADIUS_METERS);
     }
-    if road_tunnel_void(direction, bore_height) > 0.0 { discard; }
-    // Cached decks and court banks own their actual raster surface.
-    if road_network_open_cut_owns(direction,bore_height) { discard; }
+    // Bore voids, cached decks and court banks share one spatial lookup.
+    if road_terrain_fragment_hidden(direction,bore_height) { discard; }
     // Render baked bathymetry into the opaque snapshot for surface refraction.
     // A submerged eye sees it directly through the same 100m water medium.
     // This branch adds no geometry, and fetches only for its caustics: macro
