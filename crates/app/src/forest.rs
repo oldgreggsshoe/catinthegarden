@@ -2352,7 +2352,7 @@ mod tests {
             .nth(1)
             .and_then(|source| source.split("\nfn ").next())
             .expect("smooth terrain path is present");
-        assert!(terrain.contains("if material_allows_specular(biome_id)"));
+        assert!(terrain.contains("if material_allows_specular(material_biome_id)"));
 
         let shared = include_str!("shared_planet.wgsl");
         let ocean = shared

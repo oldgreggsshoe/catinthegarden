@@ -10,7 +10,14 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 23 October: exact-output entrance excavation savings.**
+**Current phase, 27 October: organic biome boundaries.** Grass/forest/rock/snow/desert
+boundaries were 3-6km soft squares (bake grid copied nearest; runtime blended only the 4
+nearest texels). `sample_biome_blend` now reads its 4 owners at a position pushed by six
+world-space sine waves and cross-fades the dominant one; open-ocean share keeps the old
+bilinear blend, so coastlines do not move. Costs about +3.3ms forest, +0.7 mountains,
++1.2 summit. See the 27 October section at the end of this file.
+
+**Previous phase, 23 October: exact-output entrance excavation savings.**
 
 - Cell metadata now distinguishes open-road/court references from bores, so
   irrelevant open-cut scans are skipped. Unchanged first-pass terrain heights
@@ -14024,3 +14031,41 @@ pass (33,000 new boundary cases); full781 pass/same6 failures/72ignored. Release
 built; no renderer running. Normal-bypass/extra-plane trials removed as unmeasurable.
 Evidence and immutable before binary: `test-runs/road-speed-2026-10-27/`.
 Lake stash@{0} remains isolated, active outmap unchanged. No all-planet FPS claim.
+
+## Organic biome boundaries (27 October)
+
+User: terrain-type changes (e.g. at the foot of mountains) are square blocks, seen
+looking straight down. Cause: the bake's 4096x2048 working grid (~6km) is copied nearest
+into the 3km L4 tiles, and the final shader blended only the 4 nearest texels, so every
+boundary was a staircase of soft 3-6km squares. Below ~50km clearance the near-field
+window copied those owners nearest again, at finer texels.
+
+- `sample_biome_blend` (planet.wgsl): open-ocean share is the old bilinear blend over the
+  source's own texels (coastlines unchanged). Land owners are the 4 texels around the
+  fragment's position pushed by `biome_edge_push_cells`: six world-space plane waves
+  (3 at 7-12km x 1.7km, 3 at 2-4km x 0.42km scaled by a long wave), made tangent and
+  carried exactly through the cube projection of the source's face, so tiles, levels,
+  faces and the window agree. Each owner's share is cross-faded over
+  `biome_edge_band` (min 0.08, wider with pixel footprint). Vector masks only:
+  dynamic vector indexing measured ~1ms on this Quadro.
+- Materials, snow hold, specular and forest ground use the blend's dominant owner
+  (`material_biome_id`); water ownership still uses the nearest owner. GPU tree placement
+  (forest_gpu.wgsl) takes the same dominant owner, so stands end at the new edges.
+- Near-field window: its GPU biome texture now holds the dense (L4) lattice plus a
+  2-cell margin read from neighbouring dense tiles (`near_field_biome_lattice`,
+  terrain.rs), with a header in the last texel (log2 window texels per cell, offset in
+  eighths). CPU `biome_ids` are unchanged. Sparse L5+ tiles (landing corridor) push in
+  dense-cell units but their own texels.
+- New scenario `biome_boundary_overhead`: 10 overhead views at 60km over the strongest
+  vegetation/rock boundaries in the bake, two at 40km, one at 28km, one oblique at 25km.
+  Before `test-runs/biome_boundary_overhead/1793131548-1632962`, final
+  `1793135759-1648582` (opened; no squares, no notches, consistent in the window).
+- Rejected on the way: 4x4 B-spline + 8-owner arrays + hashed noise (forest 51->79ms);
+  hashed value-noise push (+3.6ms alone); per-vertex push (terrain is vertex-bound
+  here: slower, 58.5ms); a 3-owner cap (owner dropped along texel lines -> notches).
+- Timing, High 1280x800 X11/Immediate, interleaved with the HEAD binary, p50 of 3 rounds:
+  forest_performance 50.98 -> 54.52ms (final tweak 54.27), tour_mountains 28.40 -> 29.13,
+  highest_prominence_peak 27.78 -> 29.01 (final 28.98). A real cost, not hidden.
+- 43 shader validation checks, new lattice-layout mirror test; full app 782 pass / same
+  6 pre-existing failures / 72 ignored. Release built. Not seen live; single-cell (3km)
+  islands now often shrink to blobs or vanish. Flat-triangle mode is unchanged.

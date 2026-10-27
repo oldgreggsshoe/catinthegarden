@@ -429,6 +429,7 @@ scenarios! {
     "mountain_render_faults" => "../scenarios/mountain_render_faults.json",
     "low_pass_bands" => "../scenarios/low_pass_bands.json",
     "tour_mountains" => "../scenarios/tour_mountains.json",
+    "biome_boundary_overhead" => "../scenarios/biome_boundary_overhead.json",
     "tour_desert" => "../scenarios/tour_desert.json",
     "tour_coast" => "../scenarios/tour_coast.json",
     "tour_grassland" => "../scenarios/tour_grassland.json",
@@ -1207,7 +1208,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 150);
+        assert_eq!(SCENARIO_NAMES.len(), 151);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

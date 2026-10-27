@@ -104,3 +104,21 @@ MEMORY.md:152-152|note=[Followed measured performance and matched visual validat
 01a07103-79ca-7e92-99b9-5da47619e658
 </rollout_ids>
 </oai-mem-citation>
+
+I will check the latest screenshots and trace how terrain types are sampled and blended. I will aim to remove the square boundaries without blurring coastlines or changing the terrain shape.
+
+Could you take a screenshot of the square terrain transitions you mean? The latest saved screenshots I can find are older. I will inspect the biome-blending path meanwhile.
+
+There is already basic blending between terrain types. An older edge-noise treatment was removed because it cost roughly 28 ms per frame, so I will not simply restore it. I am checking whether the squares come from the baked biome map or from a rendering branch that bypasses the blend.
+
+I have reproduced large, stair-stepped colour patches in the mountain overview. I am testing three possibilities: the biome map coarse cells, a remaining hard switch in material shading, or atmospheric colour making an otherwise subtle boundary obvious. Comparing raw colour with the fully lit view will distinguish them.
+
+The block pattern is already visible in raw terrain colour, so lighting is not its source. One suspect is that coarse biome labels are being copied into finer terrain tiles, making their blend zones much too narrow. I will verify the source-grid resolution before changing the sampler.
+
+The blocky patches I reproduced are mostly lake-labelled areas in the mountain terrain. Are those the squares you mean, or boundaries between land types such as grass, rock and snow? This matters because the lake patches also have the unfinished lake-height issue.
+
+[Claude, 27 Oct] Fixed the square terrain-type blocks. The terrain-type map is baked on a ~6 km grid and the game only blended the 4 nearest 3 km cells, so every grass/forest/rock/snow/desert boundary came out as a staircase of soft squares. Each point now reads its 4 neighbours at a spot pushed a few km sideways by fixed world-space waves, then the strongest type takes over across a narrow band, so edges are irregular and natural. Sea vs land still uses the old blend, so coastlines don't move. Below ~50 km the finer local copy of the map now gives exactly the same edges as the tiles beside it, and trees follow the new edges.
+
+Cost (High 1280x800, alternated with the old build, 3 rounds): forest 51.0 -> 54.3 ms, mountains 28.4 -> 29.1, summit 27.8 -> 29.0. My first version cost +28 ms in the forest; per-vertex and hashed-noise versions were also slower, so I rejected them.
+
+Check it with the new top-down scenario `biome_boundary_overhead` (14 views): before test-runs/biome_boundary_overhead/1793131548-1632962, after 1793135759-1648582. 782 tests pass, with the same 6 old failures. Not seen live. Tiny single-cell (3 km) patches now often shrink to blobs or vanish. Committed and pushed.

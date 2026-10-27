@@ -64,7 +64,10 @@ struct VertexOutput {
     // Skirts close residual LOD gaps but are not terrain-data facets. Keep
     // their deliberately near-vertical filler geometry out of the low-poly
     // normal treatment.
-    @location(5) skirt_depth_meters: f32,
+    // y and z carry the biome edge push (see `biome_edge_push_cells`), in
+    // dense-lattice cells: a smooth field kilometres across, so it is
+    // evaluated per vertex and interpolated rather than per pixel.
+    @location(5) skirt_depth_and_biome_push: vec3<f32>,
     @location(6) source_uv: vec2<f32>,
     // Outmap flag and the scaled baked height, packed: the fragment stage
     // needs the height for each octave's headroom and the inter-stage location
@@ -247,47 +250,237 @@ fn sample_biome(outmap: bool, source_uv: vec2<f32>, direction: vec3<f32>) -> u32
         // a place chosen by a latitude formula.
         return AIRLESS_BODY_BIOME;
     }
-    let coordinate = vec2<i32>(round(source_coordinate(source_uv)));
-    let last_coordinate = select(
-        MATERIAL_TILE_LAST_STORED_COORD,
-        i32(NEAR_FIELD_WINDOW_LOGICAL_QUADS),
-        near_field_texture(),
-    );
-    let clamped = min(coordinate, vec2<i32>(last_coordinate));
-    return textureLoad(biome_map, clamped, 0).x;
+    let lattice = biome_lattice();
+    return biome_lattice_load(lattice, vec2<i32>(round(biome_lattice_coordinate(lattice, source_coordinate(source_uv)))));
 }
 
-fn sample_biome_blend(source_uv: vec2<f32>) -> BiomeBlendSample {
-    // Biomes remain categorical in the baked outmap, but display-space
-    // materials should not expose their texel grid. Blend the four nearest
-    // baked owners exactly as the height channel is blended; the gutter keeps
-    // this continuous when the resident source changes at a tile edge.
-    let coordinate = source_coordinate(source_uv);
-    let last_coordinate = select(
-        MATERIAL_TILE_LAST_STORED_COORD,
-        i32(NEAR_FIELD_WINDOW_LOGICAL_QUADS),
-        near_field_texture(),
+/// Where the biome texture's owners sit. An ordinary tile stores one owner per
+/// texel. The near-field window's biome texture instead stores the dense-level
+/// lattice the window was copied from, with a margin past the window: see
+/// `near_field_biome_lattice` in terrain.rs, which writes the header read here.
+struct BiomeLattice {
+    // Window texels per lattice cell.
+    scale: f32,
+    // Lattice coordinate of window texel 0.
+    offset: vec2<f32>,
+    // Stored index of lattice coordinate 0.
+    origin: i32,
+    last: i32,
+}
+
+/// Mirrors `NEAR_FIELD_BIOME_LATTICE_MARGIN` in terrain.rs.
+const NEAR_FIELD_BIOME_LATTICE_MARGIN: i32 = 2;
+
+fn biome_lattice() -> BiomeLattice {
+    if near_field_texture() {
+        let header = i32(NEAR_FIELD_WINDOW_LOGICAL_QUADS);
+        let shift = textureLoad(biome_map, vec2<i32>(header, header), 0).x;
+        let offset = vec2<f32>(
+            f32(textureLoad(biome_map, vec2<i32>(header - 1, header), 0).x),
+            f32(textureLoad(biome_map, vec2<i32>(header, header - 1), 0).x),
+        ) / 8.0;
+        return BiomeLattice(exp2(f32(shift)), offset, NEAR_FIELD_BIOME_LATTICE_MARGIN, header - 2);
+    }
+    return BiomeLattice(1.0, vec2<f32>(0.0), 0, MATERIAL_TILE_LAST_STORED_COORD);
+}
+
+fn biome_lattice_coordinate(lattice: BiomeLattice, texel_coordinate: vec2<f32>) -> vec2<f32> {
+    return texel_coordinate / lattice.scale + lattice.offset;
+}
+
+fn biome_lattice_load(lattice: BiomeLattice, index: vec2<i32>) -> u32 {
+    let stored = clamp(index + vec2<i32>(lattice.origin), vec2<i32>(0), vec2<i32>(lattice.last));
+    return textureLoad(biome_map, stored, 0).x;
+}
+
+// Biome boundaries. The baked owners are categorical and kilometres apart --
+// a dense texel is 3km, and the bake's working grid under it 6km -- so a plain
+// blend of the four nearest drew every boundary as a staircase of soft
+// squares. The four owners are instead read at a position pushed a few
+// kilometres sideways by world-anchored noise, which bends the staircase into
+// an irregular edge, and the strongest owner then takes over across a narrow
+// band. The push is a physical displacement on the sphere, so it agrees across
+// tiles, source levels, cube faces and the near-field window (which reads the
+// dense lattice), and the forest pass takes the same dominant owner for its
+// trees.
+//
+// Open ocean is not part of this. Its share keeps the plain bilinear blend at
+// the source's own texels, so the coastline does not move.
+// Share difference over which two owners cross-fade. 0.08 is about 250m of
+// ground at the dense lattice.
+const BIOME_EDGE_BAND_MIN: f32 = 0.08;
+// Dense-lattice cell, nominal cube metres: what a fragment's footprint is
+// compared with to keep the cross-fade at least a couple of pixels wide.
+const BIOME_LATTICE_METERS: f32 = 2.0 * PLANET_RADIUS_METERS / (16.0 * MATERIAL_TILE_LOGICAL_QUADS);
+// Dense-lattice cells per unit of cube-face coordinate.
+const BIOME_LATTICE_CELLS_PER_FACE_UNIT: f32 = 16.0 * MATERIAL_TILE_LOGICAL_QUADS * 0.5;
+
+/// The noise push at `direction`, in dense-lattice cells along the cube face's
+/// u and v. The world displacement is tangent to the sphere and carried
+/// through the cube projection exactly, so both faces at an edge move a
+/// boundary the same physical distance. `face` is the cube face whose
+/// coordinates the result is in: the source's, not the one `direction` is
+/// nearest, which on a face edge could be either.
+fn biome_edge_push_cells(direction: vec3<f32>, face: u32) -> vec2<f32> {
+    // Six plane waves through the planet, three about 7-12km long and three
+    // about 2-4km, each pushing along its own fixed direction. A handful of
+    // sines is a fraction of the cost of hashed value noise per pixel, and at
+    // these incommensurate lengths and angles shows no repeat.
+    // Each short wave is scaled by one long wave's own swing, so its wiggle
+    // comes and goes along an edge instead of repeating evenly.
+    let broad_0 = sin(dot(direction, vec3<f32>(-1472.9317, 2943.9693, -1301.4845)) + 0.3644);
+    let broad_1 = sin(dot(direction, vec3<f32>(-1679.2856, -78.5135, -2115.9031)) + 5.1951);
+    let broad_2 = sin(dot(direction, vec3<f32>(582.9337, 574.2231, -1947.0437)) + 6.1338);
+    var push = vec3<f32>(0.0);
+    push += vec3<f32>(-0.31355, -0.92554, -0.21227) * (1700.0 * broad_0);
+    push += vec3<f32>(0.14505, 0.83302, 0.53390) * (1700.0 * broad_1);
+    push += vec3<f32>(-0.86636, -0.44196, -0.23259) * (1700.0 * broad_2);
+    push += vec3<f32>(0.53294, 0.62479, 0.57062) * (420.0 * abs(broad_1) * sin(dot(direction, vec3<f32>(10437.3665, 3145.2178, -757.8967)) + 5.1277));
+    push += vec3<f32>(-0.89906, -0.41827, -0.12938) * (420.0 * abs(broad_2) * sin(dot(direction, vec3<f32>(3144.5681, 6762.4887, -3504.5747)) + 0.3745));
+    push += vec3<f32>(0.32808, -0.81140, -0.48373) * (420.0 * abs(broad_0) * sin(dot(direction, vec3<f32>(1605.4379, 5652.8314, -3035.0395)) + 1.8834));
+    push = (push - direction * dot(push, direction)) / PLANET_RADIUS_METERS;
+    let normal = face_normal(face);
+    let along_normal = dot(direction, normal);
+    let cube_step = (push - (direction / along_normal) * dot(push, normal)) / along_normal;
+    return vec2<f32>(dot(cube_step, face_tangent_u(face)), dot(cube_step, face_tangent_v(face)))
+        * BIOME_LATTICE_CELLS_PER_FACE_UNIT;
+}
+
+/// `push_cells` is `biome_edge_push_cells` at the fragment.
+/// `texels_per_dense_cell` is how many of this source's texels span one
+/// dense-lattice cell (1 on a dense tile); the near-field window ignores it,
+/// since its biome texture is the lattice. `edge_band` is the share difference
+/// two owners cross-fade over; the dominant owner does not depend on it.
+fn sample_biome_blend(
+    source_uv: vec2<f32>,
+    push_cells: vec2<f32>,
+    texels_per_dense_cell: f32,
+    edge_band: f32,
+) -> BiomeBlendSample {
+    let lattice = biome_lattice();
+    let texel_coordinate = source_coordinate(source_uv);
+
+    // Ocean share: bilinear over the source's own texels, as before.
+    let lower_texel = floor(texel_coordinate);
+    let texel_amount = texel_coordinate - lower_texel;
+    let ocean_corners = vec4<f32>(
+        select(0.0, 1.0, biome_lattice_load(lattice, vec2<i32>(round(biome_lattice_coordinate(lattice, lower_texel)))) == 0u),
+        select(0.0, 1.0, biome_lattice_load(lattice, vec2<i32>(round(biome_lattice_coordinate(lattice, lower_texel + vec2<f32>(1.0, 0.0))))) == 0u),
+        select(0.0, 1.0, biome_lattice_load(lattice, vec2<i32>(round(biome_lattice_coordinate(lattice, lower_texel + vec2<f32>(0.0, 1.0))))) == 0u),
+        select(0.0, 1.0, biome_lattice_load(lattice, vec2<i32>(round(biome_lattice_coordinate(lattice, lower_texel + vec2<f32>(1.0))))) == 0u),
     );
+    let ocean_share = dot(ocean_corners, vec4<f32>(
+        (1.0 - texel_amount.x) * (1.0 - texel_amount.y),
+        texel_amount.x * (1.0 - texel_amount.y),
+        (1.0 - texel_amount.x) * texel_amount.y,
+        texel_amount.x * texel_amount.y,
+    ));
+
+    // Land owners: the four around the pushed position, ocean excluded.
+    let push_scale = select(max(texels_per_dense_cell, 1.0), 1.0, near_field_texture());
+    let coordinate = biome_lattice_coordinate(lattice, texel_coordinate)
+        + push_cells * push_scale;
     let lower = vec2<i32>(floor(coordinate));
-    let upper = min(
-        lower + vec2<i32>(1),
-        vec2<i32>(last_coordinate),
-    );
     let amount = fract(coordinate);
-    return BiomeBlendSample(
-        vec4<u32>(
-            textureLoad(biome_map, lower, 0).x,
-            textureLoad(biome_map, vec2<i32>(upper.x, lower.y), 0).x,
-            textureLoad(biome_map, vec2<i32>(lower.x, upper.y), 0).x,
-            textureLoad(biome_map, upper, 0).x,
-        ),
-        vec4<f32>(
-            (1.0 - amount.x) * (1.0 - amount.y),
-            amount.x * (1.0 - amount.y),
-            (1.0 - amount.x) * amount.y,
-            amount.x * amount.y,
-        ),
+    var ids = vec4<u32>(
+        biome_lattice_load(lattice, lower),
+        biome_lattice_load(lattice, lower + vec2<i32>(1, 0)),
+        biome_lattice_load(lattice, lower + vec2<i32>(0, 1)),
+        biome_lattice_load(lattice, lower + vec2<i32>(1, 1)),
     );
+    var weights = vec4<f32>(
+        (1.0 - amount.x) * (1.0 - amount.y),
+        amount.x * (1.0 - amount.y),
+        (1.0 - amount.x) * amount.y,
+        amount.x * amount.y,
+    ) * select(vec4<f32>(1.0), vec4<f32>(0.0), ids == vec4<u32>(0u));
+    let land_total = weights.x + weights.y + weights.z + weights.w;
+    if land_total <= 0.0 {
+        return BiomeBlendSample(vec4<u32>(0u), vec4<f32>(1.0, 0.0, 0.0, 0.0));
+    }
+    // Each slot's owner's total share, counted once at its first slot.
+    let share_x = dot(weights, select(vec4<f32>(0.0), vec4<f32>(1.0), ids == vec4<u32>(ids.x)));
+    let share_y = dot(weights, select(vec4<f32>(0.0), vec4<f32>(1.0), ids == vec4<u32>(ids.y)));
+    let share_z = dot(weights, select(vec4<f32>(0.0), vec4<f32>(1.0), ids == vec4<u32>(ids.z)));
+    let share_w = dot(weights, select(vec4<f32>(0.0), vec4<f32>(1.0), ids == vec4<u32>(ids.w)));
+    let first = vec4<bool>(
+        ids.x != 0u,
+        ids.y != 0u && ids.y != ids.x,
+        ids.z != 0u && ids.z != ids.x && ids.z != ids.y,
+        ids.w != 0u && ids.w != ids.x && ids.w != ids.y && ids.w != ids.z,
+    );
+    let shares = select(vec4<f32>(-1.0), vec4<f32>(share_x, share_y, share_z, share_w) / land_total, first);
+    let best = max(max(shares.x, shares.y), max(shares.z, shares.w));
+    let band = max(edge_band, 1.0e-4);
+    var faded = clamp((shares - vec4<f32>(best - band)) / band, vec4<f32>(0.0), vec4<f32>(1.0));
+    faded /= faded.x + faded.y + faded.z + faded.w;
+    // The ocean takes the weakest slot: one holding ocean or a land owner
+    // faded to nothing, or with four land owners all alive, the weakest of
+    // them. Vector masks throughout: indexing a vector by a computed slot
+    // spills it to memory on this hardware, which measured a millisecond.
+    let weakest = min(min(faded.x, faded.y), min(faded.z, faded.w));
+    let is_weakest = faded == vec4<f32>(weakest);
+    let ocean_slot = vec4<bool>(
+        is_weakest.x,
+        is_weakest.y && !is_weakest.x,
+        is_weakest.z && !is_weakest.x && !is_weakest.y,
+        is_weakest.w && !is_weakest.x && !is_weakest.y && !is_weakest.z,
+    ) & vec4<bool>(ocean_share > 0.0);
+    faded = select(faded, vec4<f32>(0.0), ocean_slot);
+    faded /= max(faded.x + faded.y + faded.z + faded.w, 1.0e-6);
+    var land_id = ids.x;
+    if !first.x {
+        land_id = select(ids.y, select(ids.z, ids.w, first.w), !first.y);
+    }
+    ids = select(vec4<u32>(land_id), ids, faded > vec4<f32>(0.0));
+    ids = select(ids, vec4<u32>(0u), ocean_slot);
+    faded = select(faded * (1.0 - ocean_share), vec4<f32>(ocean_share), ocean_slot);
+    return BiomeBlendSample(ids, faded);
+}
+
+/// The owner with the largest share.
+fn biome_blend_dominant(blend: BiomeBlendSample) -> u32 {
+    let weights = blend.weights;
+    let ids = blend.ids;
+    let first = select(ids.x, ids.y, weights.y > weights.x);
+    let first_weight = max(weights.x, weights.y);
+    let second = select(ids.z, ids.w, weights.w > weights.z);
+    let second_weight = max(weights.z, weights.w);
+    return select(first, second, second_weight > first_weight);
+}
+
+/// The cube face a terrain fragment's source belongs to. A fragment lies on
+/// its node's face, so the dominant axis of its direction names it; a fragment
+/// exactly on an edge can name either, which only matters to within a hair of
+/// that edge.
+fn biome_source_face(input: VertexOutput) -> u32 {
+    let direction = input.surface_direction;
+    let magnitude = abs(direction);
+    if magnitude.x >= magnitude.y && magnitude.x >= magnitude.z {
+        return select(1u, 0u, direction.x >= 0.0);
+    }
+    if magnitude.y >= magnitude.z {
+        return select(3u, 2u, direction.y >= 0.0);
+    }
+    return select(5u, 4u, direction.z >= 0.0);
+}
+
+/// How many of a terrain fragment's source texels span one dense-lattice
+/// cell. The node's vertex spacing and source scale give its source texel in
+/// the same nominal cube metres as `BIOME_LATTICE_METERS`.
+fn biome_texels_per_dense_cell(input: VertexOutput) -> f32 {
+    let source_texel_meters = TERRAIN_CHUNK_QUADS * input.detail_spacing_and_face_normal.x
+        / max(input.source_uv_scale_and_latitude.x * MATERIAL_TILE_LOGICAL_QUADS, 1.0e-6);
+    return select(1.0, BIOME_LATTICE_METERS / max(source_texel_meters, 1.0e-3),
+        input.detail_spacing_and_face_normal.x > 0.0);
+}
+
+/// The cross-fade width for a fragment at this distance: never under
+/// `BIOME_EDGE_BAND_MIN`, and wide enough to span a couple of pixels so a
+/// distant boundary does not alias.
+fn biome_edge_band(camera_distance_meters: f32) -> f32 {
+    let pixel_meters = camera_distance_meters * (2.0 * camera.projection.y / 720.0);
+    return clamp(2.0 * pixel_meters / BIOME_LATTICE_METERS, BIOME_EDGE_BAND_MIN, 1.0);
 }
 
 fn sample_moisture(source_uv: vec2<f32>) -> f32 {
@@ -999,7 +1192,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         aerial.in_scatter,
         input.lod_transition,
         direction,
-        input.skirt_depth_meters,
+        vec3<f32>(
+            input.skirt_depth_meters,
+            // The biome push is evaluated per pixel; see the fragment stage.
+            vec2<f32>(0.0),
+        ),
         source_uv,
         vec2<f32>(select(0.0, 1.0, outmap), select(0.0, base_height, outmap)),
         aerial.transmittance,
@@ -1773,7 +1970,7 @@ fn flat_triangle_colour(
     var aerial_lit = lit
         * terrain_material_transmittance(input.aerial_transmittance, fill_biome)
         + terrain_material_in_scatter(input.aerial_in_scatter, fill_biome);
-    let edge = flat_triangle_edge(input.tile_uv, input.skirt_depth_meters);
+    let edge = flat_triangle_edge(input.tile_uv, input.skirt_depth_and_biome_push.x);
     if camera.flat_triangle_options.x > 1.5 {
         return vec4<f32>(flat_triangle_black_red(edge), 1.0);
     }
@@ -2702,12 +2899,21 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     }
     // Weighted by the blended lake share, so the shoreline follows the
     // bilinear field instead of the lake texels' staircase.
-    let lake_coverage = select(0.0, biome_blend_share(sample_biome_blend(input.source_uv), 1u), outmap)
+    // Organic biome edges (see `sample_biome_blend`). Water ownership above
+    // keeps the nearest owner; materials below take the blended dominant one.
+    let biome_blend = sample_biome_blend(
+        input.source_uv,
+        biome_edge_push_cells(direction, biome_source_face(input)),
+        biome_texels_per_dense_cell(input),
+        biome_edge_band(length(input.camera_relative_view_position)),
+    );
+    let material_biome_id = select(biome_id, biome_blend_dominant(biome_blend), outmap);
+    let lake_coverage = select(0.0, biome_blend_share(biome_blend, 1u), outmap)
         * (1.0 - smoothstep(-80.0, 0.0, macro_height_meters));
     if lake_coverage > 0.0 {
         if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
             return vec4<f32>(mix(
-                blended_biome_color(sample_biome_blend(input.source_uv)),
+                blended_biome_color(biome_blend),
                 debug_ocean_albedo(),
                 lake_coverage,
             ), 1.0);
@@ -2750,7 +2956,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
             direction,
             water_surface_height,
         );
-        let lake_land_color = blended_biome_color(sample_biome_blend(input.source_uv));
+        let lake_land_color = blended_biome_color(biome_blend);
         let lake_surface_color = mix(lake_land_color, water_surface_color, lake_coverage);
         let lake_aerial_color = mix(lake_land_color, water_aerial_color, lake_coverage);
         let misted_lake_aerial_color = apply_terrain_distance_fog(lake_aerial_color, input);
@@ -2769,7 +2975,6 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         input.surface_height_and_fog_color.x,
         scaled_terrain_macro_height(macro_height_meters),
     );
-    let biome_blend = sample_biome_blend(input.source_uv);
     // Snow and ice lowland takes no shoreline sand. Weighted by the blended
     // snow share: gating on the nearest biome stamped orange texel staircases
     // into low ground inside the ice.
@@ -2835,7 +3040,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     if TERRAIN_CREVASSES_ENABLED {
         terrain_direct_light *= crevasses.sun_visibility;
     }
-    if airless_regolith(biome_id) {
+    if airless_regolith(material_biome_id) {
         terrain_direct_light = airless_surface_response(
             terrain_normal,
             direction,
@@ -2884,7 +3089,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     if !ABLATE_FRAGMENT_MATERIAL {
         terrain_albedo = terrain_material_color(
             outmap,
-            biome_id,
+            material_biome_id,
             moisture,
             base_biome_color,
             macro_height_meters,
@@ -2968,7 +3173,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         // Fallen snow sheds off steep faces the same way the biome's snow does.
         let terrain_slope = 1.0 - clamp(dot(normalize(terrain_normal), direction), 0.0, 1.0);
         let snow_cover = smoothstep(0.08, 0.70, weather_surface.g)
-            * snow_slope_hold(terrain_slope, biome_id);
+            * snow_slope_hold(terrain_slope, material_biome_id);
         textured_terrain_albedo *= 1.0 - 0.22 * wetness;
         let snow_relief = clamp(
             input.terrain_detail_meters_and_fog_amount.x / TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
@@ -2994,7 +3199,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         textured_terrain_albedo = forest_canopy_albedo(
             textured_terrain_albedo,
             outmap,
-            biome_id,
+            material_biome_id,
             moisture,
             macro_height_meters,
             terrain_normal,
@@ -3014,7 +3219,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     // rounding its gradient through interpolated vertex normals.
     var textured_surface_lighting = textured_terrain_albedo
         * terrain_surface_irradiance;
-    if material_allows_specular(biome_id) {
+    if material_allows_specular(material_biome_id) {
         let wet_specular = pow(
             max(
                 dot(

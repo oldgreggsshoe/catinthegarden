@@ -99,7 +99,14 @@ fn gpu_forest_generate(
 
     let source_uv = cell.source_uv_scale_offset.zw
         + local_uv * cell.source_uv_scale_offset.xy;
-    let biome = sample_biome(true, source_uv, direction);
+    // The dominant owner of the terrain's organic biome edge, so stands end
+    // where the ground under them changes colour, not on the bake's squares.
+    let biome = biome_blend_dominant(sample_biome_blend(
+        source_uv,
+        biome_edge_push_cells(direction, face),
+        exp2(cell.anchor_direction_source_level.w - 4.0),
+        BIOME_EDGE_BAND_MIN,
+    ));
     let moisture = sample_moisture(source_uv);
     let macro_height = macro_terrain_height(true, source_uv, direction);
     if !forest_biome_owns_trees(biome)

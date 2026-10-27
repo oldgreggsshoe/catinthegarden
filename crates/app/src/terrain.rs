@@ -394,7 +394,20 @@ pub struct NearFieldWindow {
     pub biome_ids: Vec<u8>,
     /// Bilinearly resampled material moisture, in the baked unorm encoding.
     pub moisture: Vec<u8>,
+    /// What the GPU's biome texture holds instead of `biome_ids`: see
+    /// [`near_field_biome_lattice`].
+    pub biome_lattice: Vec<u8>,
 }
+
+/// Dense-level lattice cells the near-field biome lattice reaches past the
+/// window on each side. The shader's 4x4 biome kernel reads one cell before
+/// and two after the fragment's cell, so two keeps every tap inside it.
+/// Mirrors `NEAR_FIELD_BIOME_LATTICE_MARGIN` in planet.wgsl.
+pub const NEAR_FIELD_BIOME_LATTICE_MARGIN: i64 = 2;
+/// Last stored coordinate of the near-field biome texture. The lattice header
+/// lives here: (last, last) holds log2 of window texels per lattice cell, and
+/// (last - 1, last) / (last, last - 1) the lattice offset in eighths of a cell.
+const NEAR_FIELD_BIOME_LATTICE_META: usize = NEAR_FIELD_WINDOW_SAMPLES as usize - 1;
 
 /// Finest window level whose extent still covers what the camera can see.
 ///
@@ -2749,11 +2762,100 @@ impl TerrainRenderer {
                 }
             }
         }
+        let biome_lattice = self.near_field_biome_lattice(key, &biome_ids);
         Some(NearFieldWindow {
             heights_meters,
             biome_ids,
             moisture,
+            biome_lattice,
         })
+    }
+
+    /// The near-field window's biome channel, as the GPU reads it.
+    ///
+    /// The window's biome texels are dense-level owners copied nearest to a
+    /// finer grid, so the shader cannot smooth their boundaries at window-texel
+    /// scale: a dense cell would still be a square of identical texels. It
+    /// smooths on the dense lattice instead, exactly as it does on an ordinary
+    /// dense tile, and its kernel reaches two cells past the fragment -- past
+    /// the window's edge for fragments near it. So the GPU gets the dense
+    /// lattice itself, with a margin read from the neighbouring dense tiles,
+    /// and both sides of the window's edge smooth the same owners.
+    fn near_field_biome_lattice(&self, key: NearFieldKey, window_biomes: &[u8]) -> Vec<u8> {
+        let samples = NEAR_FIELD_WINDOW_SAMPLES as usize;
+        let mut lattice = vec![0_u8; samples * samples];
+        let TerrainDataSource::Outmap(outmap) = &self.source else {
+            return lattice;
+        };
+        let dense_level = outmap.manifest().dense_level;
+        let quads = i64::from(TILE_LOGICAL_SIZE - 1);
+        let window_last = quads * i64::from(NEAR_FIELD_WINDOW_TILES);
+        let shift = u32::from(key.level.saturating_sub(dense_level));
+        let scale = 1_i64 << shift;
+        // The header stores the offset in eighths of a cell, which is exact
+        // while a cell spans at most eight window tiles.
+        debug_assert!(scale <= window_last, "near-field window finer than its lattice header");
+        let offset = |tile: u32| (i64::from(tile) * quads).rem_euclid(scale);
+        let offset = [offset(key.tile_x), offset(key.tile_y)];
+        let tiles_per_side = f64::from(1_u32 << key.level);
+        let dense_tiles_per_side = 1_i64 << dense_level;
+        let margin = NEAR_FIELD_BIOME_LATTICE_MARGIN;
+        let window_biome = |x: i64, y: i64| {
+            let x = x.clamp(0, window_last) as usize;
+            let y = y.clamp(0, window_last) as usize;
+            window_biomes[y * samples + x]
+        };
+        let face_coordinate =
+            |tile: u32, texel: i64| ((f64::from(tile) + texel as f64 / quads as f64) / tiles_per_side) * 2.0 - 1.0;
+        let mut cached: Option<(TileKey, &GpuTile)> = None;
+        let count = |axis: usize| ((window_last + offset[axis]) / scale + 4 + margin) as usize;
+        for row in 0..count(1).min(NEAR_FIELD_BIOME_LATTICE_META) {
+            let texel_y = (row as i64 - margin) * scale - offset[1];
+            for column in 0..count(0).min(NEAR_FIELD_BIOME_LATTICE_META) {
+                let texel_x = (column as i64 - margin) * scale - offset[0];
+                let inside = (0..=window_last).contains(&texel_x) && (0..=window_last).contains(&texel_y);
+                let value = if inside {
+                    window_biome(texel_x, texel_y)
+                } else {
+                    let face_uv = [
+                        face_coordinate(key.tile_x, texel_x),
+                        face_coordinate(key.tile_y, texel_y),
+                    ];
+                    let on_face = face_uv.iter().all(|coordinate| coordinate.abs() <= 1.0);
+                    let dense_key = on_face.then(|| {
+                        let index = |coordinate: f64| {
+                            (((coordinate + 1.0) * 0.5 * dense_tiles_per_side as f64).floor() as i64)
+                                .clamp(0, dense_tiles_per_side - 1) as u32
+                        };
+                        TileKey {
+                            face: key.face,
+                            level: dense_level,
+                            x: index(face_uv[0]),
+                            y: index(face_uv[1]),
+                        }
+                    });
+                    let tile = dense_key.and_then(|dense_key| match cached {
+                        Some((cached_key, tile)) if cached_key == dense_key => Some((dense_key, tile)),
+                        _ => self.tile_cache.get(&dense_key).map(|tile| (dense_key, tile)),
+                    });
+                    match tile {
+                        Some((dense_key, tile)) => {
+                            cached = Some((dense_key, tile));
+                            sample_biome_cpu(&tile.biome_ids, source_tile_local_uv(dense_key, face_uv))
+                        }
+                        // Off the face, or not resident: the nearest owner
+                        // inside the window is the best available guess.
+                        None => window_biome(texel_x, texel_y),
+                    }
+                };
+                lattice[row * samples + column] = value;
+            }
+        }
+        let meta = NEAR_FIELD_BIOME_LATTICE_META;
+        lattice[meta * samples + meta] = shift as u8;
+        lattice[meta * samples + meta - 1] = (offset[0] * 8 / scale) as u8;
+        lattice[(meta - 1) * samples + meta] = (offset[1] * 8 / scale) as u8;
+        lattice
     }
 
     fn update_raster_near_field(&mut self, key: Option<NearFieldKey>) {
@@ -2782,7 +2884,7 @@ impl TerrainRenderer {
         upload_near_field_texture(
             &self.queue,
             &self._raster_near_field_biome_texture,
-            &window.biome_ids,
+            &window.biome_lattice,
             size_of::<u8>() as u32,
         );
         upload_near_field_texture(
@@ -6899,7 +7001,7 @@ mod tests {
         assert_eq!(shader.matches("terrain_material_color(").count(), 2);
         assert!(
             call_arguments(&shader, "terrain_albedo = terrain_material_color(")
-                .starts_with("outmap, biome_id, moisture, base_biome_color,")
+                .starts_with("outmap, material_biome_id, moisture, base_biome_color,")
         );
     }
 
@@ -7095,6 +7197,27 @@ mod tests {
         let center_coordinate = TILE_GUTTER + (TILE_LOGICAL_SIZE - 1) / 2;
         let expected_index = center_coordinate + center_coordinate * TILE_STORED_SIZE;
         assert_eq!(sampled_center, expected_index as f32);
+    }
+
+    #[test]
+    fn near_field_biome_lattice_layout_matches_the_shader() {
+        let shader = include_str!("planet.wgsl");
+        assert!(shader.contains(&format!(
+            "const NEAR_FIELD_BIOME_LATTICE_MARGIN: i32 = {};",
+            super::NEAR_FIELD_BIOME_LATTICE_MARGIN
+        )));
+        // The header sits in the window texture's last stored texel, which the
+        // shader addresses as `NEAR_FIELD_WINDOW_LOGICAL_QUADS`.
+        assert_eq!(
+            super::NEAR_FIELD_BIOME_LATTICE_META,
+            (super::NEAR_FIELD_WINDOW_TILES * (TILE_LOGICAL_SIZE - 1)) as usize
+        );
+        // The finest window has two texels per lattice cell; its lattice and
+        // margin must still stop short of the header row and column.
+        let cells = (super::NEAR_FIELD_WINDOW_TILES * (TILE_LOGICAL_SIZE - 1)) as i64 / 2
+            + 4
+            + super::NEAR_FIELD_BIOME_LATTICE_MARGIN;
+        assert!((cells as usize) < super::NEAR_FIELD_BIOME_LATTICE_META);
     }
 
     #[test]

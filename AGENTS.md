@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Organic biome boundaries,27October: square 3-6km terrain-type blocks replaced by edges pushed by world-space sine waves with dominant-owner cross-fade; ocean share/coastline unchanged; near-field window uploads the dense lattice with margin so edges agree; trees follow. New biome_boundary_overhead scenario (before/after opened). Cost +3.3ms forest/+0.7 mountains/+1.2 summit (High1280x800). 782 pass/same6 failures. See HANDOFF.
+
 - Road mask performance,27October: boolean bore containment with conservative bounds/early exit and shared terrain mask lookup; no geometry/material/lighting/distance reduction. Entrance repeated~1ms saved, mountain walking1.29ms, parking1.47ms; deep tunnel unchanged. Nine paired PNGs pixel-identical/opened;114 road/10 Vulkan checks pass;full781 pass/same6 failures/72ignored;release rebuilt. Lake stash untouched. See docs/ROAD_RENDER_PERFORMANCE_2026_10_27.md.
 
 - Denser/faster forests,26October: GPU accepted-tree compaction and medium candidates512->1024; full4096/sparse64 unchanged. Current-camera sphere rejection saves another~1.1ms (balanced51.975->50.905/52.014->50.894ms), ~2.7ms overall versus original53.603ms. Seven matched final PNGs pixel-identical/opened;39 focused checks pass;full781 pass/same6 unrelated failures/71ignored;release built. Not a60FPS claim; forest-disabled view~49ms. Lake work remains isolated in stash@{0}; see docs/FOREST_PERFORMANCE_2026_10_26.md.
