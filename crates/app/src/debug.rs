@@ -157,6 +157,8 @@ struct AssertionTracker {
     seabed_samples: Vec<[u8; 3]>,
     water_samples: Vec<[u8; 3]>,
     lower_half_luminances: Vec<f32>,
+    /// Per capture: the upper half's mean luminance and red / blue ratio.
+    upper_half_samples: Vec<[f32; 2]>,
     exposure_sample_count: usize,
     exposure_bound_violations: usize,
     maximum_exposure_frame_delta: f32,
@@ -215,6 +217,7 @@ impl AssertionTracker {
             seabed_samples: Vec::new(),
             water_samples: Vec::new(),
             lower_half_luminances: Vec::new(),
+            upper_half_samples: Vec::new(),
             exposure_sample_count: 0,
             exposure_bound_violations: 0,
             maximum_exposure_frame_delta: 0.0,
@@ -958,6 +961,32 @@ impl AssertionTracker {
                 format!("bounds {bounds:?}, observed {observed:.4?}"),
             ));
         }
+        for (name, bounds, lane) in [
+            (
+                "sky_luminance_within_bounds",
+                &self.config.upper_half_luminance_bounds,
+                0,
+            ),
+            (
+                "sky_red_blue_ratio_within_bounds",
+                &self.config.upper_half_red_blue_ratio_bounds,
+                1,
+            ),
+        ] {
+            let Some(bounds) = bounds else {
+                continue;
+            };
+            let observed: Vec<f32> = self.upper_half_samples.iter().map(|s| s[lane]).collect();
+            results.push(assertion_result(
+                name,
+                observed.len() == bounds.len()
+                    && observed
+                        .iter()
+                        .zip(bounds)
+                        .all(|(&value, &[low, high])| (low..=high).contains(&value)),
+                format!("bounds {bounds:?}, observed {observed:.4?}"),
+            ));
+        }
         if let Some(minimum_margin) = self.config.min_seabed_red_minus_blue {
             let sample = self.seabed_samples.last().copied();
             let margin = sample.map(red_minus_blue).unwrap_or(f32::NEG_INFINITY);
@@ -1516,6 +1545,28 @@ impl RunArtifacts {
             .push(total / count.max(1) as f32);
     }
 
+    fn record_upper_half(&mut self, pixels: &[u8], width: u32, height: u32) {
+        let config = &self.assertion_tracker.config;
+        if config.upper_half_luminance_bounds.is_none()
+            && config.upper_half_red_blue_ratio_bounds.is_none()
+        {
+            return;
+        }
+        let row_bytes = width as usize * 4;
+        let upper = &pixels[..(height as usize / 2) * row_bytes];
+        let count = upper.len() / 4;
+        let (mut luminance, mut red, mut blue) = (0.0_f32, 0.0_f64, 0.0_f64);
+        for pixel in upper.chunks_exact(4) {
+            luminance += sky_luminance([pixel[0], pixel[1], pixel[2]]);
+            red += f64::from(pixel[0]);
+            blue += f64::from(pixel[2]);
+        }
+        self.assertion_tracker.upper_half_samples.push([
+            luminance / count.max(1) as f32,
+            (red / blue.max(1.0)) as f32,
+        ]);
+    }
+
     fn record_water_sample(&mut self, pixels: &[u8], width: u32, height: u32) {
         let Some([u, v]) = self.assertion_tracker.config.water_sample_uv else {
             return;
@@ -1673,6 +1724,7 @@ pub fn finish_capture(
     artifacts.record_seabed_sample(&pixels, pending.width, pending.height);
     artifacts.record_water_sample(&pixels, pending.width, pending.height);
     artifacts.record_lower_half_luminance(&pixels, pending.width, pending.height);
+    artifacts.record_upper_half(&pixels, pending.width, pending.height);
     artifacts.record_screenshot(
         pending.filename,
         sim_time,
@@ -1791,6 +1843,8 @@ mod tests {
             min_water_red_blue_ratio: None,
             max_water_sample_luminance: None,
             lower_half_luminance_bounds: None,
+            upper_half_luminance_bounds: None,
+            upper_half_red_blue_ratio_bounds: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,

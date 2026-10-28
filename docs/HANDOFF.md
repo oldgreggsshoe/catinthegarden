@@ -10,7 +10,15 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 28 October: moonlight.** The sky moon now lights the night side:
+**Current phase, 28 October: lunar eclipses.** The planet's shadow is drawn on the sky
+moon per fragment (penumbra = share of the sun's disc still showing, umbra = dim copper
+light bent through the air, brighter toward its edge), and the moonlight it casts dims and
+reddens by the same shadow averaged over the visible disc. The orbit is now tilted 15
+degrees to the ecliptic and its nodes regress once an eclipse year (346.62 game days), so
+eclipses come in seasons about 173 days apart (typically one total plus a partial or
+penumbral each). New `lunar_eclipse` scenario. See the second 28 October section.
+
+**Previous phase, 28 October: moonlight.** The sky moon now lights the night side:
 land (both shading paths), trees and sea (body plus a glint path) get a moon term whose
 strength is the lit share of the disc with a 40% opposition surge at full
 (`sky_moon::moon_phase_brightness`), 0.3 of sunlight at full (`PLANET_MOONLIGHT=` to
@@ -14148,3 +14156,68 @@ sunlight is obscured.
   shadows from terrain, moonlight on ships/villages/roads/clouds. Interactive look not
   seen live. Also removed the unread `NearFieldWindow::biome_ids` left by the 27 October
   work. Tests: 784 pass / same 6 pre-existing failures / 72 ignored.
+
+## Lunar eclipses (28 October, later)
+
+Request: "add lunar eclipses too".
+
+- Geometry (this system, not Earth's): the moon is 10 planet radii out, so from it the
+  planet is 5.74 degrees in radius against the sun's 0.27. Umbra radius at the moon
+  5.48 degrees, penumbra 0.53 degrees wide; the moon is 1.55 degrees in radius from the
+  planet's centre, so totality is long (about 0.6 game days of a 1.15-day eclipse).
+- Shading: `sky_moon::planet_shadow_sunlight` (CPU) and its mirror
+  `planet_shadow_sunlight` in planet.wgsl. Visible share of the sun's disc with the
+  planet's limb taken as a straight chord (it is 20x the sun's size), plus in the
+  shadow `ECLIPSE_UMBRA_CORE_LIGHT` (0.24, 0.06, 0.016) blending by depth^2 to
+  `ECLIPSE_UMBRA_EDGE_LIGHT` (0.55, 0.20, 0.07) times the hidden share. Like the
+  moonlight, these are dark-adapted levels, not physical (Earth's totality is 1e-4 to
+  1e-3 of full moon). Generated into every body's WGSL (`sky_moon::eclipse_wgsl_constants`
+  via `body::wgsl_constants`). `sky_moon_eclipse` multiplies the direct-sun
+  transmittance in both moon lighting paths, only when the uniform's new
+  `moon_eclipse.w` is 1, which only the sky moon's own uniform sets: standing on the
+  moon is unchanged.
+- Moonlight: `eclipse_of_visible_disc` averages the shadow over a 9x9 grid on the disc
+  seen from the camera, weighted by sun incidence; the rgb goes to `moon_eclipse.rgb`
+  on the planet's uniform and multiplies `moonlight_colour` (forest too).
+- Fixed on the way: the sky moon's uniform was a copy of the planet's, so it carried
+  the planet's moonlight (planet-frame direction) into the moon's own shading. Its
+  `moonlight` is now zeroed.
+- Orbit (`Orbit::new`, `Orbit::regression`): previously the least-inclined plane to the
+  equator through the first position, fixed in space under a fixed sun, which meant
+  either an eclipse every full moon or never. Now: the ecliptic is the least-inclined
+  plane through the sun; the orbit goes through the first position at 15 degrees to it
+  (or the least tilt that reaches the position if that is more), and regresses about
+  the ecliptic pole once per 346.62 game days. The game's sun has no annual motion, so
+  node regression relative to the sun does what the sun's motion does on Earth. The
+  first-frame placement is unchanged. 5.1 degrees (Earth's) would eclipse every full
+  moon here because the shadow is six times wider. The startup log line "sky moon placed"
+  now records `next_lunar_eclipse_in_days` and its depth.
+- Instrument `cargo test --release -p planet-app eclipse_calendar -- --ignored --nocapture`:
+  from an ecliptic start, seasons at days 64/92, 236/264, 408/436, 579/608, 751/779...,
+  each with one total (98.5% of the disc's light gone) and a partial or penumbral one.
+- Scenario `lunar_eclipse` (forest_night pose, `sky_moon`): five captures with flat
+  four-waypoint holds (the scenario curves overshoot near waypoints, so a capture at a
+  waypoint next to a change was mid-zoom; this cost a few confusing runs). Wide clear,
+  8-degree zoom clear, partial (moon centre on the umbra edge), total (0.06 rad off
+  axis), wide total. New assertions `upper_half_luminance_bounds` and
+  `upper_half_red_blue_ratio_bounds` (debug.rs `record_upper_half`). Observed in
+  `test-runs/lunar_eclipse/1793215672-1847949`:
+  - ground 0.0902 clear -> 0.0113 in totality;
+  - zoomed sky 0.0862 -> 0.0750 partial -> 0.0215 total;
+  - red/blue 1.70 -> 1.92 -> 22.3.
+  With the eclipse switched off (temporary edit) all three assertions fail: ground
+  0.10, sky 0.083, red/blue 1.74.
+- `moonlight_night` and `moonlight_sea` had their suns set exactly opposite the camera's
+  view of the moon, which (parallax 5.4 degrees) put the moon about half in the umbra.
+  Their suns are moved to 0.2 rad off the shadow axis; the moon placement is unchanged.
+  New values 0.0198 / 0.0914 / 0.0065 and 0.0251, inside their bounds.
+- Note for scenario edits: scenario JSON is `include_str!`ed, and cargo did not pick up
+  edits to it here until a .rs file in the crate was touched.
+- Cost: not timed. CPU adds a 69-point disc average at night; GPU adds a few
+  transcendental ops per moon fragment only (the planet's build folds the branch away
+  on `BODY_HAS_ATMOSPHERE`) and one multiply in `moonlight_colour`.
+- Not done: the umbra is not widened by the planet's air, no solar eclipses (the moon's
+  shadow on the planet), no Danjon-scale variation between eclipses. Not seen live:
+  at 1x time an eclipse season is about 9.6 real days away; F2 / the time ladder gets
+  there.
+- Tests: 788 pass / same 6 pre-existing failures / 73 ignored.

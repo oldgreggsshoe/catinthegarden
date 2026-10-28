@@ -874,6 +874,48 @@ fn planetshine_irradiance(
         * (MOON_PLANETSHINE_FRACTION * gain * risen * facing * lit_fraction);
 }
 
+/// Sunlight left at a point by the planet standing in front of the sun, per
+/// channel; `to_planet` runs from the point to the planet's centre. 1 in full
+/// sun, the share of the sun's disc still showing in the penumbra, and in the
+/// umbra only the reddened light bent round through the planet's air.
+/// Mirrors `planet_shadow_sunlight` in sky_moon.rs, which has the reasoning.
+fn planet_shadow_sunlight(to_planet: vec3<f32>, sun_direction: vec3<f32>) -> vec3<f32> {
+    let distance = length(to_planet);
+    let toward = to_planet / distance;
+    let facing = dot(toward, sun_direction);
+    if facing <= 0.0 {
+        return vec3<f32>(1.0);
+    }
+    // atan2 rather than acos: the separation is a few thousandths of a radian
+    // near the shadow's axis, where acos of an f32 cosine is too coarse.
+    let separation = atan2(length(cross(toward, sun_direction)), facing);
+    let planet = asin(min(ECLIPSE_PLANET_RADIUS_METERS / distance, 1.0));
+    let edge = clamp((separation - planet) / ECLIPSE_SUN_ANGULAR_RADIUS, -1.0, 1.0);
+    if edge >= 1.0 {
+        return vec3<f32>(1.0);
+    }
+    let pi = 3.14159265;
+    let visible = (pi - acos(edge) + edge * sqrt(max(1.0 - edge * edge, 0.0))) / pi;
+    let umbra = max(planet - ECLIPSE_SUN_ANGULAR_RADIUS, 1.0e-6);
+    let depth = min(separation / umbra, 1.0);
+    let refracted = mix(ECLIPSE_UMBRA_CORE_LIGHT, ECLIPSE_UMBRA_EDGE_LIGHT, depth * depth);
+    return vec3<f32>(visible) + refracted * (1.0 - visible);
+}
+
+/// A lunar eclipse on the moon in the planet's sky: the planet's shadow at
+/// this point of the moon (`surface_direction`, the moon's frame, where the
+/// planet's centre is `MOON_PLANET_SKY_DIRECTION` at the orbit's distance).
+/// 1 everywhere else, including standing on the moon, where the uniform's
+/// `moon_eclipse.w` is 0.
+fn sky_moon_eclipse(surface_direction: vec3<f32>, sun_direction: vec3<f32>) -> vec3<f32> {
+    if BODY_HAS_ATMOSPHERE || camera.moon_eclipse.w < 0.5 {
+        return vec3<f32>(1.0);
+    }
+    let to_planet = normalize(MOON_PLANET_SKY_DIRECTION) * ECLIPSE_PLANET_DISTANCE_METERS
+        - normalize(surface_direction) * PLANET_RADIUS_METERS;
+    return planet_shadow_sunlight(to_planet, sun_direction);
+}
+
 fn airless_regolith(biome_id: u32) -> bool {
     return !BODY_HAS_ATMOSPHERE && biome_id == AIRLESS_BODY_BIOME;
 }
@@ -1535,7 +1577,7 @@ fn flat_triangle_lighting(
         surface_direction,
         surface_height,
         sun_direction,
-    );
+    ) * sky_moon_eclipse(surface_direction, sun_direction);
     let sky_diffuse = sky_diffuse_irradiance(
         normal,
         surface_direction,
@@ -3053,7 +3095,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         direction,
         input.surface_height_and_fog_color.x,
         sun_direction,
-    );
+    ) * sky_moon_eclipse(direction, sun_direction);
     // A LUT fetch plus its surrounding maths, per fragment.
     var terrain_sky_diffuse = vec3<f32>(0.0);
     if !ABLATE_FRAGMENT_SKYLIGHT {

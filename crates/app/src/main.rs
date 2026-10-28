@@ -6278,14 +6278,14 @@ impl State {
             f32::from(camera_sea_level_altitude_meters < camera_surface_height_meters);
         let moon_active = !solid_color_screen && subsystem_enabled("moon");
         if moon_active && let Some(mut moon) = self.sky_moon.take() {
-            let (direction, strength) = moon.light(
+            let (direction, strength, eclipse) = moon.light(
                 self.sun_direction,
                 camera_planet_frame_position,
                 camera_planet_frame_direction,
                 planet_rotation_radians,
                 planet_rotation_time,
             );
-            camera_uniform.set_moonlight(direction, strength);
+            camera_uniform.set_moonlight(direction, strength, eclipse);
             self.sky_moon = Some(moon);
         }
         self.queue

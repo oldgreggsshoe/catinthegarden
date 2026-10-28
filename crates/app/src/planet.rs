@@ -3093,6 +3093,10 @@ pub struct CameraUniform {
     /// `SunRenderer::encode_visibility`): one fetch a frame instead of one
     /// per lit pixel and tree vertex.
     pub moonlight_transmittance: [f32; 4],
+    /// rgb: the moon's light the planet's shadow leaves during a lunar
+    /// eclipse (1 otherwise); w: 0. On the sky moon's own uniform w is 1,
+    /// which draws the planet's shadow across it (`sky_moon`).
+    pub moon_eclipse: [f32; 4],
 }
 
 /// Byte offset of `moon_direction_view.w`, the first of the four floats the
@@ -3255,12 +3259,14 @@ impl CameraUniform {
             moonlight: [0.0; 4],
             moon_direction_view: [0.0, 0.0, 0.0, 1.0],
             moonlight_transmittance: [1.0, 1.0, 1.0, surface_height_meters.max(0.0) as f32],
+            moon_eclipse: [1.0, 1.0, 1.0, 0.0],
         }
     }
 
     /// Lights the scene by a moon in `direction` (planet frame, from the
-    /// camera) at `strength`, a share of sunlight; see `sky_moon::moonlight`.
-    pub fn set_moonlight(&mut self, direction: DVec3, strength: f32) {
+    /// camera) at `strength`, a share of sunlight, of which an eclipse leaves
+    /// `eclipse` per channel; see `sky_moon::light`.
+    pub fn set_moonlight(&mut self, direction: DVec3, strength: f32, eclipse: DVec3) {
         let direction = direction.normalize_or_zero();
         let along = |basis: [f32; 4]| {
             let basis = Vec3::new(basis[0], basis[1], basis[2]).as_dvec3();
@@ -3274,6 +3280,8 @@ impl CameraUniform {
         let direction = direction.as_vec3();
         self.moonlight = [direction.x, direction.y, direction.z, strength.max(0.0)];
         self.moon_direction_view = [view[0], view[1], view[2], self.moon_direction_view[3]];
+        let eclipse = eclipse.as_vec3().max(Vec3::ZERO);
+        self.moon_eclipse = [eclipse.x, eclipse.y, eclipse.z, 0.0];
     }
 }
 

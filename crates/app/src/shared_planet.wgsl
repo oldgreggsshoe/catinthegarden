@@ -372,6 +372,9 @@ struct Camera {
     // rgb: the air's transmittance toward the moon from the ground under the
     // camera (written on the GPU, sun.wgsl); w: that ground's altitude.
     moonlight_transmittance: vec4<f32>,
+    // rgb: the moon's light a lunar eclipse leaves (1 otherwise). w: 1 only
+    // on the sky moon's own uniform, where it draws the planet's shadow.
+    moon_eclipse: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -2573,9 +2576,11 @@ fn moon_camera_cloud_visibility() -> f32 {
 
 // The moon's light where nothing is in the way: its phase light
 // (camera.moonlight.w, lit disc plus the full-moon surge) through the sun's
-// air column, read once a frame for the ground under the camera.
+// air column, read once a frame for the ground under the camera, less what a
+// lunar eclipse takes (camera.moon_eclipse.rgb).
 fn moonlight_colour() -> vec3<f32> {
     return camera.moonlight_transmittance.rgb
+        * camera.moon_eclipse.rgb
         * MOONLIGHT_TINT
         * (camera.moonlight.w * SURFACE_SUNLIGHT_SCALE);
 }

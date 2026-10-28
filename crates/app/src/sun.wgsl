@@ -55,6 +55,7 @@ struct Camera {
     moonlight: vec4<f32>,
     moon_direction_view: vec4<f32>,
     moonlight_transmittance: vec4<f32>,
+    moon_eclipse: vec4<f32>,
 }
 
 @group(0) @binding(0)

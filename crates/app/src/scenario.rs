@@ -71,6 +71,14 @@ pub struct ScenarioAssertions {
     /// half of the frame, the ground in a level view. Night lighting checks.
     #[serde(default)]
     pub lower_half_luminance_bounds: Option<Vec<[f32; 2]>>,
+    /// Per capture, in order: [min, max] mean luminance (0-1) of the upper
+    /// half of the frame, the sky; with a body framed in it, its brightness.
+    #[serde(default)]
+    pub upper_half_luminance_bounds: Option<Vec<[f32; 2]>>,
+    /// Per capture, in order: [min, max] of the upper half's summed red over
+    /// its summed blue, a colour check on what is in the sky.
+    #[serde(default)]
+    pub upper_half_red_blue_ratio_bounds: Option<Vec<[f32; 2]>>,
     /// Largest tolerated gap between the surface the renderer drew and the
     /// surface the CPU would collide with, over the probe's sample grid. This
     /// is an outlier guard and should be set loosely; horizon-grazing samples
@@ -138,6 +146,8 @@ impl Default for ScenarioAssertions {
             min_water_red_blue_ratio: None,
             max_water_sample_luminance: None,
             lower_half_luminance_bounds: None,
+            upper_half_luminance_bounds: None,
+            upper_half_red_blue_ratio_bounds: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,
@@ -441,6 +451,7 @@ scenarios! {
     "biome_boundary_overhead" => "../scenarios/biome_boundary_overhead.json",
     "moonlight_night" => "../scenarios/moonlight_night.json",
     "moonlight_sea" => "../scenarios/moonlight_sea.json",
+    "lunar_eclipse" => "../scenarios/lunar_eclipse.json",
     "tour_desert" => "../scenarios/tour_desert.json",
     "tour_coast" => "../scenarios/tour_coast.json",
     "tour_grassland" => "../scenarios/tour_grassland.json",
@@ -1223,7 +1234,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 153);
+        assert_eq!(SCENARIO_NAMES.len(), 154);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

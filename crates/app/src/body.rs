@@ -183,9 +183,10 @@ pub fn wgsl_constants() -> String {
          const BODY_HAS_ATMOSPHERE: bool = {has_atmosphere};\n\
          const BODY_TERRAIN_TINT: vec3<f32> = vec3<f32>({tt0}, {tt1}, {tt2});\n\
          const BODY_WATER_TINT: vec3<f32> = vec3<f32>({wt0}, {wt1}, {wt2});\n\
-         const BODY_ICE_TINT: vec3<f32> = vec3<f32>({it0}, {it1}, {it2});\n{}",
+         const BODY_ICE_TINT: vec3<f32> = vec3<f32>({it0}, {it1}, {it2});\n{}{}",
         active().name,
         crate::moon::wgsl_constants(),
+        crate::sky_moon::eclipse_wgsl_constants(),
     )
 }
 

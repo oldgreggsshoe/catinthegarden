@@ -157,3 +157,37 @@ Not done:
 Tests: 784 pass, the same 6 failures as before.
 
 To try other levels without a rebuild, set PLANET_MOONLIGHT (0.3 is the default, 0 turns moonlight off).
+
+---
+
+Lunar eclipses are in. When the moon passes through the planet's shadow, the shadow's curved edge creeps across the disc, and at totality the moon turns a dim copper red instead of vanishing. The moonlight on the night-side land, trees and sea dims and reddens with it. Committed and pushed. I've seen it in test captures only, not live in the game.
+
+How it works:
+- The shadow: from the moon, the planet covers the sun completely, with a thin band (the penumbra) where only part of the sun is hidden. Light falls off smoothly across that band. Inside the full shadow, the only light is sunlight bent through the planet's atmosphere. That light is reddest at the centre and brighter toward the shadow's edge, which is why real eclipsed moons glow copper.
+- Brightness in totality: a real eclipsed moon is about a thousandth as bright as a full moon, which at the game's fixed night exposure is black. I set it to the level a dark-adapted eye sees, as I did for the moonlight itself. The moon is clearly visible but dark red, and the ground in the test view goes about 8x darker.
+- How often eclipses happen: the moon's orbit used to stay fixed in space and the game's sun doesn't move through the year, so you'd have got either an eclipse every full moon or none ever. The orbit is now tilted 15° to the sun's plane and slowly turns, once every 346.6 game days. That is Earth's "eclipse year", the time the moon's orbit takes to line up with the sun again. So eclipses now come in seasons about 173 game days apart, as on Earth. Each season usually has one total eclipse, about 0.6 days of totality inside an event lasting just over a day, plus a partial or a faint penumbral one. Earth's moon is tilted only 5°, but this moon is much closer, so the planet's shadow looks about six times wider from it and 5° would eclipse every full moon.
+
+Test results, from a new test scene called lunar_eclipse:
+
+| | Clear | Partial | Total |
+|---|---|---|---|
+| Ground brightness (lower half of the frame) | 0.090 | | 0.011 |
+| Zoomed moon, sky brightness | 0.086 | 0.075 | 0.022 |
+| Zoomed moon, red/blue ratio | 1.7 | 1.9 | 22 |
+
+With eclipses switched off, all three checks fail, so the test catches it if they disappear.
+
+Two other things changed:
+- The two moonlight test scenes from last time had their sun almost exactly opposite the moon. Under the new model that put their moon about half inside the shadow. I moved their sun 11° so they show an ordinary full moon again. They still pass.
+- I fixed a bug from my moonlight change: the moon was receiving its own moonlight, in the wrong frame of reference.
+
+Seeing one in the game: the next eclipse depends on where the moon is placed at start-up. The start-up log line "sky moon placed" now gives next_lunar_eclipse_in_days. At normal speed a game day is 80 minutes, so speed time up to get there. The first one may be months of game time away.
+
+Cost: I didn't time it. The extra work is a few maths operations per pixel on the moon only, plus a small calculation on the processor at night.
+
+Not done:
+- No solar eclipses (the moon's shadow on the planet).
+- The full shadow isn't widened by the planet's air.
+- All eclipses are the same colour; real ones vary from bright orange to nearly black.
+
+Tests: 788 pass, the same 6 failures as before.
