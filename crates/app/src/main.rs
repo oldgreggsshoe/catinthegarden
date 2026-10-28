@@ -542,6 +542,31 @@ fn compass_heading_degrees(forward: glam::DVec3, position: glam::DVec3) -> Optio
     )
 }
 
+/// Local solar time in hours (0-24) at planet-local `position` with the sun
+/// along planet-local `sun`: one planet rotation is a 24-hour day, noon when the
+/// sun crosses the meridian and midnight opposite it, whatever the season.
+/// None at a pole, where every meridian meets.
+fn local_solar_time_hours(position: glam::DVec3, sun: glam::DVec3) -> Option<f64> {
+    let level = |v: glam::DVec3| glam::DVec3::new(v.x, 0.0, v.z);
+    let meridian = level(position);
+    let sun = level(sun);
+    if meridian.length_squared() < 1.0e-12 * position.length_squared()
+        || sun.length_squared() < 1.0e-12
+    {
+        return None;
+    }
+    let east = glam::DVec3::Y.cross(meridian);
+    // Hour angle: how far the sun has moved west past the meridian.
+    let hour_angle = (-sun.dot(east)).atan2(sun.dot(meridian));
+    Some((12.0 + hour_angle.to_degrees() / 15.0).rem_euclid(24.0))
+}
+
+/// "HH:MM" for a clock time in hours.
+fn clock_text(hours: f64) -> String {
+    let minutes = (hours * 60.0).floor() as u32 % (24 * 60);
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
 /// Moving east from +X raises `planet::geographic_longitude_degrees`: the
 /// compass's east and the map's agree.
 #[cfg(test)]
@@ -1701,6 +1726,9 @@ struct State {
     /// Compass heading of the view this frame, and the one last drawn.
     compass_heading_degrees: Option<f64>,
     compass_drawn_degrees: Option<f64>,
+    /// Local solar time this frame (hours), and the minute last drawn.
+    clock_hours: Option<f64>,
+    clock_drawn_minute: Option<u32>,
     last_real_clock_seconds: f64,
     time_speed_index: usize,
     interactive_scene_time_offset_seconds: f64,
@@ -2357,6 +2385,8 @@ impl State {
             ship_water_velocity: glam::DVec3::ZERO,
             compass_heading_degrees: None,
             compass_drawn_degrees: None,
+            clock_hours: None,
+            clock_drawn_minute: None,
             gust: gust::Gust::CALM,
             last_real_clock_seconds: 0.0,
             time_speed_index: DEFAULT_TIME_SPEED_INDEX,
@@ -4035,6 +4065,15 @@ impl State {
         if compass_moved.abs() > 0.5 {
             self.mark_hud_dirty();
         }
+        // The clock, redrawn when its minute turns over.
+        self.clock_hours = local_solar_time_hours(
+            camera_position,
+            planet::planet_local_vector(self.sun_direction, planet_rotation_radians),
+        );
+        let clock_minute = self.clock_hours.map(|hours| (hours * 60.0).floor() as u32);
+        if clock_minute != self.clock_drawn_minute {
+            self.mark_hud_dirty();
+        }
         // Tiny bubbles in the water around an eye under the sea, riding the
         // water's own motion there (the current that carries the swimmer).
         let depth_under_surface = water - altitude;
@@ -5115,7 +5154,25 @@ impl State {
             .then(|| self.car.charge());
         let driving_steering = self.car.steering_fraction();
         self.compass_drawn_degrees = compass;
+        let clock = self.scenario.is_none().then_some(self.clock_hours).flatten();
+        self.clock_drawn_minute = clock.map(|hours| (hours * 60.0).floor() as u32);
         let full_output = self.egui_context.run_ui(raw_input, |ui| {
+            if let Some(hours) = clock {
+                let context = ui.ctx().clone();
+                egui::Area::new(egui::Id::new("clock"))
+                    .anchor(egui::Align2::LEFT_TOP, [14.0, 10.0])
+                    .interactable(false)
+                    .show(&context, |ui| {
+                        ui.label(
+                            egui::RichText::new(clock_text(hours))
+                                .size(26.0)
+                                .strong()
+                                .monospace()
+                                .color(egui::Color32::WHITE)
+                                .background_color(egui::Color32::from_black_alpha(150)),
+                        );
+                    });
+            }
             if let Some(heading) = compass {
                 let context = ui.ctx().clone();
                 egui::Area::new(egui::Id::new("compass"))
@@ -8473,6 +8530,43 @@ mod tests {
         assert!((read(-DVec3::Z - DVec3::X) - 90.0).abs() < 1e-9);
         assert!(super::compass_heading_degrees(-DVec3::X, at).is_none());
         assert!(super::geographic_longitude_degrees_east_check());
+    }
+
+    /// Noon with the sun on the meridian, midnight opposite, 18:00 with it set
+    /// in the west and 06:00 in the east; and the clock runs forward as the
+    /// planet turns under a fixed sun, one rotation a day.
+    #[test]
+    fn the_clock_reads_local_solar_time() {
+        use glam::DVec3;
+        let at = DVec3::new(3.0e6, 1.0e6, 0.0);
+        let east = DVec3::Y.cross(DVec3::X);
+        let read = |sun: DVec3| super::local_solar_time_hours(at, sun).unwrap();
+        assert!((read(DVec3::new(1.0, 0.4, 0.0)) - 12.0).abs() < 1e-9);
+        assert!((read(-DVec3::X) % 24.0).abs() < 1e-9 || (read(-DVec3::X) - 24.0).abs() < 1e-9);
+        assert!((read(-east) - 18.0).abs() < 1e-9);
+        assert!((read(east) - 6.0).abs() < 1e-9);
+        assert!(super::local_solar_time_hours(DVec3::Y * 4.0e6, DVec3::X).is_none());
+        let sun = DVec3::new(0.3, 0.2, 0.9).normalize();
+        let mut last = None;
+        let mut advanced = 0.0;
+        for step in 0..=96 {
+            let rotation = step as f64 / 96.0 * std::f64::consts::TAU;
+            let hours = super::local_solar_time_hours(
+                at,
+                crate::planet::planet_local_vector(sun, rotation),
+            )
+            .unwrap();
+            if let Some(last) = last {
+                let delta: f64 = (hours - last + 36.0) % 24.0 - 12.0;
+                assert!((delta - 0.25).abs() < 1e-9, "step {step}: {delta}");
+                advanced += delta;
+            }
+            last = Some(hours);
+        }
+        assert!((advanced - 24.0).abs() < 1e-6);
+        assert_eq!(super::clock_text(13.999), "13:59");
+        assert_eq!(super::clock_text(0.0), "00:00");
+        assert_eq!(super::clock_text(23.9999), "23:59");
     }
 
     /// Knots through the water: what the hull does over the water, not what

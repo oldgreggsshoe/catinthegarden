@@ -14311,3 +14311,26 @@ Request: "So solar eclipses".
   diamond-ring effect beyond what the crescent and glare give; no shadow-cone bands, no
   temperature drop or wind in the weather; birds and the weather simulation's insolation
   ignore it; the HUD says nothing.
+
+## HUD clock (28 October, evening)
+
+- Top-left 24-hour clock in the interactive game: local solar time where the eye is.
+  One planet rotation (80 real minutes at 1x) is 24 clock hours, so a clock minute is
+  3.3 real seconds at 1x. It follows the time-speed ladder and stops with F10.
+- `local_solar_time_hours(position, sun)` (main.rs): hour angle of the planet-local sun
+  west of the camera's meridian about the +Y axis, 12 + H/15 degrees, mod 24. Declination
+  does not enter, so the seasons don't move noon. None at a pole (no meridian); the clock
+  is then hidden. `clock_text` formats it as HH:MM.
+- Computed each frame next to the compass from `self.sun_direction` through
+  `planet_local_vector`; the HUD is marked dirty only when the displayed minute changes
+  (`clock_hours`, `clock_drawn_minute`). egui `Area` anchored LEFT_TOP at (14, 10),
+  26pt monospace white on black 150 alpha, the same style as the compass panel. The F3
+  debug window opens at (12, 12) and covers it while open.
+- Scenarios don't draw it, so captures are unchanged.
+- Test `the_clock_reads_local_solar_time`: sun on the meridian gives 12:00, opposite gives
+  00:00, sun to the west 18:00, to the east 06:00; at a pole the result is None. Turning the
+  planet in 96 steps under a fixed sun advances the clock 0.25h a step and 24h in all,
+  which pins the sign of the rotation. 792 pass / same 6 failures / 74 ignored; release
+  builds.
+- Not seen live: the permission check refused launching the game and screenshotting the
+  desktop.

@@ -226,3 +226,28 @@ Seeing one in the game: the "sky moon placed" start-up log line now has next_sol
 Not done: Baily's beads and the diamond ring beyond the crescent and glare; any cooling or wind change in the weather; nothing on the HUD.
 
 791 tests pass with the same 6 failures as before. The scene's sky checks are set at the default window size and don't hold at 1280x800, where the glare is smaller.
+
+---
+
+Nothing was left half-done to pick up. The last job, solar eclipses, is finished, committed (38145d4) and pushed, and the working tree is clean.
+
+Loose ends from the eclipse work you could pick next:
+- Watch one live. The "sky moon placed" start-up log line gives next_solar_eclipse_in_days.
+- Baily's beads and the diamond ring at the edge of totality.
+- The weather ignoring eclipses: no cooling and no wind change.
+- Nothing on the HUD during an eclipse.
+- The sky checks in the solar_eclipse scene fail at 1280x800 because the sun's glare is smaller there.
+- From orbit, the straight-sided dark column of shadowed air above the shadow. It follows from the game's thick air but may look wrong.
+
+Tell me which one, or something else.
+
+---
+
+The clock is in. Top left of the screen, 24-hour local solar time where you are: one turn of the planet is 24 hours, and 12:00 is when the sun is highest in the sky. Committed and pushed. I haven't seen it live: I wasn't allowed to launch the game and take a screenshot here.
+
+- One game day takes 80 real minutes at normal speed, so a clock minute is about 3.3 seconds. It speeds up with the time-speed keys and stops when F10 freezes time.
+- It is local time, so it changes as you travel east or west. Flying a quarter of the way round the planet moves it 6 hours.
+- The seasons don't move noon. Sunrise and sunset times do change with the season and your latitude.
+- It shows in the normal game only, not in test scenes. It hides at the exact poles, where local time has no meaning. The F3 debug panel covers it while that panel is open.
+
+Tests: a new test checks noon, midnight, 06:00 and 18:00, and that the clock moves forward 24 hours per turn of the planet. 792 pass, with the same 6 failures as before.
