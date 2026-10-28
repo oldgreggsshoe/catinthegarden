@@ -7124,7 +7124,8 @@ mod tests {
                 .1
                 .contains("let infinite_scattering = second_order_luminance")
         );
-        assert!(stages[2].1.contains("+ multiple_scattering * scattering;"));
+        assert!(stages[2].1.contains("+ multiple_scattering * scattering\n"));
+        assert!(stages[2].1.contains("moon_shadow_scattered_light(world_sample, sun, moon)"));
         assert!(stages[3].1.contains("2.0 * zenith_cosine"));
         assert!(stages[3].1.contains("+ multiple_scattering * scattering;"));
         assert!(display.contains("sky_view_lut"));

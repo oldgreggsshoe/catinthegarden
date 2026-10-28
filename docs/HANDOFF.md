@@ -10,7 +10,16 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 28 October: lunar eclipses.** The planet's shadow is drawn on the sky
+**Current phase, 28 October: solar eclipses.** The moon's shadow falls on the planet at
+new moon in the same eclipse seasons. Every lit point keeps the share of the sun's disc
+the moon leaves it (eclipse.wgsl `moon_shadow_sunlight`, mirrored in sky_moon.rs): direct
+sun on land, sea, trees, cloud, haze; the sky-view LUT per sample (so the sky darkens
+overhead); and the ground's skylight. The umbra is ~1,800km across and every central
+eclipse is total. Totality: deep-blue sky, a pearly corona round the black moon, the land
+dim but readable (dark-adapted floors, as for moonlight). New `solar_eclipse` scenario
+(fails with `PLANET_SOLAR_ECLIPSE=0`). See the third 28 October section.
+
+**Previous phase, 28 October: lunar eclipses.** The planet's shadow is drawn on the sky
 moon per fragment (penumbra = share of the sun's disc still showing, umbra = dim copper
 light bent through the air, brighter toward its edge), and the moonlight it casts dims and
 reddens by the same shadow averaged over the visible disc. The orbit is now tilted 15
@@ -14221,3 +14230,84 @@ Request: "add lunar eclipses too".
   at 1x time an eclipse season is about 9.6 real days away; F2 / the time ladder gets
   there.
 - Tests: 788 pass / same 6 pre-existing failures / 73 ignored.
+
+## Solar eclipses (28 October, later still)
+
+Request: "So solar eclipses".
+
+- Geometry: moon radius 1,080km at 40,000km, so from the ground it is about 0.028 rad in
+  radius against the sun's 0.0046: 6x the sun. Umbra on the ground about 910km in radius,
+  penumbra about 1,250km; every central eclipse is total, never annular. The planet turns
+  120x faster than the moon goes round, so the shadow sweeps west across the ground at
+  about 3 km/s and one place is in totality for 0.03-0.2 game days (3-17 real minutes at
+  1x). Seasons are the lunar ones: instrument
+  `cargo test --release -p planet-app solar_eclipse_calendar -- --ignored --nocapture`
+  gives two total solar eclipses per season (days 78/107, 250/279, 422/450... from an
+  ecliptic start), half a month from the lunar ones.
+- Function: `moon_shadow_sunlight(point, sun, moon, source)` = 1 - lens overlap of a
+  source disc and the moon's disc seen from `point` (`disc_overlap_share`). WGSL version
+  in the new eclipse.wgsl, appended to every body's WGSL through
+  `sky_moon::eclipse_wgsl_constants`; it uses tan/sin for the angles (all < 0.1 rad) and
+  early-outs outside the penumbra and inside the umbra, so only the penumbra pays the two
+  acos. The Rust one is exact (atan2/asin); they agree to ~0.1%.
+- Wiring: `CameraUniform` gains `solar_eclipse_moon` (moon centre from the planet's
+  centre, planet frame; w = moon radius, 0 = off) and `solar_eclipse_moon_view` (same in
+  view axes; w = camera's share of the sun). `sky_moon::light` now returns a `Light`
+  struct; `shadowing_moon` is set only while `solar_eclipse_possible` (moon within the
+  angle the air's top, the moon and the skylight source span, ~0.25 rad of the sun from the
+  planet's centre: about a day a month near new moon, and not at all away from a node), so
+  otherwise every term is one uniform branch. `PLANET_SOLAR_ECLIPSE=0` turns it off.
+  - `surface_direct_sun_transmittance` x `moon_shadow_surface_sun` (share, floored at
+    `SOLAR_ECLIPSE_TOTALITY_LIGHT` 0.06): terrain, ocean, forest, rain, spray, bubbles.
+  - `sky_diffuse_irradiance` x `moon_shadow_scattered_light` (share for a source widened to
+    `SOLAR_ECLIPSE_SKYLIGHT_SOURCE_RADIANS` 0.0125, floored at `SOLAR_ECLIPSE_TOTALITY_SKY`
+    0.02), before the perceptual curve.
+  - Sky-view LUT (atmosphere_sky_view.wgsl, both the optical and orbital paths): the
+    single-scattered sun x direct share and the multiple-scattering term x scattered share,
+    per sample at its world position. Fog/mist colours and reflections that read the LUT
+    follow.
+  - Aerial in-scatter samples x direct share.
+  - Cloud shells and local impostors: direct and sky terms at the cloud point.
+  - Road, village, ship: the camera's share (`solar_eclipse_moon_view.w`), same floors
+    (literals 0.06 and 0.02 in road/village, which lack the body constants).
+  - Sun: the moon's composited depth already clips the disc; glare x sqrt(share of the
+    visual disc). New corona in `fs_disc` (`SUN_CORONA_RADIANCE`, r^-3 in solar radii,
+    four broad streamer lobes), only once the camera's share is under 0.03, so it shows as a
+    ring round the moon at totality and is hidden by the moon, terrain and cloud.
+  - Moon's own uniform: solar eclipse off; earthshine extra gain only when the camera's sun
+    is down (it lit the new moon paler than the eclipse sky).
+- The floors are dark-adapted choices, like the moonlight: the game's skylight on the
+  ground is a small share of daylight, so with only the sky's floor totality was black
+  (ground 0.0001). With `SOLAR_ECLIPSE_TOTALITY_LIGHT` 0.06 from the sun's direction the
+  wide totality view is ground 0.024 / sky 0.043 (debug.rs luminance) against 0.33 / 0.35
+  in sun.
+- From orbit (capture 6) the umbra is a dark spot with a soft penumbra, and the thick
+  game air above it is in shadow too, so a dark column runs from the spot along the shadow
+  axis, with straight sides (the shadow is a cylinder; the sky-view LUT darkens rays
+  through it, and the aerial in-scatter does a fainter version). Physically consistent with
+  this 4.5x atmosphere; worth a look. Bright blue pixel specks along coasts inside the
+  umbra are the existing coastline outline artefact, less dimmed than the land.
+- Scenario `solar_eclipse`: the `lunar_eclipse` poses (same moon placement), suns moved
+  behind the moon: 0.05 rad off (clear), 0.028 (about half covered), 0 (total), plus an
+  orbital view from 15,000km over the umbra. New assertion `centre_luminance_bounds`
+  (central tenth each way). Observed `test-runs/solar_eclipse/1793222523-1867471`:
+  ground 0.327 clear -> 0.024 total; zoomed sky 0.818 / 0.774 partial / 0.130 total, red/blue
+  1.03 -> 0.33; centre of the orbital view 0.016. With `PLANET_SOLAR_ECLIPSE=0` four
+  assertion groups fail (ground 0.33, sky 0.85, red/blue 1.05, orbital centre 0.25). The
+  sky bounds include the sun's glare and are set at the default 640x360; at 1280x800
+  the glare is smaller and they do not hold.
+- Cost (1280x800 High, X11 Immediate, whole scenario p50, two runs each): 32.04/32.07ms
+  with the eclipse against 30.65/30.65 without, +1.4ms, of which the LUT is ~0.35ms; some of
+  the rest is the darker frame itself (stars). Before the early-outs it was +3.2ms. Zero
+  away from an eclipse (uniform branch).
+- `lunar_eclipse`, `moonlight_night`, `moonlight_sea`, `orbit_once` pass; `still_5s` fails
+  as before (0 captures, failing since at least ff5c67f).
+- Tests: new `the_moon_hides_the_suns_disc_by_the_lens_area`,
+  `the_moons_shadow_is_a_total_umbra_about_1800km_across_inside_a_penumbra`,
+  `solar_eclipses_come_at_new_moon_in_the_eclipse_seasons`; instrument
+  `solar_eclipse_calendar`. 791 pass / same 6 pre-existing failures / 74 ignored.
+- Not done / not seen: not watched live (the next one is `next_solar_eclipse_in_days` in
+  the "sky moon placed" log line, with `next_solar_eclipse_depth`); no Baily's beads or
+  diamond-ring effect beyond what the crescent and glare give; no shadow-cone bands, no
+  temperature drop or wind in the weather; birds and the weather simulation's insolation
+  ignore it; the HUD says nothing.

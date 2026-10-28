@@ -191,3 +191,38 @@ Not done:
 - All eclipses are the same colour; real ones vary from bright orange to nearly black.
 
 Tests: 788 pass, the same 6 failures as before.
+
+---
+
+Solar eclipses are in. At new moon in the eclipse seasons the moon's shadow now crosses the planet: the day dims as the sun turns to a crescent, then at totality the sky goes deep blue, a pearly corona rings the black moon, and the land goes dim but you can still make it out. From orbit the shadow is a dark spot about 1,800km across. Committed and pushed; seen in test captures only, not live.
+
+How it works
+- The moon looks six times the size of the sun from the ground, so every eclipse where the shadow's centre reaches the ground is total, never annular.
+- The shadow is about 1,800km wide with a softer partial ring around it to about 2,500km. The planet spins much faster than the moon orbits, so the shadow sweeps west at about 3km/s. One place is in totality for 3-17 real minutes at normal speed.
+- They come in the lunar eclipse seasons, half a month from the lunar ones, usually two total solar eclipses a season.
+- One shared calculation (how much of the sun's disc the moon hides from a given point) dims direct sunlight on land, sea, trees, clouds, roads, villages and the ship. It also dims the light in the sky point by point, so the sky goes dark overhead, and dims the haze and the skylight on the ground.
+- On the sun itself: the moon's disc cuts the sun into a crescent, the glare fades with what is left, and the corona appears once almost none is left.
+- Brightness in totality: a real total eclipse at the game's fixed exposure came out pitch black, so as with moonlight I used the level an eye adjusting to it would see. The ground goes about 14x darker.
+- Fixed on the way: at new moon the moon's earthshine was turned up for night viewing even in daylight, so it showed paler than the eclipsed sky. It is now only turned up when the sun is down where you are.
+
+Results (new solar_eclipse scene, luminance 0-1 as the test measures it)
+| | Sun out | Partial | Total |
+|---|---|---|---|
+| Ground, wide view | 0.33 | - | 0.024 |
+| Sky round the sun, zoomed | 0.82 | 0.77 | 0.13 |
+| Shadow centre seen from orbit | - | - | 0.016 (0.25 with eclipses off) |
+Sky turns blue in totality: red/blue 1.03 -> 0.33. With PLANET_SOLAR_ECLIPSE=0 the checks fail, so the test catches eclipses disappearing.
+
+Worth a look from orbit
+- Because the game's air is so thick, the air above the shadow is in shadow too.
+- So from orbit a dark band with straight sides runs from the spot along the shadow's direction.
+- That follows from the game's atmosphere, but it may look like a fault.
+- Bright blue specks along coastlines inside the shadow are an existing coastline artefact that dims less than the land around it.
+
+Cost: about +1.4ms at 1280x800 while an eclipse is on screen (it was +3.2ms before I added shortcuts), part of it the darker frame itself with stars showing. Nothing the rest of the time.
+
+Seeing one in the game: the "sky moon placed" start-up log line now has next_solar_eclipse_in_days. Speed time up to get there.
+
+Not done: Baily's beads and the diamond ring beyond the crescent and glare; any cooling or wind change in the weather; nothing on the HUD.
+
+791 tests pass with the same 6 failures as before. The scene's sky checks are set at the default window size and don't hold at 1280x800, where the glare is smaller.

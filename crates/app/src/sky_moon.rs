@@ -28,7 +28,18 @@
 //! (`ORBIT_INCLINATION_TO_ECLIPTIC_DEGREES`) and its nodes come round to the
 //! sun once an eclipse year (`ECLIPSE_YEAR_DAYS`), so eclipses come in
 //! seasons about twice a game year, as on Earth, instead of every full moon
-//! or never. No solar eclipses.
+//! or never.
+//!
+//! Solar eclipses: at new moon in the same seasons the moon's shadow falls on
+//! the planet. Each lit point keeps the share of the sun's disc the moon
+//! leaves it (`moon_shadow_sunlight`, mirrored in eclipse.wgsl): the direct
+//! sun on land, sea, trees and cloud, the air lighting the sky and the haze
+//! (in the sky-view LUT, per sample along each ray, so the sky darkens
+//! overhead and stays lit toward the horizon where the air is outside the
+//! shadow), and the skylight on the ground. The moon is 6.5 times the sun's
+//! apparent size, so its umbra on the planet is about 1,800km across and
+//! every central eclipse is total; at 1/120 of the planet's spin a point
+//! stays in it for about a tenth of a day.
 use super::*;
 use glam::{DQuat, DVec3};
 
@@ -94,6 +105,26 @@ const SUN_ANGULAR_RADIUS_RADIANS: f64 = 696_000.0 / 149_600_000.0;
 /// the level an eye adapted to it sees: a dim copper disc, not a hole.
 const ECLIPSE_UMBRA_CORE_LIGHT: [f64; 3] = [0.24, 0.06, 0.016];
 const ECLIPSE_UMBRA_EDGE_LIGHT: [f64; 3] = [0.55, 0.20, 0.07];
+/// Skylight in the moon's shadow: the sky over a point is lit by the air
+/// around it, so it is shaded as if the sun were this much wider (radians,
+/// seen from the moon's distance about 300km of air beyond the sun's own
+/// shadow edge), which softens and shrinks its darkest part.
+const SOLAR_ECLIPSE_SKYLIGHT_SOURCE_RADIANS: f64 = 0.0125;
+/// What skylight is left deep in the moon's shadow, as a share of daylight's:
+/// light scattered in from the sunlit air beyond it. Real totality skies are
+/// 1e-4 to 1e-3 of daylight; the sky is displayed through a perceptual curve
+/// (`perceptual_physical_sky_radiance`, power 0.42), on which this is a deep
+/// twilight blue, about where the sun is 6 degrees down.
+const SOLAR_ECLIPSE_TOTALITY_SKY: f64 = 0.02;
+/// Light on the ground deep in the moon's shadow, as a share of the sunlight
+/// it replaces: the bright ring of sunlit air round the horizon. The game's
+/// skylight on the ground is a small part of daylight, so the sky's floor
+/// alone left totality black; like the moonlight
+/// (`MOONLIGHT_FULL_MOON_SHARE_OF_SUNLIGHT`) this is the level an eye
+/// adapting to it sees, darker than a moonlit night but enough to make out
+/// the land by. It comes from the sun's direction, as the moonlight comes
+/// from the moon's.
+const SOLAR_ECLIPSE_TOTALITY_LIGHT: f64 = 0.06;
 /// Where the moon is placed on the first frame: this far above the horizon.
 const PLACEMENT_ELEVATION_DEGREES: f64 = 20.0;
 
@@ -312,11 +343,18 @@ impl SkyMoon {
         uniform.flat_triangle_options = [planet_uniform.flat_triangle_options[0], 0.0, 0.0, 0.0];
         // Spare lane read by `planetshine_irradiance` on the moon: extra gain
         // on earthshine for the view from the planet (0 = the moon's own).
-        uniform.camera_up[3] = SKY_EARTHSHINE_EXTRA_GAIN;
+        // Only by night: a daylit eye is not adapted to it, and a new moon
+        // in front of the sun is the black disc of a solar eclipse.
+        let sun_elevation = camera_local.normalize().dot(sun_local.normalize());
+        let dawn = ((sun_elevation + 0.1) / 0.1).clamp(0.0, 1.0);
+        let night = 1.0 - dawn * dawn * (3.0 - 2.0 * dawn);
+        uniform.camera_up[3] = SKY_EARTHSHINE_EXTRA_GAIN * night as f32;
         // The planet's moonlight is not the moon's to receive (its direction
         // is in the planet's frame), and w = 1 here draws the planet's shadow.
         uniform.moonlight = [0.0; 4];
         uniform.moon_eclipse = [1.0, 1.0, 1.0, 1.0];
+        // Nor is the solar eclipse: its own shadow is not cast on itself.
+        uniform.set_solar_eclipse(None, 1.0);
         state
             .queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -341,6 +379,7 @@ impl SkyMoon {
                 sun_world,
             );
             let next_eclipse = orbit.next_eclipse(sun_world);
+            let next_solar_eclipse = orbit.next_solar_eclipse(sun_world);
             tracing::info!(
                 target: "planet::startup",
                 moon_direction = ?orbit.start_position.normalize().to_array(),
@@ -352,6 +391,8 @@ impl SkyMoon {
                 lit_fraction = lit_fraction(position, camera_local, sun_local),
                 next_lunar_eclipse_in_days = next_eclipse.map(|(days, _)| days),
                 next_lunar_eclipse_umbral_share = next_eclipse.map(|(_, share)| share),
+                next_solar_eclipse_in_days = next_solar_eclipse.map(|(days, _)| days),
+                next_solar_eclipse_depth = next_solar_eclipse.map(|(_, depth)| depth),
                 "sky moon placed"
             );
             orbit
@@ -359,10 +400,10 @@ impl SkyMoon {
     }
 
     /// Where the moon is from the camera (planet frame), how much light it
-    /// sends as a share of sunlight (`moonlight`), and what of that light the
-    /// planet's shadow leaves, per channel (1 outside an eclipse). Places the
-    /// orbit if this is the first call, so it agrees with the moon `prepare`
-    /// then draws.
+    /// sends as a share of sunlight, and what of that light the planet's
+    /// shadow leaves; and, when its shadow can reach the planet or its air,
+    /// where the moon is for the solar eclipse. Places the orbit if this is
+    /// the first call, so it agrees with the moon `prepare` then draws.
     pub(super) fn light(
         &mut self,
         sun_direction: DVec3,
@@ -370,7 +411,7 @@ impl SkyMoon {
         forward_local: DVec3,
         planet_rotation_radians: f64,
         planet_rotation_time: f64,
-    ) -> (DVec3, f32, DVec3) {
+    ) -> Light {
         let sun_local = planet::planet_local_vector(sun_direction, planet_rotation_radians);
         let orbit_angle = orbit_angle_radians(planet_rotation_time);
         let orbit = self.orbit(
@@ -381,15 +422,27 @@ impl SkyMoon {
             orbit_angle,
         );
         let origin = planet::planet_local_vector(orbit.at(orbit_angle).0, planet_rotation_radians);
-        let direction = (origin - camera_local).normalize();
-        if !night_can_be_in_view(camera_local, sun_local) {
-            // Zero switches every moonlight term off before it does any work.
-            return (direction, 0.0, DVec3::ONE);
+        let shadowing = solar_eclipses_enabled() && solar_eclipse_possible(origin, sun_local);
+        let mut light = Light {
+            direction: (origin - camera_local).normalize(),
+            strength: 0.0,
+            eclipse: DVec3::ONE,
+            shadowing_moon: shadowing.then_some(origin),
+            camera_sun_share: if shadowing {
+                moon_shadow_sunlight(camera_local, sun_local, origin, SUN_ANGULAR_RADIUS_RADIANS)
+            } else {
+                1.0
+            },
+        };
+        // Zero strength switches every moonlight term off before it does any
+        // work.
+        if night_can_be_in_view(camera_local, sun_local) {
+            light.strength = (full_moon_share_of_sunlight()
+                * moon_phase_brightness(phase_angle_radians(origin, camera_local, sun_local)))
+                as f32;
+            light.eclipse = eclipse_of_visible_disc(origin, camera_local, sun_local);
         }
-        let strength = full_moon_share_of_sunlight()
-            * moon_phase_brightness(phase_angle_radians(origin, camera_local, sun_local));
-        let eclipse = eclipse_of_visible_disc(origin, camera_local, sun_local);
-        (direction, strength as f32, eclipse)
+        light
     }
 
     /// Renders the moon offscreen; before the main scene pass.
@@ -423,6 +476,22 @@ impl SkyMoon {
             self.composite.draw(render_pass, camera_bind_group);
         }
     }
+}
+
+/// The moon's light on the planet and its shadow, for one frame (`light`).
+pub(super) struct Light {
+    /// Unit direction to the moon from the camera, planet frame.
+    pub(super) direction: DVec3,
+    /// Its light at full night, as a share of sunlight; zero by day.
+    pub(super) strength: f32,
+    /// What of that light the planet's shadow leaves, per channel.
+    pub(super) eclipse: DVec3,
+    /// The moon's centre (planet frame, metres from the planet's centre)
+    /// while its shadow can fall on the planet or its air; otherwise none,
+    /// and the shaders skip the eclipse.
+    pub(super) shadowing_moon: Option<DVec3>,
+    /// Share of the sun's disc the camera sees past the moon.
+    pub(super) camera_sun_share: f64,
 }
 
 /// Circular orbit in the planet's world (inertial) frame, prograde, through
@@ -527,6 +596,25 @@ impl Orbit {
             .fold(0.0, f64::max);
         Some((first, deepest))
     }
+
+    /// Days from the start to the next time the moon's shadow touches the
+    /// planet's surface within two eclipse years, and how deep it reaches at
+    /// that eclipse's deepest (1 where it is total).
+    fn next_solar_eclipse(self, sun: DVec3) -> Option<(f64, f64)> {
+        const STEP_DAYS: f64 = 0.01;
+        let angle_per_day = std::f64::consts::TAU / orbital_period_days();
+        let depth = |days: f64| {
+            solar_eclipse_depth(self.at(self.start_angle + days * angle_per_day).0, sun)
+        };
+        let steps = (2.0 * ECLIPSE_YEAR_DAYS / STEP_DAYS) as usize;
+        let first = (1..steps)
+            .map(|step| step as f64 * STEP_DAYS)
+            .find(|&days| depth(days) > 0.0)?;
+        let deepest = (0..(1.5 / STEP_DAYS) as usize)
+            .map(|step| depth(first + step as f64 * STEP_DAYS))
+            .fold(0.0, f64::max);
+        Some((first, deepest))
+    }
 }
 
 /// Angle at `point` (planet frame, from the planet's centre) between the
@@ -608,9 +696,119 @@ fn eclipse_of_visible_disc(moon: DVec3, camera: DVec3, sun: DVec3) -> DVec3 {
     }
 }
 
-/// The shadow's geometry and colours for the moon's shader, generated into
-/// every body's WGSL (`body::wgsl_constants`); only the sky moon's uniform
-/// turns it on (`moon_eclipse.w`).
+/// Top of the planet's air as the shaders draw it (`ATMOSPHERE_HEIGHT_METERS`
+/// in the WGSL): the sky-view LUT lights air up to here.
+const AIR_TOP_METERS: f64 = 2_880_000.0;
+
+/// Share of a disc of angular radius `source` hidden by a disc of radius
+/// `occluder` whose centre is `separation` from its own (radians, small
+/// enough to treat the sky as flat): the lens area of the two circles.
+/// Mirrored by `eclipse_disc_overlap_share` in eclipse.wgsl.
+fn disc_overlap_share(separation: f64, source: f64, occluder: f64) -> f64 {
+    if separation >= source + occluder {
+        return 0.0;
+    }
+    if separation <= (occluder - source).abs() {
+        let inner = source.min(occluder);
+        return inner * inner / (source * source);
+    }
+    let (d2, s2, o2) = (
+        separation * separation,
+        source * source,
+        occluder * occluder,
+    );
+    let source_arc = s2
+        * ((d2 + s2 - o2) / (2.0 * separation * source))
+            .clamp(-1.0, 1.0)
+            .acos();
+    let occluder_arc = o2
+        * ((d2 + o2 - s2) / (2.0 * separation * occluder))
+            .clamp(-1.0, 1.0)
+            .acos();
+    let kite = 0.5
+        * ((-separation + source + occluder)
+            * (separation + source - occluder)
+            * (separation - source + occluder)
+            * (separation + source + occluder))
+            .max(0.0)
+            .sqrt();
+    ((source_arc + occluder_arc - kite) / (std::f64::consts::PI * s2)).clamp(0.0, 1.0)
+}
+
+/// Share of a light of angular radius `source` centred on `sun` that the moon
+/// (centre `moon`) leaves at `point`, both metres from the planet's centre in
+/// the planet frame: 1 outside its shadow, 0 in the umbra. With the sun's own
+/// radius this is the direct sunlight a solar eclipse leaves. Mirrored by
+/// `moon_shadow_sunlight` in eclipse.wgsl.
+fn moon_shadow_sunlight(point: DVec3, sun: DVec3, moon: DVec3, source: f64) -> f64 {
+    let to_moon = moon - point;
+    let distance = to_moon.length();
+    let toward = to_moon / distance;
+    let sun = sun.normalize();
+    let along = toward.dot(sun);
+    if along <= 0.0 {
+        return 1.0;
+    }
+    let separation = toward.cross(sun).length().atan2(along);
+    let occluder = (body::MOON.radius_meters / distance).min(1.0).asin();
+    1.0 - disc_overlap_share(separation, source, occluder)
+}
+
+/// Solar eclipses are on unless `PLANET_SOLAR_ECLIPSE=0`, for comparing
+/// with and without.
+fn solar_eclipses_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !matches!(
+            std::env::var("PLANET_SOLAR_ECLIPSE")
+                .ok()
+                .as_deref()
+                .map(str::trim),
+            Some("0" | "false" | "off")
+        )
+    })
+}
+
+/// Whether the moon at `moon` can shade any of the planet or its air: it is
+/// on the sun's side and within the angle, from the planet's centre, that the
+/// air's top, the moon and the widened skylight source span together.
+fn solar_eclipse_possible(moon: DVec3, sun: DVec3) -> bool {
+    let distance = moon.length();
+    let toward = moon / distance;
+    let sun = sun.normalize();
+    let reach = (body::PLANET.radius_meters + AIR_TOP_METERS + body::MOON.radius_meters)
+        / (distance - body::PLANET.radius_meters - AIR_TOP_METERS).max(1.0)
+        + SOLAR_ECLIPSE_SKYLIGHT_SOURCE_RADIANS;
+    toward.dot(sun) > reach.cos()
+}
+
+/// How deep the moon's shadow reaches into the planet's surface at its
+/// deepest point (1 - the sunlight left there): the point under the shadow's
+/// axis if the axis meets the planet, else the surface point nearest it.
+/// Zero when the moon is not between the planet and the sun.
+fn solar_eclipse_depth(moon: DVec3, sun: DVec3) -> f64 {
+    let sun = sun.normalize();
+    let behind = moon.dot(sun);
+    if behind <= 0.0 {
+        return 0.0;
+    }
+    // The axis runs from the moon away from the sun: moon - sun t.
+    let closest = moon - sun * behind;
+    let gamma = closest.length();
+    let radius = body::PLANET.radius_meters;
+    let point = if gamma < radius {
+        closest + sun * (radius * radius - gamma * gamma).sqrt()
+    } else {
+        closest / gamma * radius
+    };
+    1.0 - moon_shadow_sunlight(point, sun, moon, SUN_ANGULAR_RADIUS_RADIANS)
+}
+
+/// The shadows' geometry and colours, generated into every body's WGSL
+/// (`body::wgsl_constants`) with the solar eclipse's functions
+/// (eclipse.wgsl). Only the sky moon's uniform turns the planet's shadow on
+/// (`moon_eclipse.w`), and only the planet's the moon's
+/// (`solar_eclipse_moon.w`).
 pub(crate) fn eclipse_wgsl_constants() -> String {
     let [c0, c1, c2] = ECLIPSE_UMBRA_CORE_LIGHT;
     let [e0, e1, e2] = ECLIPSE_UMBRA_EDGE_LIGHT;
@@ -620,8 +818,14 @@ pub(crate) fn eclipse_wgsl_constants() -> String {
          const ECLIPSE_PLANET_DISTANCE_METERS: f32 = {MOON_DISTANCE_METERS:.1};\n\
          const ECLIPSE_SUN_ANGULAR_RADIUS: f32 = {SUN_ANGULAR_RADIUS_RADIANS:.9};\n\
          const ECLIPSE_UMBRA_CORE_LIGHT: vec3<f32> = vec3<f32>({c0:.6}, {c1:.6}, {c2:.6});\n\
-         const ECLIPSE_UMBRA_EDGE_LIGHT: vec3<f32> = vec3<f32>({e0:.6}, {e1:.6}, {e2:.6});\n",
+         const ECLIPSE_UMBRA_EDGE_LIGHT: vec3<f32> = vec3<f32>({e0:.6}, {e1:.6}, {e2:.6});\n\
+         const ECLIPSE_MOON_RADIUS_METERS: f32 = {:.1};\n\
+         const SOLAR_ECLIPSE_SKYLIGHT_SOURCE_RADIANS: f32 = {SOLAR_ECLIPSE_SKYLIGHT_SOURCE_RADIANS:.6};\n\
+         const SOLAR_ECLIPSE_TOTALITY_SKY: f32 = {SOLAR_ECLIPSE_TOTALITY_SKY:.6};\n\
+         const SOLAR_ECLIPSE_TOTALITY_LIGHT: f32 = {SOLAR_ECLIPSE_TOTALITY_LIGHT:.6};\n{}",
         body::PLANET.radius_meters,
+        body::MOON.radius_meters,
+        include_str!("eclipse.wgsl"),
     )
 }
 
@@ -961,6 +1165,228 @@ mod tests {
         let (first, depth) = orbit.next_eclipse(sun).unwrap();
         assert!(first <= eclipsed_days[0] + 0.1 && first > eclipsed_days[0] - 3.0);
         assert!(depth > 0.1);
+    }
+
+    #[test]
+    fn the_moon_hides_the_suns_disc_by_the_lens_area() {
+        // Against counting points of a fine grid over the source disc.
+        let counted = |separation: f64, source: f64, occluder: f64| {
+            let steps = 400;
+            let (mut inside, mut hidden) = (0, 0);
+            for row in 0..steps {
+                for column in 0..steps {
+                    let x = ((column as f64 + 0.5) / steps as f64 * 2.0 - 1.0) * source;
+                    let y = ((row as f64 + 0.5) / steps as f64 * 2.0 - 1.0) * source;
+                    if x * x + y * y > source * source {
+                        continue;
+                    }
+                    inside += 1;
+                    if (x - separation).powi(2) + y * y <= occluder * occluder {
+                        hidden += 1;
+                    }
+                }
+            }
+            f64::from(hidden) / f64::from(inside)
+        };
+        let sun = SUN_ANGULAR_RADIUS_RADIANS;
+        let moon = 0.03;
+        for separation in [0.0, 0.02, 0.026, 0.03, 0.033, 0.04] {
+            let share = disc_overlap_share(separation, sun, moon);
+            let expected = counted(separation, sun, moon);
+            assert!(
+                (share - expected).abs() < 0.01,
+                "{separation}: {share} against {expected}"
+            );
+        }
+        // A smaller occluder inside the source: annular.
+        assert!((disc_overlap_share(0.0, 0.01, 0.005) - 0.25).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn the_moons_shadow_is_a_total_umbra_about_1800km_across_inside_a_penumbra() {
+        let sun = DVec3::X;
+        let moon = sun * MOON_DISTANCE_METERS;
+        let radius = body::PLANET.radius_meters;
+        let on_surface = |from_centre_meters: f64| {
+            let angle = from_centre_meters / radius;
+            DVec3::new(angle.cos(), angle.sin(), 0.0) * radius
+        };
+        let direct = |meters: f64| {
+            moon_shadow_sunlight(on_surface(meters), sun, moon, SUN_ANGULAR_RADIUS_RADIANS)
+        };
+        // Umbra radius: the moon's radius less the sun's spread over the
+        // 36,000km from moon to ground, about 910km; penumbra about 1,250km.
+        assert_eq!(direct(0.0), 0.0);
+        assert_eq!(direct(850_000.0), 0.0);
+        assert!(direct(1_000_000.0) > 0.05 && direct(1_000_000.0) < 0.5);
+        assert!(direct(1_150_000.0) > 0.5 && direct(1_150_000.0) < 1.0);
+        assert_eq!(direct(1_350_000.0), 1.0);
+        let mut previous = 0.0;
+        for step in 0..=60 {
+            let share = direct(step as f64 * 25_000.0);
+            assert!(share >= previous - 1.0e-12, "the shadow fades outward");
+            previous = share;
+        }
+        // The sky is shaded by the wider source: its darkest part is
+        // smaller, never quite dark, and it reaches past the penumbra.
+        let skylight = |meters: f64| {
+            let share = moon_shadow_sunlight(
+                on_surface(meters),
+                sun,
+                moon,
+                SOLAR_ECLIPSE_SKYLIGHT_SOURCE_RADIANS,
+            );
+            SOLAR_ECLIPSE_TOTALITY_SKY + (1.0 - SOLAR_ECLIPSE_TOTALITY_SKY) * share
+        };
+        assert_eq!(skylight(0.0), SOLAR_ECLIPSE_TOTALITY_SKY);
+        assert!(skylight(800_000.0) > direct(800_000.0));
+        assert!(skylight(1_350_000.0) < 1.0);
+        // Ground the moon is behind (night) is not shaded by it.
+        assert_eq!(
+            moon_shadow_sunlight(DVec3::Z * radius, -sun, moon, SUN_ANGULAR_RADIUS_RADIANS),
+            1.0
+        );
+    }
+
+    #[test]
+    fn solar_eclipses_come_at_new_moon_in_the_eclipse_seasons() {
+        let sun = planet::default_sun_direction();
+        let ecliptic = least_inclined_normal(sun);
+        let start = ecliptic.cross(sun).normalize() * MOON_DISTANCE_METERS;
+        let orbit = Orbit::new(start, DQuat::IDENTITY, 0.0, sun);
+        let per_day = std::f64::consts::TAU / orbital_period_days();
+        let (mut solar, mut lunar) = (Vec::new(), Vec::new());
+        let mut day = 0.0;
+        while day < 4.0 * ECLIPSE_YEAR_DAYS {
+            let position = orbit.at(day * per_day).0;
+            if solar_eclipse_depth(position, sun) > 0.0 {
+                // New moon, and the shaders are told: the gate that skips
+                // the eclipse work never skips a real eclipse.
+                assert!(position.normalize().dot(sun) > 0.97, "day {day}");
+                assert!(solar_eclipse_possible(position, sun), "day {day}");
+                solar.push(day);
+            }
+            if planet_shadow_sunlight(position, sun).y < 0.9 {
+                lunar.push(day);
+            }
+            day += 0.05;
+        }
+        let group = |days: &[f64]| {
+            let mut events: Vec<f64> = Vec::new();
+            for &day in days {
+                if events.last().is_none_or(|&last| day - last > 5.0) {
+                    events.push(day);
+                } else {
+                    *events.last_mut().unwrap() = day;
+                }
+            }
+            events
+        };
+        let (solar, lunar) = (group(&solar), group(&lunar));
+        let count = solar.len();
+        assert!(
+            (6..=30).contains(&count),
+            "{count} solar eclipses: {solar:?}"
+        );
+        let new_moons = 4.0 * ECLIPSE_YEAR_DAYS / orbital_period_days();
+        assert!((count as f64) < new_moons * 0.6, "{count} of {new_moons}");
+        // In the lunar eclipses' seasons: each within a season's half-width
+        // (about a month either side) of a lunar eclipse.
+        for &day in &solar {
+            let nearest = lunar
+                .iter()
+                .map(|lunar| (lunar - day).abs())
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                nearest < 45.0,
+                "day {day}: nearest lunar eclipse {nearest} days"
+            );
+        }
+        let (first, depth) = orbit.next_solar_eclipse(sun).unwrap();
+        assert!(
+            (first - solar[0]).abs() < 1.5,
+            "{first} against {}",
+            solar[0]
+        );
+        assert!(depth > 0.0);
+        // Most seasons have a central eclipse, and every central one is total.
+        let total = solar
+            .iter()
+            .filter(|&&day| {
+                (0..150).any(|step| {
+                    let at = day - 1.5 + step as f64 * 0.01;
+                    solar_eclipse_depth(orbit.at(at * per_day).0, sun) >= 1.0
+                })
+            })
+            .count();
+        assert!(total * 3 >= count, "{total} total of {count}");
+    }
+
+    /// Instrument: solar eclipses over four eclipse years from a start on the
+    /// ecliptic: how deep the shadow reaches and how long the planet is in
+    /// it, and for the central ones how long one place on the ground stays
+    /// in totality as the planet turns under the shadow.
+    #[test]
+    #[ignore]
+    fn solar_eclipse_calendar() {
+        let sun = planet::default_sun_direction();
+        let ecliptic = least_inclined_normal(sun);
+        let start = ecliptic.cross(sun).normalize() * MOON_DISTANCE_METERS;
+        let orbit = Orbit::new(start, DQuat::IDENTITY, 0.0, sun);
+        let per_day = std::f64::consts::TAU / orbital_period_days();
+        let mut day = 0.0;
+        let mut current: Option<(f64, f64, f64, f64)> = None;
+        while day < 4.0 * ECLIPSE_YEAR_DAYS {
+            let depth = solar_eclipse_depth(orbit.at(day * per_day).0, sun);
+            match (&mut current, depth > 0.0) {
+                (None, true) => current = Some((day, day, depth, day)),
+                (Some((_, end, deepest, at)), true) => {
+                    *end = day;
+                    if depth > *deepest {
+                        *deepest = depth;
+                        *at = day;
+                    }
+                }
+                (Some((begin, end, deepest, at)), false) => {
+                    let kind = if *deepest >= 1.0 { "total" } else { "partial" };
+                    // The ground point under the shadow's axis at its
+                    // deepest, carried round by the planet's spin.
+                    let moon = orbit.at(*at * per_day).0;
+                    let behind = moon.dot(sun);
+                    let closest = moon - sun * behind;
+                    let gamma = closest.length();
+                    let radius = body::PLANET.radius_meters;
+                    let ground = if gamma < radius {
+                        closest + sun * (radius * radius - gamma * gamma).sqrt()
+                    } else {
+                        closest / gamma * radius
+                    };
+                    let spin =
+                        |days: f64| DQuat::from_rotation_y(std::f64::consts::TAU * days) * ground;
+                    let totality = (-2000..2000)
+                        .filter(|step| {
+                            let offset = f64::from(*step) * 0.0005;
+                            let moon = orbit.at((*at + offset) * per_day).0;
+                            moon_shadow_sunlight(
+                                spin(offset),
+                                sun,
+                                moon,
+                                SUN_ANGULAR_RADIUS_RADIANS,
+                            ) < 1.0e-6
+                        })
+                        .count() as f64
+                        * 0.0005;
+                    println!(
+                        "day {begin:7.2}: {kind:7} depth {deepest:.3}, shadow on the planet \
+                         {:.2} days, totality at one place {totality:.3} days",
+                        *end - *begin
+                    );
+                    current = None;
+                }
+                (None, false) => {}
+            }
+            day += 0.01;
+        }
     }
 
     /// Instrument: the eclipses over four eclipse years from a start on the

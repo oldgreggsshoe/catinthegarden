@@ -15,6 +15,13 @@ struct Camera {
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
+    lightning: vec4<f32>,
+    moonlight: vec4<f32>,
+    moon_direction_view: vec4<f32>,
+    moonlight_transmittance: vec4<f32>,
+    moon_eclipse: vec4<f32>,
+    solar_eclipse_moon: vec4<f32>,
+    solar_eclipse_moon_view: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -259,16 +266,26 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         direct_atmosphere_uv(input.altitude, solar_zenith_cosine),
         0.0,
     ).rgb * cloud_layer_sun_visibility(input.altitude, solar_zenith_cosine);
+    // A solar eclipse: the moon's shadow on the cloud, and on the sky over
+    // it, which reaches the eye through the sky's perceptual curve (power
+    // 0.42, perceptual_physical_sky_radiance) as the ground's skylight does.
+    let cloud_point = normalize(input.direction) * (PLANET_RADIUS_METERS + input.altitude);
+    let eclipse_direct = moon_shadow_surface_sun(cloud_point, sun_direction, camera.solar_eclipse_moon);
+    let eclipse_sky = pow(
+        moon_shadow_scattered_light(cloud_point, sun_direction, camera.solar_eclipse_moon),
+        0.42,
+    );
     let irradiance = textureSampleLevel(
         atmosphere_irradiance_lut,
         atmosphere_sampler,
         irradiance_atmosphere_uv(input.altitude, solar_zenith_cosine),
         0.0,
-    ).rgb;
+    ).rgb * eclipse_sky;
     // Match the direct-light scale used by terrain/ocean. Keeping the RGB
     // transmittance intact is what makes the same physical low-sun column
     // read warm instead of letting neutral skylight wash the cloud white.
     let direct = transmittance
+        * eclipse_direct
         * (0.20 + 0.80 * max(dot(normal, sun_direction), 0.0))
         * 2.0;
     let sky = mix(vec3<f32>(dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722))), irradiance, 0.55);

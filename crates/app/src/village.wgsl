@@ -19,6 +19,13 @@ struct Camera {
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
+    lightning: vec4<f32>,
+    moonlight: vec4<f32>,
+    moon_direction_view: vec4<f32>,
+    moonlight_transmittance: vec4<f32>,
+    moon_eclipse: vec4<f32>,
+    solar_eclipse_moon: vec4<f32>,
+    solar_eclipse_moon_view: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -86,14 +93,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // with the ground around it at low sun rather than staying lit against a
     // dusk horizon.
     let sun_elevation = clamp(dot(sun_direction, input.up), 0.0, 1.0);
-    let sunlight = vec3<f32>(1.9, 1.78, 1.6) * sun_elevation;
+    // A solar eclipse, by the camera's share of the sun (as road.wgsl).
+    let eclipse = camera.solar_eclipse_moon_view.w;
+    // sky_moon.rs SOLAR_ECLIPSE_TOTALITY_LIGHT under the umbra.
+    let eclipse_sun = mix(0.06, 1.0, eclipse);
+    let eclipse_sky = pow(mix(0.02, 1.0, eclipse), 0.42);
+    let sunlight = vec3<f32>(1.9, 1.78, 1.6) * sun_elevation * eclipse_sun;
     // Hemispheric ambient: sky above, a dimmer bounce off the ground below.
     let sky_facing = 0.5 + 0.5 * dot(normal, input.up);
     let sky_light = mix(
         vec3<f32>(0.05, 0.055, 0.06),
         vec3<f32>(0.24, 0.29, 0.36),
         sky_facing,
-    ) * (0.25 + 0.75 * sun_elevation);
+    ) * (0.25 + 0.75 * sun_elevation) * eclipse_sky;
     let lit = input.colour * (sunlight * sun_lambert + sky_light);
     return vec4<f32>(lit, 1.0);
 }

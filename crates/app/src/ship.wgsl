@@ -195,14 +195,19 @@ fn ship_shaded(input: VertexOutput) -> vec3<f32> {
     // Sun strength follows its own elevation, so the hull darkens with the sea
     // around it at low sun instead of staying lit against a dusk horizon.
     let sun_elevation = clamp(dot(sun_direction, ship.up.xyz), 0.0, 1.0);
-    let sunlight = vec3<f32>(1.9, 1.78, 1.6) * sun_elevation;
+    // A solar eclipse, by the camera's share of the sun (the hull is near
+    // it); skylight through the sky's perceptual curve.
+    let eclipse = camera.solar_eclipse_moon_view.w;
+    let eclipse_sun = mix(SOLAR_ECLIPSE_TOTALITY_LIGHT, 1.0, eclipse);
+    let sunlight = vec3<f32>(1.9, 1.78, 1.6) * sun_elevation * eclipse_sun;
     // Hemispheric ambient: sky from above, a dimmer bounce off the water below.
     let sky_facing = 0.5 + 0.5 * dot(normal, ship.up.xyz);
     let sky_light = mix(
         vec3<f32>(0.06, 0.075, 0.09),
         vec3<f32>(0.26, 0.32, 0.40),
         sky_facing,
-    ) * (0.25 + 0.75 * sun_elevation);
+    ) * (0.25 + 0.75 * sun_elevation)
+        * pow(mix(SOLAR_ECLIPSE_TOTALITY_SKY, 1.0, eclipse), 0.42);
     let sea = ship_sea_light(input.view_position, normal, sun_direction);
     // The swimmer's lamp lights the faces it shines on, undimmed by depth.
     let lamp_direction = normalize(view_to_planet(input.view_position));

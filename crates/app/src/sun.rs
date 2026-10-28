@@ -422,7 +422,7 @@ mod tests {
             shader.contains("let atmospheric_glare = presentation_tint * glare_visibility * (")
         );
         assert!(compact.contains(
-            "letradiance=SUN_VISUAL_RADIANCE_SCALE*select(atmospheric_glare*glare_cloud_visibility,atmospheric_core*cloud_visibility,draw_disc,);"
+            "varradiance=SUN_VISUAL_RADIANCE_SCALE*select(atmospheric_glare*glare_cloud_visibility,atmospheric_core*cloud_visibility,draw_disc,);"
         ));
         assert!(!compact.contains("letradiance=SUN_VISUAL_RADIANCE_SCALE*tint*(SUN_CORE_RADIANCE"));
     }
@@ -505,7 +505,9 @@ mod tests {
         assert!(shader.contains("pow(geometric_transmission, 4.0)"));
         assert!(shader.contains("cloud_sun_visibility(sun)"));
         assert!(shader.contains("atmospheric_core * cloud_visibility"));
-        assert!(shader.contains("let glare_cloud_visibility = cloud_visibility;"));
+        assert!(
+            shader.contains("let glare_cloud_visibility = cloud_visibility * sqrt(eclipse_share);")
+        );
         assert!(!shader.contains("pow(cloud_visibility, 4.0)"));
         assert!(shader.contains("atmospheric_glare * glare_cloud_visibility"));
         assert!(renderer.contains("weather_field_bind_group_layout"));

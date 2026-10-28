@@ -11,6 +11,13 @@ struct Camera {
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
+    lightning: vec4<f32>,
+    moonlight: vec4<f32>,
+    moon_direction_view: vec4<f32>,
+    moonlight_transmittance: vec4<f32>,
+    moon_eclipse: vec4<f32>,
+    solar_eclipse_moon: vec4<f32>,
+    solar_eclipse_moon_view: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(0) var<storage, read> tunnel_lights: array<vec4<f32>>;
@@ -235,9 +242,16 @@ fn lit_colour(input: Output) -> vec3<f32> {
     let sun=normalize(camera.sun_direction.xyz);
     let sun_elevation=dot(sun,normalize(input.up));
     let elevation=clamp(sun_elevation,0.0,1.0);
-    let direct=vec3<f32>(1.9,1.78,1.6)*elevation*max(dot(shaded.normal,sun),0.0);
+    // A solar eclipse, by the camera's share of the sun (roads are near it):
+    // direct sun, and skylight through the sky's perceptual curve with
+    // sky_moon.rs SOLAR_ECLIPSE_TOTALITY_SKY as its floor.
+    let eclipse=camera.solar_eclipse_moon_view.w;
+    // sky_moon.rs SOLAR_ECLIPSE_TOTALITY_LIGHT under the umbra.
+    let eclipse_sun=mix(0.06,1.0,eclipse);
+    let eclipse_sky=pow(mix(0.02,1.0,eclipse),0.42);
+    let direct=vec3<f32>(1.9,1.78,1.6)*elevation*max(dot(shaded.normal,sun),0.0)*eclipse_sun;
     let ambient=mix(vec3<f32>(0.05,0.055,0.06),vec3<f32>(0.24,0.29,0.36),
-        0.5+0.5*dot(shaded.normal,input.up))*(0.25+0.75*elevation);
+        0.5+0.5*dot(shaded.normal,input.up))*(0.25+0.75*elevation)*eclipse_sky;
     if input.sheltered>1.5 { return input.colour; }
     let vertical=dot(shaded.normal,input.up);
     let interior=(0.10+0.04*(1.0-abs(vertical))+0.12*max(vertical,0.0))*vec3<f32>(1.0,0.96,0.90);

@@ -3097,6 +3097,14 @@ pub struct CameraUniform {
     /// eclipse (1 otherwise); w: 0. On the sky moon's own uniform w is 1,
     /// which draws the planet's shadow across it (`sky_moon`).
     pub moon_eclipse: [f32; 4],
+    /// xyz: the moon's centre, metres from the planet's centre, planet frame;
+    /// w: its radius while its shadow can fall on the planet or its air, else
+    /// 0, which turns every solar-eclipse term off (eclipse.wgsl).
+    pub solar_eclipse_moon: [f32; 4],
+    /// xyz: the same centre in view axes (still from the planet's centre),
+    /// for the view-space sky; w: the share of the sun's disc the camera sees
+    /// past the moon, 1 outside an eclipse, for things lit by one value.
+    pub solar_eclipse_moon_view: [f32; 4],
 }
 
 /// Byte offset of `moon_direction_view.w`, the first of the four floats the
@@ -3260,6 +3268,8 @@ impl CameraUniform {
             moon_direction_view: [0.0, 0.0, 0.0, 1.0],
             moonlight_transmittance: [1.0, 1.0, 1.0, surface_height_meters.max(0.0) as f32],
             moon_eclipse: [1.0, 1.0, 1.0, 0.0],
+            solar_eclipse_moon: [0.0; 4],
+            solar_eclipse_moon_view: [0.0, 0.0, 0.0, 1.0],
         }
     }
 
@@ -3282,6 +3292,34 @@ impl CameraUniform {
         self.moon_direction_view = [view[0], view[1], view[2], self.moon_direction_view[3]];
         let eclipse = eclipse.as_vec3().max(Vec3::ZERO);
         self.moon_eclipse = [eclipse.x, eclipse.y, eclipse.z, 0.0];
+    }
+
+    /// Casts the moon's shadow from `moon` (its centre, planet frame, from
+    /// the planet's centre; none when it cannot reach), of which the camera
+    /// sees `camera_sun_share` of the sun; see `sky_moon::light`.
+    pub fn set_solar_eclipse(&mut self, moon: Option<DVec3>, camera_sun_share: f64) {
+        let share = camera_sun_share.clamp(0.0, 1.0) as f32;
+        let Some(moon) = moon else {
+            self.solar_eclipse_moon = [0.0; 4];
+            self.solar_eclipse_moon_view = [0.0, 0.0, 0.0, share];
+            return;
+        };
+        let along = |basis: [f32; 4]| {
+            let basis = Vec3::new(basis[0], basis[1], basis[2]).as_dvec3();
+            moon.dot(basis) as f32
+        };
+        self.solar_eclipse_moon = [
+            moon.x as f32,
+            moon.y as f32,
+            moon.z as f32,
+            crate::body::MOON.radius_meters as f32,
+        ];
+        self.solar_eclipse_moon_view = [
+            along(self.camera_right),
+            along(self.camera_up),
+            -along(self.camera_forward),
+            share,
+        ];
     }
 }
 

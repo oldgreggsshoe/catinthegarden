@@ -9,6 +9,13 @@ struct Camera {
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
+    lightning: vec4<f32>,
+    moonlight: vec4<f32>,
+    moon_direction_view: vec4<f32>,
+    moonlight_transmittance: vec4<f32>,
+    moon_eclipse: vec4<f32>,
+    solar_eclipse_moon: vec4<f32>,
+    solar_eclipse_moon_view: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -151,13 +158,16 @@ fn vs_main(
         atmosphere_sampler,
         cloud_atmosphere_uv(puff_altitude, solar_zenith_cosine),
         0.0,
-    ).rgb * cloud_sun_visibility(puff_altitude, solar_zenith_cosine);
+    ).rgb * cloud_sun_visibility(puff_altitude, solar_zenith_cosine)
+        * moon_shadow_surface_sun(centre, sun_direction, camera.solar_eclipse_moon);
+    // The sky's light on the puff in a solar eclipse, through the sky's
+    // perceptual curve as in weather_render.wgsl.
     let irradiance = textureSampleLevel(
         atmosphere_irradiance_lut,
         atmosphere_sampler,
         cloud_atmosphere_uv(puff_altitude, solar_zenith_cosine),
         0.0,
-    ).rgb;
+    ).rgb * pow(moon_shadow_scattered_light(centre, sun_direction, camera.solar_eclipse_moon), 0.42);
     let sky = mix(
         vec3<f32>(dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722))),
         irradiance,

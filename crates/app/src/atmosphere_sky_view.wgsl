@@ -20,6 +20,13 @@ struct Camera {
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
+    lightning: vec4<f32>,
+    moonlight: vec4<f32>,
+    moon_direction_view: vec4<f32>,
+    moonlight_transmittance: vec4<f32>,
+    moon_eclipse: vec4<f32>,
+    solar_eclipse_moon: vec4<f32>,
+    solar_eclipse_moon_view: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -214,10 +221,13 @@ fn integrate_world_space_sky(
             optical_sample_altitude,
             solar_zenith_cosine,
         );
+        let moon = vec4<f32>(camera.solar_eclipse_moon_view.xyz, camera.solar_eclipse_moon.w);
         let source = direct_sun
                 * phase_scattering(optical_sample_altitude, dot(ray, sun))
                 * SOLAR_LUMINANCE
-            + multiple_scattering * scattering;
+                * moon_shadow_direct_sun(sample_position, sun, moon)
+            + multiple_scattering * scattering
+                * moon_shadow_scattered_light(sample_position, sun, moon);
         luminance += view_transmittance * source * integrated_segment;
         view_transmittance *= segment_transmittance;
     }
@@ -355,10 +365,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             sample_altitude,
             solar_zenith_cosine,
         );
+        // A solar eclipse: the moon's shadow on this sample of air, found at
+        // its world position (the optical profile compresses only height).
+        // The world sun, not the optical one, casts it.
+        let moon = vec4<f32>(camera.solar_eclipse_moon_view.xyz, camera.solar_eclipse_moon.w);
+        let world_sample = sample_direction
+            * (PLANET_RADIUS_METERS + sample_altitude * ATMOSPHERE_VERTICAL_SCALE);
         let source = direct_sun
                 * phase_scattering(sample_altitude, dot(ray, optical_sun))
                 * SOLAR_LUMINANCE
-            + multiple_scattering * scattering;
+                * moon_shadow_direct_sun(world_sample, sun, moon)
+            + multiple_scattering * scattering
+                * moon_shadow_scattered_light(world_sample, sun, moon);
         luminance += view_transmittance * source * integrated_segment;
         view_transmittance *= segment_transmittance;
     }

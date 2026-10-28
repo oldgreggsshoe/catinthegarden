@@ -159,6 +159,7 @@ struct AssertionTracker {
     lower_half_luminances: Vec<f32>,
     /// Per capture: the upper half's mean luminance and red / blue ratio.
     upper_half_samples: Vec<[f32; 2]>,
+    centre_luminances: Vec<f32>,
     exposure_sample_count: usize,
     exposure_bound_violations: usize,
     maximum_exposure_frame_delta: f32,
@@ -218,6 +219,7 @@ impl AssertionTracker {
             water_samples: Vec::new(),
             lower_half_luminances: Vec::new(),
             upper_half_samples: Vec::new(),
+            centre_luminances: Vec::new(),
             exposure_sample_count: 0,
             exposure_bound_violations: 0,
             maximum_exposure_frame_delta: 0.0,
@@ -987,6 +989,18 @@ impl AssertionTracker {
                 format!("bounds {bounds:?}, observed {observed:.4?}"),
             ));
         }
+        if let Some(bounds) = &self.config.centre_luminance_bounds {
+            let observed = &self.centre_luminances;
+            results.push(assertion_result(
+                "centre_luminance_within_bounds",
+                observed.len() == bounds.len()
+                    && observed
+                        .iter()
+                        .zip(bounds)
+                        .all(|(&value, &[low, high])| (low..=high).contains(&value)),
+                format!("bounds {bounds:?}, observed {observed:.4?}"),
+            ));
+        }
         if let Some(minimum_margin) = self.config.min_seabed_red_minus_blue {
             let sample = self.seabed_samples.last().copied();
             let margin = sample.map(red_minus_blue).unwrap_or(f32::NEG_INFINITY);
@@ -1567,6 +1581,30 @@ impl RunArtifacts {
         ]);
     }
 
+    fn record_centre(&mut self, pixels: &[u8], width: u32, height: u32) {
+        if self
+            .assertion_tracker
+            .config
+            .centre_luminance_bounds
+            .is_none()
+        {
+            return;
+        }
+        let (width, height) = (width as usize, height as usize);
+        let (x0, x1) = (width * 9 / 20, width * 11 / 20);
+        let (y0, y1) = (height * 9 / 20, height * 11 / 20);
+        let mut total = 0.0_f32;
+        for y in y0..y1 {
+            for pixel in pixels[(y * width + x0) * 4..(y * width + x1) * 4].chunks_exact(4) {
+                total += sky_luminance([pixel[0], pixel[1], pixel[2]]);
+            }
+        }
+        let count = (x1 - x0) * (y1 - y0);
+        self.assertion_tracker
+            .centre_luminances
+            .push(total / count.max(1) as f32);
+    }
+
     fn record_water_sample(&mut self, pixels: &[u8], width: u32, height: u32) {
         let Some([u, v]) = self.assertion_tracker.config.water_sample_uv else {
             return;
@@ -1725,6 +1763,7 @@ pub fn finish_capture(
     artifacts.record_water_sample(&pixels, pending.width, pending.height);
     artifacts.record_lower_half_luminance(&pixels, pending.width, pending.height);
     artifacts.record_upper_half(&pixels, pending.width, pending.height);
+    artifacts.record_centre(&pixels, pending.width, pending.height);
     artifacts.record_screenshot(
         pending.filename,
         sim_time,
@@ -1845,6 +1884,7 @@ mod tests {
             lower_half_luminance_bounds: None,
             upper_half_luminance_bounds: None,
             upper_half_red_blue_ratio_bounds: None,
+            centre_luminance_bounds: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,

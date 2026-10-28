@@ -375,6 +375,12 @@ struct Camera {
     // rgb: the moon's light a lunar eclipse leaves (1 otherwise). w: 1 only
     // on the sky moon's own uniform, where it draws the planet's shadow.
     moon_eclipse: vec4<f32>,
+    // xyz: the moon's centre from the planet's centre, planet frame; w: its
+    // radius while its shadow can reach the planet, else 0 (eclipse.wgsl).
+    solar_eclipse_moon: vec4<f32>,
+    // xyz: the same in view axes; w: the share of the sun's disc the camera
+    // sees past the moon.
+    solar_eclipse_moon_view: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -2527,9 +2533,14 @@ fn surface_direct_sun_transmittance(
 ) -> vec3<f32> {
     let optical_altitude = max(surface_altitude_meters, 0.0) / 4.5;
     let solar_zenith_cosine = dot(surface_direction, sun_direction);
+    // A solar eclipse takes the share of the sun's disc the moon covers here.
     let visibility = flat_horizon_sun_visibility(
         surface_altitude_meters,
         solar_zenith_cosine,
+    ) * moon_shadow_surface_sun(
+        normalize(surface_direction) * (PLANET_RADIUS_METERS + surface_altitude_meters),
+        sun_direction,
+        camera.solar_eclipse_moon,
     );
     let uv = vec2<f32>(
         clamp(max(solar_zenith_cosine, 0.0) * 0.5 + 0.5, 0.0, 1.0),
@@ -2636,12 +2647,18 @@ fn sky_diffuse_irradiance(
         clamp(dot(surface_direction, sun_direction) * 0.5 + 0.5, 0.0, 1.0),
         sqrt(clamp(optical_altitude / 640000.0, 0.0, 1.0)),
     );
+    // In a solar eclipse the sky over this point is lit only where the air
+    // around it is outside the moon's shadow.
     let horizontal_diffuse = textureSampleLevel(
         atmosphere_surface_irradiance_lut,
         atmosphere_physical_sampler,
         uv,
         0.0,
-    ).rgb;
+    ).rgb * moon_shadow_scattered_light(
+        normalize(surface_direction) * (PLANET_RADIUS_METERS + surface_altitude_meters),
+        sun_direction,
+        camera.solar_eclipse_moon,
+    );
     // The LUT integrates a horizontal Lambertian receiver. A tilted facet sees
     // only (1 + cos tilt) / 2 of the sky dome, so a cliff gets half the fill of
     // flat ground rather than most of it.
@@ -2942,7 +2959,11 @@ fn aerial_perspective_components_n(
                     * density(in_scatter_altitude, MIE_SCALE_HEIGHT_METERS)
                     * MIE_SCALE_HEIGHT_METERS
                     * sun_air_mass
-        )) * solar_visibility;
+        )) * solar_visibility * moon_shadow_direct_sun(
+            in_scatter_direction * in_scatter_radius,
+            sun_direction,
+            camera.solar_eclipse_moon,
+        );
         let view_transmittance_to_sample = aerial_view_transmittance(
             atmospheric_view_start_altitude,
             in_scatter_altitude,

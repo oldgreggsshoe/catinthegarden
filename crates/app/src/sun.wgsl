@@ -38,6 +38,16 @@ const SUN_GLARE_VISIBILITY_FLOOR: f32 = 0.08;
 // geometric horizon and hold it below, rather than sampling into black.
 const SUN_HORIZON_LUT_ELEVATION: f32 = 0.05;
 const SUN_CORE_RADIANCE: vec3<f32> = vec3<f32>(72.0, 65.0, 52.0);
+// The corona, seen only in a total solar eclipse: pearly light falling off
+// with the cube of the distance from the sun's centre (in physical solar
+// radii). This moon is six solar radii across, so only the corona's outer
+// part shows, a soft ring round the black disc, brightest on the sun's side
+// and drawn out into a few streamers. It sits at the sun's depth, so the
+// moon (and terrain and cloud) hide it.
+const SUN_CORONA_RADIANCE: vec3<f32> = vec3<f32>(10.5, 11.0, 12.0);
+// The corona shows once this little of the sun's disc is left (share of
+// the physical disc the camera sees past the moon), and in full at none.
+const SUN_CORONA_ONSET_SHARE: f32 = 0.03;
 const SUN_HALO_RADIANCE: vec3<f32> = vec3<f32>(4.0, 2.8, 1.3);
 const SUN_GLARE_RADIANCE: vec3<f32> = vec3<f32>(2.5, 1.8, 0.8);
 
@@ -56,6 +66,8 @@ struct Camera {
     moon_direction_view: vec4<f32>,
     moonlight_transmittance: vec4<f32>,
     moon_eclipse: vec4<f32>,
+    solar_eclipse_moon: vec4<f32>,
+    solar_eclipse_moon_view: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -553,12 +565,36 @@ fn sun_radiance(input: VertexOutput, draw_disc: bool) -> vec4<f32> {
     // value so moving beneath thin cloud cannot cyclically erase the halo;
     // genuinely opaque cloud still returns exactly zero above.
     let cloud_visibility = cloud_sun_visibility(sun) * storm_sun_fog_visibility(sun);
-    let glare_cloud_visibility = cloud_visibility;
-    let radiance = SUN_VISUAL_RADIANCE_SCALE * select(
+    // In a solar eclipse the moon's disc (drawn into depth) clips the sun's;
+    // the glare goes with how much of the visual disc it leaves, by its
+    // square root, since even a thin crescent of sun still dazzles.
+    let camera_position = normalize(camera.camera_planet_direction_view_altitude.xyz)
+        * (PLANET_RADIUS_METERS + camera.camera_planet_direction_view_altitude.w);
+    let eclipse_share = moon_shadow_sunlight(
+        camera_position,
+        sun,
+        vec4<f32>(camera.solar_eclipse_moon_view.xyz, camera.solar_eclipse_moon.w),
+        SUN_ANGULAR_RADIUS_RADIANS,
+    );
+    let glare_cloud_visibility = cloud_visibility * sqrt(eclipse_share);
+    var radiance = SUN_VISUAL_RADIANCE_SCALE * select(
         atmospheric_glare * glare_cloud_visibility,
         atmospheric_core * cloud_visibility,
         draw_disc,
     );
+    let corona_weight = 1.0 - smoothstep(
+        0.0,
+        SUN_CORONA_ONSET_SHARE,
+        camera.solar_eclipse_moon_view.w,
+    );
+    if draw_disc && corona_weight > 0.0 {
+        let radii = max(normalized_distance * VISUAL_SUN_SIZE_SCALE, 1.0);
+        // Streamers: broad lobes that turn with the view, from the same
+        // Chebyshev multiples as the star rays.
+        let streamers = 0.65 + 0.35 * abs(cos_two) + 0.25 * pow(abs(cos_four), 6.0);
+        radiance += SUN_CORONA_RADIANCE * presentation_tint * corona_weight * cloud_visibility
+            * streamers / (radii * radii * radii);
+    }
     return vec4<f32>(radiance, 1.0);
 }
 
