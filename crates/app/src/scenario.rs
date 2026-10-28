@@ -67,6 +67,10 @@ pub struct ScenarioAssertions {
     /// passing on a white or black frame. Uses water_sample_uv.
     pub min_water_red_blue_ratio: Option<f32>,
     pub max_water_sample_luminance: Option<f32>,
+    /// Per capture, in order: [min, max] mean luminance (0-1) of the lower
+    /// half of the frame, the ground in a level view. Night lighting checks.
+    #[serde(default)]
+    pub lower_half_luminance_bounds: Option<Vec<[f32; 2]>>,
     /// Largest tolerated gap between the surface the renderer drew and the
     /// surface the CPU would collide with, over the probe's sample grid. This
     /// is an outlier guard and should be set loosely; horizon-grazing samples
@@ -133,6 +137,7 @@ impl Default for ScenarioAssertions {
             max_water_sample_red: None,
             min_water_red_blue_ratio: None,
             max_water_sample_luminance: None,
+            lower_half_luminance_bounds: None,
             max_surface_probe_delta_m: None,
             max_surface_probe_p90_delta_m: None,
             min_camera_clearance_m: None,
@@ -189,6 +194,10 @@ pub struct ScenarioDefinition {
     /// and storm overcast together), as `PLANET_STORM_APPROACH` does.
     #[serde(default)]
     pub storm_approach_seconds: Option<f64>,
+    /// Draws the moon in the sky, and lights the night by it, as ordinary
+    /// play does; scenarios otherwise leave it out (`PLANET_MOON`).
+    #[serde(default)]
+    pub sky_moon: bool,
     /// Rides the eye this far above the ocean surface at the waypoint's own
     /// ground track, instead of using the waypoint's radius. A waterline
     /// diagnostic authored as a fixed radius stops framing the waterline the
@@ -430,6 +439,8 @@ scenarios! {
     "low_pass_bands" => "../scenarios/low_pass_bands.json",
     "tour_mountains" => "../scenarios/tour_mountains.json",
     "biome_boundary_overhead" => "../scenarios/biome_boundary_overhead.json",
+    "moonlight_night" => "../scenarios/moonlight_night.json",
+    "moonlight_sea" => "../scenarios/moonlight_sea.json",
     "tour_desert" => "../scenarios/tour_desert.json",
     "tour_coast" => "../scenarios/tour_coast.json",
     "tour_grassland" => "../scenarios/tour_grassland.json",
@@ -752,6 +763,10 @@ impl ScenarioRunner {
 
     pub fn uses_weather_sea(&self) -> bool {
         self.definition.ocean_weather_response
+    }
+
+    pub fn sky_moon(&self) -> bool {
+        self.definition.sky_moon
     }
 
     pub fn storm_approach_seconds(&self) -> Option<f64> {
@@ -1208,7 +1223,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 151);
+        assert_eq!(SCENARIO_NAMES.len(), 153);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

@@ -15,7 +15,9 @@
 //! with planetshine (`MOON_PLANET_SKY_DIRECTION`) faces the planet: earthshine
 //! on the dark side then follows the planet's phase as seen from the moon,
 //! strongest on a crescent. It starts on the first rendered frame near that
-//! view. No lunar or solar eclipse shadowing yet.
+//! view. It also lights the night side (`light`, applied in the shaders by
+//! `surface_moonlight`): by how much of its disc is lit, with the opposition
+//! surge at full. No lunar or solar eclipse shadowing yet.
 use super::*;
 use glam::{DQuat, DVec3};
 
@@ -27,8 +29,37 @@ const MOON_DISTANCE_METERS: f64 = 40_000_000.0;
 /// geometry (planet albedo 0.3, planet radius / distance 0.1) is ~0.3%. At
 /// the game's fixed night exposure either is black, so this lifts it to
 /// ~0.6%: the dark limb is just visible on a dark night, as to an adapted
-/// eye. Moonlight on the planet itself is not modelled.
+/// eye.
 const SKY_EARTHSHINE_EXTRA_GAIN: f32 = 5.0;
+/// Moonlight on the ground at full moon, as a share of the sunlight on the
+/// same ground. The physical figure for this moon (albedo ~0.12, radius /
+/// distance 0.027) is about 6e-5, which at the game's fixed exposure is black;
+/// Earth's is 2.5e-6. Night vision adapts by thousands of times, and this is
+/// the light the dark-adapted eye is given instead: enough to read the land
+/// and sea by, dim and cool. The shaders apply it only once the local sun is
+/// down (`surface_moonlight`), since by day real moonlight is nothing.
+const MOONLIGHT_FULL_MOON_SHARE_OF_SUNLIGHT: f64 = 0.3;
+/// `MOONLIGHT_FULL_MOON_SHARE_OF_SUNLIGHT`, or `PLANET_MOONLIGHT=<share>`
+/// to try another level without a rebuild (0 turns moonlight off).
+fn full_moon_share_of_sunlight() -> f64 {
+    static SHARE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *SHARE.get_or_init(|| {
+        std::env::var("PLANET_MOONLIGHT")
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|share| share.is_finite() && *share >= 0.0)
+            .unwrap_or(MOONLIGHT_FULL_MOON_SHARE_OF_SUNLIGHT)
+    })
+}
+
+/// The opposition surge: a full moon is brighter than its lit area alone
+/// gives, because head-on the regolith's grains hide their own shadows and
+/// light scatters coherently back the way it came. Earth's moon gains about
+/// 40% over the last few degrees of phase angle.
+const OPPOSITION_SURGE: f64 = 0.4;
+/// Phase angle over which the surge falls away (e-fold), about 6 degrees: on
+/// a 26.5-day month that is roughly a day either side of full.
+const OPPOSITION_SURGE_RADIANS: f64 = 0.1;
 /// Where the moon is placed on the first frame: this far above the horizon.
 const PLACEMENT_ELEVATION_DEGREES: f64 = 20.0;
 
@@ -150,23 +181,13 @@ impl SkyMoon {
         }
         let sun_local = planet::planet_local_vector(state.sun_direction, planet_rotation_radians);
         let orbit_angle = orbit_angle_radians(planet_rotation_time);
-        let orbit = *self.orbit.get_or_insert_with(|| {
-            let (position, rotation) = place(camera_local, forward_local, sun_local);
-            let orbit = Orbit::new(
-                planet::planet_world_vector(position, planet_rotation_radians),
-                DQuat::from_rotation_y(planet_rotation_radians) * rotation,
-                orbit_angle,
-            );
-            tracing::info!(
-                target: "planet::startup",
-                moon_direction = ?orbit.start_position.normalize().to_array(),
-                inclination_degrees = orbit.normal.dot(DVec3::Y).clamp(-1.0, 1.0).acos().to_degrees(),
-                period_days = orbital_period_days(),
-                lit_fraction = lit_fraction(position, camera_local, sun_local),
-                "sky moon placed"
-            );
-            orbit
-        });
+        let orbit = self.orbit(
+            camera_local,
+            forward_local,
+            sun_local,
+            planet_rotation_radians,
+            orbit_angle,
+        );
         let (origin_world, rotation_world) = orbit.at(orbit_angle);
         let origin = planet::planet_local_vector(origin_world, planet_rotation_radians);
         let rotation = DQuat::from_rotation_y(-planet_rotation_radians) * rotation_world;
@@ -263,6 +284,65 @@ impl SkyMoon {
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
+    /// The orbit, placed near the view on the first call.
+    fn orbit(
+        &mut self,
+        camera_local: DVec3,
+        forward_local: DVec3,
+        sun_local: DVec3,
+        planet_rotation_radians: f64,
+        orbit_angle: f64,
+    ) -> Orbit {
+        *self.orbit.get_or_insert_with(|| {
+            let (position, rotation) = place(camera_local, forward_local, sun_local);
+            let orbit = Orbit::new(
+                planet::planet_world_vector(position, planet_rotation_radians),
+                DQuat::from_rotation_y(planet_rotation_radians) * rotation,
+                orbit_angle,
+            );
+            tracing::info!(
+                target: "planet::startup",
+                moon_direction = ?orbit.start_position.normalize().to_array(),
+                inclination_degrees = orbit.normal.dot(DVec3::Y).clamp(-1.0, 1.0).acos().to_degrees(),
+                period_days = orbital_period_days(),
+                lit_fraction = lit_fraction(position, camera_local, sun_local),
+                "sky moon placed"
+            );
+            orbit
+        })
+    }
+
+    /// Where the moon is from the camera (planet frame) and how much light it
+    /// sends, as a share of sunlight (`moonlight`). Places the orbit if this
+    /// is the first call, so it agrees with the moon `prepare` then draws.
+    pub(super) fn light(
+        &mut self,
+        sun_direction: DVec3,
+        camera_local: DVec3,
+        forward_local: DVec3,
+        planet_rotation_radians: f64,
+        planet_rotation_time: f64,
+    ) -> (DVec3, f32) {
+        let sun_local = planet::planet_local_vector(sun_direction, planet_rotation_radians);
+        let orbit_angle = orbit_angle_radians(planet_rotation_time);
+        let orbit = self.orbit(
+            camera_local,
+            forward_local,
+            sun_local,
+            planet_rotation_radians,
+            orbit_angle,
+        );
+        let origin = planet::planet_local_vector(orbit.at(orbit_angle).0, planet_rotation_radians);
+        let direction = (origin - camera_local).normalize();
+        if !night_can_be_in_view(camera_local, sun_local) {
+            // Zero switches every moonlight term off before it does any work.
+            return (direction, 0.0);
+        }
+        let strength = full_moon_share_of_sunlight()
+            * moon_phase_brightness(phase_angle_radians(origin, camera_local, sun_local));
+        (direction, strength as f32)
+    }
+
     /// Renders the moon offscreen; before the main scene pass.
     pub(super) fn encode(
         &mut self,
@@ -357,6 +437,46 @@ fn lit_fraction(moon: DVec3, camera: DVec3, sun: DVec3) -> f64 {
     0.5 * (1.0 + to_camera.dot(sun.normalize()))
 }
 
+/// Above the highest summit the shaders can draw (186.7km), so no peak
+/// beyond the camera's horizon is missed by `night_can_be_in_view`.
+const TALLEST_TERRAIN_METERS: f64 = 200_000.0;
+
+/// Whether any ground the camera can see has the sun below its horizon, the
+/// only place moonlight is applied (`surface_moonlight_share`). Ground at an
+/// angle theta round the planet from the camera has the sun at most theta
+/// lower than the camera does, and nothing farther round than the camera's
+/// horizon plus the tallest peak's can be seen. By day this is false and the
+/// moonlight costs nothing.
+fn night_can_be_in_view(camera: DVec3, sun: DVec3) -> bool {
+    let radius = body::PLANET.radius_meters;
+    let camera_radius = camera.length().max(radius);
+    let reach =
+        (radius / camera_radius).acos() + (radius / (radius + TALLEST_TERRAIN_METERS)).acos();
+    let sun_elevation = camera
+        .normalize()
+        .dot(sun.normalize())
+        .clamp(-1.0, 1.0)
+        .asin();
+    sun_elevation < reach
+}
+
+/// Sun-moon-observer angle: 0 at full moon, pi at new.
+fn phase_angle_radians(moon: DVec3, camera: DVec3, sun: DVec3) -> f64 {
+    (camera - moon)
+        .normalize()
+        .dot(sun.normalize())
+        .clamp(-1.0, 1.0)
+        .acos()
+}
+
+/// The moon's light relative to full moon (1 at full, 0 at new): the share of
+/// the disc that is lit, raised near full by the opposition surge.
+fn moon_phase_brightness(phase_angle: f64) -> f64 {
+    let lit = 0.5 * (1.0 + phase_angle.cos());
+    let surge = 1.0 + OPPOSITION_SURGE * (-phase_angle / OPPOSITION_SURGE_RADIANS).exp();
+    lit * surge / (1.0 + OPPOSITION_SURGE)
+}
+
 /// Chooses a first-frame position `PLACEMENT_ELEVATION_DEGREES` above the
 /// horizon near the view direction, preferring the best-lit of a few
 /// azimuths that stay in view, and turns the moon so the planet stands where
@@ -429,6 +549,55 @@ mod tests {
         // Prograde: angular momentum along the spin axis, like the planet.
         let (ahead, _) = orbit.at(1.01);
         assert!(start.cross(ahead - start).dot(DVec3::Y) > 0.0);
+    }
+
+    #[test]
+    fn moonlight_follows_the_lit_disc_with_a_surge_at_full() {
+        assert!((moon_phase_brightness(0.0) - 1.0).abs() < 1e-12);
+        assert!(moon_phase_brightness(std::f64::consts::PI).abs() < 1e-12);
+        // Waning: never brighter further from full.
+        let mut last = 1.0;
+        for step in 1..=180 {
+            let brightness = moon_phase_brightness(f64::from(step).to_radians());
+            assert!(brightness <= last + 1e-12);
+            last = brightness;
+        }
+        // Away from full it is the lit share alone, scaled to full = 1.
+        let quarter = moon_phase_brightness(std::f64::consts::FRAC_PI_2);
+        assert!(
+            (quarter - 0.5 / (1.0 + OPPOSITION_SURGE)).abs() < 1e-6,
+            "{quarter}"
+        );
+        // The surge is the extra at full over what the lit share predicts.
+        let near_full = moon_phase_brightness(0.4) * (1.0 + OPPOSITION_SURGE);
+        let lit_near_full = 0.5 * (1.0 + 0.4_f64.cos());
+        assert!((near_full / lit_near_full - 1.0) < 0.01);
+        // Phase angle from geometry: sun behind the camera is full.
+        let camera = DVec3::X * 4_000_000.0;
+        let moon = camera + DVec3::Z * MOON_DISTANCE_METERS;
+        assert!(phase_angle_radians(moon, camera, -DVec3::Z).abs() < 1e-9);
+    }
+
+    #[test]
+    fn moonlight_is_skipped_only_when_no_ground_in_view_can_be_dark() {
+        let radius = body::PLANET.radius_meters;
+        let up = DVec3::Y;
+        let sun_at = |degrees: f64| {
+            let angle = degrees.to_radians();
+            DVec3::new(angle.cos(), angle.sin(), 0.0)
+        };
+        let ground = up * (radius + 2.0);
+        // Midday, and still with the sun high: nothing in view is dark.
+        assert!(!night_can_be_in_view(ground, sun_at(60.0)));
+        assert!(!night_can_be_in_view(ground, sun_at(25.0)));
+        // A distant peak can be in its night while the sun is still up here.
+        assert!(night_can_be_in_view(ground, sun_at(10.0)));
+        assert!(night_can_be_in_view(ground, sun_at(-30.0)));
+        // From three radii out the eye sees 70.5 degrees round the planet,
+        // and peaks past that: the terminator is in view unless the sun is
+        // almost straight overhead.
+        assert!(night_can_be_in_view(up * radius * 3.0, sun_at(80.0)));
+        assert!(!night_can_be_in_view(up * radius * 3.0, sun_at(89.0)));
     }
 
     #[test]

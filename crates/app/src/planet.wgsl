@@ -1442,6 +1442,33 @@ fn cloud_shadow_visibility(
     return 1.0 - banded_density * 0.88;
 }
 
+// Moonlight reaching a facet with this normal, cosine included: dimmed by the
+// clouds between it and the moon when ground cloud shadows are on, exactly as
+// the sun is, and otherwise by the camera's own view of the moon through
+// cloud and storm fog, so the land darkens as cloud crosses the moon.
+fn terrain_moonlight(
+    normal: vec3<f32>,
+    surface_direction: vec3<f32>,
+    surface_height: f32,
+    sun_direction: vec3<f32>,
+) -> vec3<f32> {
+    if camera.moonlight.w <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let cosine = max(dot(normal, moon_direction()), 0.0);
+    if cosine <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let light = surface_moonlight(surface_direction, surface_height, sun_direction, 1.0) * cosine;
+    if !TERRAIN_CLOUD_SHADOW_ENABLED {
+        return light * moon_camera_cloud_visibility();
+    }
+    if dot(light, vec3<f32>(1.0)) <= 0.0 {
+        return light;
+    }
+    return light * cloud_shadow_visibility(surface_direction, surface_height, moon_direction());
+}
+
 /// How much of the incident sun a regolith facet sends back, per unit
 /// irradiance. Lambert's cosine for ordinary ground; something quite different
 /// for an airless, dusty one.
@@ -1555,7 +1582,8 @@ fn flat_triangle_lighting(
             * SURFACE_SUNLIGHT_SCALE;
     }
     let diffuse = ambient
-        + sun_transmittance * cloud_visibility * response * SURFACE_SUNLIGHT_SCALE;
+        + sun_transmittance * cloud_visibility * response * SURFACE_SUNLIGHT_SCALE
+        + terrain_moonlight(normal, surface_direction, surface_height, sun_direction);
     var specular = triangle_specular;
     if !use_triangle_specular {
         let view_direction = normalize(view_to_planet(-camera_relative_view_position));
@@ -3081,7 +3109,13 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let terrain_surface_irradiance = terrain_ambient
         + terrain_sun_transmittance * terrain_cloud_visibility
             * terrain_direct_light
-            * SURFACE_SUNLIGHT_SCALE;
+            * SURFACE_SUNLIGHT_SCALE
+        + terrain_moonlight(
+            terrain_lighting_normal,
+            direction,
+            input.surface_height_and_fog_color.x,
+            sun_direction,
+        );
     // Four mipmapped materials blended through a domain-warped triplanar
     // projection: broad and fine, three axes each. The ablation falls back to
     // the flat biome colour.

@@ -363,6 +363,15 @@ struct Camera {
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
     lightning: vec4<f32>,
+    // xyz: direction to the moon (planet frame); w: its light at full night
+    // as a share of sunlight, zero with no moon. See `surface_moonlight`.
+    moonlight: vec4<f32>,
+    // xyz: the moon's view-space direction; w: how much of it the camera sees
+    // through cloud and storm fog (written on the GPU, sun.wgsl).
+    moon_direction_view: vec4<f32>,
+    // rgb: the air's transmittance toward the moon from the ground under the
+    // camera (written on the GPU, sun.wgsl); w: that ground's altitude.
+    moonlight_transmittance: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -2540,6 +2549,70 @@ fn surface_direct_sun_transmittance(
         0.0,
     ).rgb;
     return transmittance * visibility;
+}
+
+// Moonlight is cool to the dark-adapted eye (the Purkinje shift: night
+// vision is rod vision, most sensitive to blue-green), though physically it
+// is sunlight reddened a little by grey regolith. Luminance about 1.
+const MOONLIGHT_TINT: vec3<f32> = vec3<f32>(0.80, 0.93, 1.25);
+// The moon's light is a dark-adapted eye's (sky_moon.rs
+// MOONLIGHT_FULL_MOON_SHARE_OF_SUNLIGHT): it fades out as the local sun comes
+// up to the horizon, full by this solar elevation cosine (-6 degrees, civil
+// twilight) and gone at sunset, by when the sky lights the ground.
+const MOONLIGHT_NIGHT_SUN_COSINE: f32 = -0.1045;
+
+fn moon_direction() -> vec3<f32> {
+    return normalize(camera.moonlight.xyz);
+}
+
+// How much of the moon the camera sees through cloud and storm fog: the sun
+// disc's own test along the moon's line of sight, run on the GPU each frame.
+fn moon_camera_cloud_visibility() -> f32 {
+    return clamp(camera.moon_direction_view.w, 0.0, 1.0);
+}
+
+// The moon's light where nothing is in the way: its phase light
+// (camera.moonlight.w, lit disc plus the full-moon surge) through the sun's
+// air column, read once a frame for the ground under the camera.
+fn moonlight_colour() -> vec3<f32> {
+    return camera.moonlight_transmittance.rgb
+        * MOONLIGHT_TINT
+        * (camera.moonlight.w * SURFACE_SUNLIGHT_SCALE);
+}
+
+// The share of `moonlight_colour` a surface point gets before cloud and its
+// cosine: none by day, and none once the moon is below this point's own
+// planet horizon.
+fn surface_moonlight_share(
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+    sun_direction: vec3<f32>,
+) -> f32 {
+    if camera.moonlight.w <= 0.0 {
+        return 0.0;
+    }
+    let up = normalize(surface_direction);
+    let night = 1.0 - smoothstep(MOONLIGHT_NIGHT_SUN_COSINE, 0.0, dot(up, sun_direction));
+    if night <= 0.0 {
+        return 0.0;
+    }
+    return night * flat_horizon_sun_visibility(surface_altitude_meters, dot(up, moon_direction()));
+}
+
+// Moonlight arriving at a surface point, before its cosine, times
+// `cloud_visibility` (the camera's view of the moon, or a per-fragment cloud
+// shadow where those are on, as for the sun). Zero with no moon.
+fn surface_moonlight(
+    surface_direction: vec3<f32>,
+    surface_altitude_meters: f32,
+    sun_direction: vec3<f32>,
+    cloud_visibility: f32,
+) -> vec3<f32> {
+    let share = surface_moonlight_share(surface_direction, surface_altitude_meters, sun_direction);
+    if share <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    return moonlight_colour() * (share * cloud_visibility);
 }
 
 fn sky_diffuse_irradiance(
@@ -4790,7 +4863,40 @@ fn ocean_lighting_sot(
         + reflected_color_frosted * fresnel * daylight * OCEAN_REFLECTION_SCALE
             * (1.0 - OCEAN_GUST_DULLING * ocean_fft_gust)
         + sun * specular * fresnel
-            * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
+            * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE)
+        + ocean_moonlight(normal, body, fresnel, view_direction, normal_view, roughness);
+}
+
+// The moon on the sea: the water body lit like the sun lights it, and a glint
+// path. Cloud and storm fog over the moon dim both (the camera's view of it,
+// as on land). `body` is the water's albedo as the caller lights it.
+fn ocean_moonlight(
+    normal: vec3<f32>,
+    body: vec3<f32>,
+    fresnel: vec3<f32>,
+    view_direction: vec3<f32>,
+    normal_view: vec3<f32>,
+    roughness: f32,
+) -> vec3<f32> {
+    if camera.moonlight.w <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let moon = surface_moonlight(
+        normal,
+        0.0,
+        normalize(camera.sun_direction.xyz),
+        moon_camera_cloud_visibility(),
+    );
+    let moon_view = normalize(camera.moon_direction_view.xyz);
+    var glint: f32;
+    if roughness >= 0.0 {
+        glint = ocean_sot_specular(normal_view, view_direction, moon_view, roughness);
+    } else {
+        glint = pow(max(dot(normal_view, normalize(moon_view + view_direction)), 0.0), 512.0);
+    }
+    // Moonlight already carries SURFACE_SUNLIGHT_SCALE; the 0.4 is the share
+    // of direct light the body takes, as `ocean_sot_body_light` gives the sun.
+    return moon * (body * 0.4 + fresnel * (glint * OCEAN_SUN_GLINT_SCALE));
 }
 
 fn ocean_lighting(
@@ -4867,5 +4973,7 @@ fn ocean_lighting(
         + sun_transmittance
             * specular
             * fresnel
-            * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE);
+            * (OCEAN_SUN_GLINT_SCALE * SURFACE_SUNLIGHT_SCALE)
+        // Negative roughness: the same narrow glint lobe as the sun's above.
+        + ocean_moonlight(normal, ocean_body_albedo(normal), fresnel, view_direction, normal_view, -1.0);
 }

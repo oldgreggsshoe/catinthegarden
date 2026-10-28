@@ -10,6 +10,9 @@ struct Camera {
     projection: vec4<f32>,
     flat_triangle_options: vec4<f32>,
     lightning: vec4<f32>,
+    moonlight: vec4<f32>,
+    moon_direction_view: vec4<f32>,
+    moonlight_transmittance: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -73,7 +76,9 @@ struct VertexOutput {
     @location(3) foliage: f32,
     @location(4) @interpolate(flat) shade: f32,
     @location(5) @interpolate(flat) seed: f32,
-    @location(6) @interpolate(flat, first) cloud_visibility: f32,
+    // x: the sun's cloud visibility; y: this tree's share of the moon's
+    // light (`surface_moonlight_share` times its cloud visibility). One slot.
+    @location(6) @interpolate(flat, first) cloud_visibility: vec2<f32>,
     @location(7) @interpolate(flat, first) fog: vec4<f32>,
     @location(8) local_position: vec3<f32>,
     @location(9) @interpolate(flat) sunlight: vec3<f32>,
@@ -397,7 +402,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
         return VertexOutput(
             vec4<f32>(2.0, 2.0, 0.0, 1.0),
             vec3<f32>(0.0), vec3<f32>(0.0), 0.0, 0.0, 0.0, 0.0,
-            1.0, vec4<f32>(0.0), vec3<f32>(0.0),
+            vec2<f32>(1.0, 0.0), vec4<f32>(0.0), vec3<f32>(0.0),
             vec3<f32>(0.0), vec3<f32>(0.0),
         );
     }
@@ -440,6 +445,16 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
     let altitude = length(centre) - PLANET_RADIUS_METERS;
     let sunlight = surface_direct_sun_transmittance(up, altitude, sun_direction);
     let skylight = sky_diffuse_irradiance(up, up, altitude, sun_direction);
+    // The ground's rule (planet.wgsl terrain_moonlight): its own cloud shadow
+    // when those are on, otherwise the camera's view of the moon.
+    var moon_share = surface_moonlight_share(up, altitude, sun_direction);
+    if moon_share > 0.0 {
+        if TERRAIN_CLOUD_SHADOW_ENABLED {
+            moon_share *= cloud_shadow_visibility(up, altitude, moon_direction());
+        } else {
+            moon_share *= moon_camera_cloud_visibility();
+        }
+    }
     return VertexOutput(
         camera.projection_matrix * vec4<f32>(view_position, 1.0),
         world_normal,
@@ -448,7 +463,7 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> Vert
         mesh.foliage,
         shade,
         seed,
-        cloud_visibility,
+        vec2<f32>(cloud_visibility, moon_share),
         fog,
         mesh.position,
         sunlight,
@@ -495,8 +510,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Leaf transmission is sunlight too, not a second sun below the planet.
     let back_scatter = max(dot(normal, -sun_direction), 0.0) * 0.16 * input.foliage;
     let sky_view = 0.5 + 0.5 * clamp(dot(normal, input.up), -1.0, 1.0);
-    let lighting = (input.sunlight * input.cloud_visibility * (direct + back_scatter)
-        + input.skylight * sky_view) * input.shade;
+    var moon = vec3<f32>(0.0);
+    if input.cloud_visibility.y > 0.0 {
+        let moon_direction = moon_direction();
+        moon = moonlight_colour() * input.cloud_visibility.y
+            * (max(dot(normal, moon_direction), 0.0)
+                + max(dot(normal, -moon_direction), 0.0) * 0.16 * input.foliage);
+    }
+    let lighting = (input.sunlight * input.cloud_visibility.x * (direct + back_scatter)
+        + input.skylight * sky_view + moon) * input.shade;
     let broadleaf = srgb_to_linear(vec3<f32>(0.26, 0.36, 0.20));
     let conifer = srgb_to_linear(vec3<f32>(0.21, 0.31, 0.21));
     let foliage = mix(broadleaf, conifer, input.species_kind)

@@ -3077,7 +3077,32 @@ pub struct CameraUniform {
     pub flat_triangle_options: [f32; 4],
     /// View-space flash direction and fog brightness (zero between strikes).
     pub lightning: [f32; 4],
+    /// xyz: unit direction to the moon from the camera, planet frame; w: its
+    /// light at full night, as a share of sunlight (`sky_moon::moonlight`).
+    /// Zero w means no moon in the sky.
+    pub moonlight: [f32; 4],
+    /// xyz: the same direction in view space; w: how much of the moon the
+    /// camera can see through cloud and storm fog, 0-1.
+    pub moon_direction_view: [f32; 4],
+    /// rgb: the air's transmittance along the moon's line of sight at the
+    /// ground under the camera; w: that ground's altitude, where it is
+    /// sampled. The CPU writes 1 and the altitude.
+    ///
+    /// `moon_direction_view.w` and these rgb are overwritten on the GPU before
+    /// the scene is drawn (`sun.wgsl cs_sun_visibility`, copied in by
+    /// `SunRenderer::encode_visibility`): one fetch a frame instead of one
+    /// per lit pixel and tree vertex.
+    pub moonlight_transmittance: [f32; 4],
 }
+
+/// Byte offset of `moon_direction_view.w`, the first of the four floats the
+/// GPU writes into the camera buffer: it and `moonlight_transmittance.rgb`.
+pub const CAMERA_MOON_VISIBILITY_OFFSET: u64 =
+    (std::mem::offset_of!(CameraUniform, moon_direction_view) + 3 * size_of::<f32>()) as u64;
+const _: () = assert!(
+    std::mem::offset_of!(CameraUniform, moonlight_transmittance)
+        == std::mem::offset_of!(CameraUniform, moon_direction_view) + 4 * size_of::<f32>()
+);
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3227,7 +3252,28 @@ impl CameraUniform {
             ],
             flat_triangle_options: [flat_triangle_outline_mode as u32 as f32, 0.0, 0.0, 0.0],
             lightning: [0.0; 4],
+            moonlight: [0.0; 4],
+            moon_direction_view: [0.0, 0.0, 0.0, 1.0],
+            moonlight_transmittance: [1.0, 1.0, 1.0, surface_height_meters.max(0.0) as f32],
         }
+    }
+
+    /// Lights the scene by a moon in `direction` (planet frame, from the
+    /// camera) at `strength`, a share of sunlight; see `sky_moon::moonlight`.
+    pub fn set_moonlight(&mut self, direction: DVec3, strength: f32) {
+        let direction = direction.normalize_or_zero();
+        let along = |basis: [f32; 4]| {
+            let basis = Vec3::new(basis[0], basis[1], basis[2]).as_dvec3();
+            direction.dot(basis) as f32
+        };
+        let view = [
+            along(self.camera_right),
+            along(self.camera_up),
+            -along(self.camera_forward),
+        ];
+        let direction = direction.as_vec3();
+        self.moonlight = [direction.x, direction.y, direction.z, strength.max(0.0)];
+        self.moon_direction_view = [view[0], view[1], view[2], self.moon_direction_view[3]];
     }
 }
 

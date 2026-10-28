@@ -122,3 +122,38 @@ The blocky patches I reproduced are mostly lake-labelled areas in the mountain t
 Cost (High 1280x800, alternated with the old build, 3 rounds): forest 51.0 -> 54.3 ms, mountains 28.4 -> 29.1, summit 27.8 -> 29.0. My first version cost +28 ms in the forest; per-vertex and hashed-noise versions were also slower, so I rejected them.
 
 Check it with the new top-down scenario `biome_boundary_overhead` (14 views): before test-runs/biome_boundary_overhead/1793131548-1632962, after 1793135759-1648582. 782 tests pass, with the same 6 old failures. Not seen live. Tiny single-cell (3 km) patches now often shrink to blobs or vanish. Committed and pushed.
+
+---- 28 October: moonlight ----
+
+The moon now lights the night side: the ground, the trees, and the sea, which gets a moonlit path toward the moon. Its brightness follows the phase, with the extra lift at full moon, and cloud or storm over the moon darkens it. Committed and pushed; I haven't watched it in the live game, only in test captures.
+
+How it works:
+- Phase: brightness follows how much of the disc is lit. Close to full it gets an extra boost, worth 40% at exactly full and fading over about a day either side. That boost is the opposition effect: head-on, the dust grains hide their own shadows. A quarter moon gives about a third of full-moon light, a thin crescent about a twentieth.
+- Level: at full moon it is 0.3 of sunlight. The real figure (about 0.00006) renders as pure black at the game's fixed exposure, so this stands in for eyes adapted to the dark. In the test view, front-lit moonlit ground comes out at about a tenth of its daytime brightness. The light has a slight blue tint, which is how moonlight looks to night vision. It only applies once the local sun is below the horizon, fully from about 6° below. It dims and reddens near the horizon through the same air the sun's light passes through, and disappears when the moon sets.
+- Cloud: each frame the game runs the same check that hides the sun's disc behind cloud and storm fog, aimed at the moon instead. When cloud crosses the moon, the moonlit land and sea dim with it. With ground cloud shadows switched on (PLANET_CLOUD_SHADOW=1), moonlight gets per-spot cloud shadows exactly as sunlight does.
+
+Results from two new test scenes, moonlight_night and moonlight_sea (they now fail automatically if the moonlight disappears). Brightness is the average of the lower half of the frame, 0 = black, 1 = white:
+
+| View | Brightness |
+|---|---|
+| No moon | 0.0004 |
+| Full moon, facing away from the moon | 0.107 |
+| Full moon, looking toward the moon | 0.024 |
+| Crescent | 0.0065 |
+| Sea, with the moon path | 0.033 |
+
+- Forcing a full storm takes moonlit ground from 24.6/255 to 0.1/255.
+- In a 4-hour weather run, moonlight dimmed about 10x as the storm built, and the moon's disc faded with it.
+- I didn't manage to catch a cloud edge passing in front of the moon. That part reuses the sun's check without changes.
+
+Cost: about +0.7 ms per frame at night (54.0 → 54.7 ms in the forest at 1280×800). It's nothing by day, because moonlight switches off whenever no ground in view can be in night.
+
+Not done:
+- No lunar eclipses: the moon is still drawn lit when it passes through the planet's shadow.
+- Hills don't cast moon shadows.
+- Ships, villages, roads and clouds aren't moonlit yet.
+- With the optional FFT sea, moonlit water is quite bright blue, because that sea's water colour is bright to begin with.
+
+Tests: 784 pass, the same 6 failures as before.
+
+To try other levels without a rebuild, set PLANET_MOONLIGHT (0.3 is the default, 0 turns moonlight off).

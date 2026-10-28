@@ -2404,7 +2404,13 @@ impl State {
                 &mut state,
                 &camera_bind_group_layout,
             ));
-        } else if sky_moon::enabled(state.scenario.is_some()) && body::active() == body::PLANET {
+        } else if sky_moon::enabled(
+            state
+                .scenario
+                .as_ref()
+                .is_some_and(|scenario| !scenario.sky_moon()),
+        ) && body::active() == body::PLANET
+        {
             state.sky_moon_pending_layout = Some(camera_bind_group_layout.clone());
         }
         state
@@ -6270,10 +6276,22 @@ impl State {
         // instant the eye actually goes under rather than at sea level.
         camera_uniform.flat_triangle_options[3] =
             f32::from(camera_sea_level_altitude_meters < camera_surface_height_meters);
+        let moon_active = !solid_color_screen && subsystem_enabled("moon");
+        if moon_active && let Some(mut moon) = self.sky_moon.take() {
+            let (direction, strength) = moon.light(
+                self.sun_direction,
+                camera_planet_frame_position,
+                camera_planet_frame_direction,
+                planet_rotation_radians,
+                planet_rotation_time,
+            );
+            camera_uniform.set_moonlight(direction, strength);
+            self.sky_moon = Some(moon);
+        }
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         if let Some(mut moon) = self.sky_moon.take() {
-            let active = !solid_color_screen && subsystem_enabled("moon");
+            let active = moon_active;
             moon.prepare(
                 self,
                 &camera_uniform,
@@ -6537,6 +6555,7 @@ impl State {
                 &self.camera_bind_group,
                 self.weather_clouds.field_bind_group(),
                 self.terrain.sun_visibility_buffer(),
+                &self.camera_buffer,
             );
         }
         if !tunnel_enclosed && let Some(moon) = &mut self.sky_moon {

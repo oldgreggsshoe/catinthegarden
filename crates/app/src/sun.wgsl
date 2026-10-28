@@ -50,6 +50,11 @@ struct Camera {
     sun_direction: vec4<f32>,
     sun_direction_view: vec4<f32>,
     projection: vec4<f32>,
+    flat_triangle_options: vec4<f32>,
+    lightning: vec4<f32>,
+    moonlight: vec4<f32>,
+    moon_direction_view: vec4<f32>,
+    moonlight_transmittance: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -82,7 +87,11 @@ var atmosphere_physical_sampler: sampler;
 // How much of the sun is visible from the camera, for the scene's caustics
 // (shared_planet.wgsl sun_visible_fraction). Written by cs_sun_visibility.
 struct SunVisibilityOutput {
+    // x: the sun's visibility; y: the moon's; zw and moon.x: the air's
+    // transmittance toward the moon (rgb), so y and the rgb sit together for
+    // the host to copy into the camera uniform in one piece.
     value: vec4<f32>,
+    moon: vec4<f32>,
 }
 
 @group(2) @binding(8)
@@ -192,16 +201,33 @@ fn storm_sun_fog_visibility(ray_view: vec3<f32>) -> f32 {
 }
 
 // The same test that hides the disc and its glare, run once per frame before
-// the scene so the caustics can fade with the sun they focus.
+// the scene so the caustics can fade with the sun they focus. The moon gets
+// the identical test along its own line of sight (y), so its light goes as
+// cloud and storm fog cover it, just as the sun's disc does; the host copies
+// y into the camera uniform (`moon_direction_view.w`).
 @compute @workgroup_size(1)
 fn cs_sun_visibility() {
     let sun = normalize(camera.sun_direction_view.xyz);
+    var moon_visibility = 1.0;
+    var moon_transmittance = vec3<f32>(1.0);
+    if camera.moonlight.w > 0.0 {
+        let moon = normalize(camera.moon_direction_view.xyz);
+        moon_visibility = cloud_sun_visibility(moon) * storm_sun_fog_visibility(moon);
+        // The same LUT the sun's light on the ground is read from, once for
+        // the whole view: the moon is in one direction, and across what the
+        // eye can see from the ground its elevation barely changes.
+        moon_transmittance = sampled_sun_transmittance(
+            camera.moonlight_transmittance.w,
+            max(dot(normalize(camera.camera_planet_direction_view_altitude.xyz), moon), 0.0),
+        );
+    }
     sun_visibility_output.value = vec4<f32>(
         cloud_sun_visibility(sun) * storm_sun_fog_visibility(sun),
-        0.0,
-        0.0,
-        0.0,
+        moon_visibility,
+        moon_transmittance.x,
+        moon_transmittance.y,
     );
+    sun_visibility_output.moon = vec4<f32>(moon_transmittance.z, 0.0, 0.0, 0.0);
 }
 
 fn cloud_sun_visibility(ray_view: vec3<f32>) -> f32 {

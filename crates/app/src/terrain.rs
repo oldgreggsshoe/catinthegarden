@@ -390,12 +390,10 @@ pub struct NearFieldSources {
 pub struct NearFieldWindow {
     /// `NEAR_FIELD_WINDOW_SAMPLES` square, row-major.
     pub heights_meters: Vec<f32>,
-    /// Categorical owner resampled at the same coordinates as height.
-    pub biome_ids: Vec<u8>,
     /// Bilinearly resampled material moisture, in the baked unorm encoding.
     pub moisture: Vec<u8>,
-    /// What the GPU's biome texture holds instead of `biome_ids`: see
-    /// [`near_field_biome_lattice`].
+    /// The categorical owner, as the GPU's biome texture holds it: the
+    /// window's owners on the dense lattice (see [`near_field_biome_lattice`]).
     pub biome_lattice: Vec<u8>,
 }
 
@@ -2765,7 +2763,6 @@ impl TerrainRenderer {
         let biome_lattice = self.near_field_biome_lattice(key, &biome_ids);
         Some(NearFieldWindow {
             heights_meters,
-            biome_ids,
             moisture,
             biome_lattice,
         })

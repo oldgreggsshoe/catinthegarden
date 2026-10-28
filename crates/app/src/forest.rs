@@ -107,7 +107,12 @@ fn forest_shader_source() -> String {
     // These four self-contained helpers need only the physical LUT bindings.
     let shared = include_str!("shared_planet.wgsl");
     let mut lighting = String::new();
-    for name in ["SURFACE_SUNLIGHT_SCALE", "SKY_DIFFUSE_LIGHT_SCALE"] {
+    for name in [
+        "SURFACE_SUNLIGHT_SCALE",
+        "SKY_DIFFUSE_LIGHT_SCALE",
+        "MOONLIGHT_TINT",
+        "MOONLIGHT_NIGHT_SUN_COSINE",
+    ] {
         let line = shared
             .lines()
             .find(|line| line.starts_with(&format!("const {name}:")))
@@ -120,6 +125,10 @@ fn forest_shader_source() -> String {
         "surface_direct_sun_transmittance",
         "sky_diffuse_irradiance",
         "perceptual_physical_sky_radiance",
+        "moon_direction",
+        "moon_camera_cloud_visibility",
+        "moonlight_colour",
+        "surface_moonlight_share",
     ] {
         let start = shared
             .find(&format!("fn {name}("))

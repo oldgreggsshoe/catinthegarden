@@ -1,0 +1,56 @@
+{
+  "name": "moonlight_sea",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 3.0,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "sky_moon": true,
+  "screenshot_times_seconds": [
+    3.0
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        865466.1620482058,
+        3356905.157716179,
+        -1995734.4749359982
+      ],
+      "look_at": [
+        865918.0698517612,
+        3357170.4445599476,
+        -1994882.769454268
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        -0.5223624618272027,
+        -0.6205710363773539,
+        -0.584832495064494
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1,
+    "lower_half_luminance_bounds": [
+      [
+        0.008,
+        0.08
+      ]
+    ]
+  }
+}

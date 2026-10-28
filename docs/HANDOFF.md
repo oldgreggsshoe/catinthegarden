@@ -10,7 +10,15 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 27 October: organic biome boundaries.** Grass/forest/rock/snow/desert
+**Current phase, 28 October: moonlight.** The sky moon now lights the night side:
+land (both shading paths), trees and sea (body plus a glint path) get a moon term whose
+strength is the lit share of the disc with a 40% opposition surge at full
+(`sky_moon::moon_phase_brightness`), 0.3 of sunlight at full (`PLANET_MOONLIGHT=` to
+retune), applied only where the local sun is down. Cloud and storm fog over the moon dim
+it by the sun disc's own test along the moon's line of sight (or per-fragment cloud
+shadow with `PLANET_CLOUD_SHADOW=1`). Night +0.7ms, day 0. See the 28 October section.
+
+**Previous phase, 27 October: organic biome boundaries.** Grass/forest/rock/snow/desert
 boundaries were 3-6km soft squares (bake grid copied nearest; runtime blended only the 4
 nearest texels). `sample_biome_blend` now reads its 4 owners at a position pushed by six
 world-space sine waves and cross-fades the dominant one; open-ocean share keeps the old
@@ -14069,3 +14077,74 @@ window copied those owners nearest again, at finer texels.
 - 43 shader validation checks, new lattice-layout mirror test; full app 782 pass / same
   6 pre-existing failures / 72 ignored. Release built. Not seen live; single-cell (3km)
   islands now often shrink to blobs or vanish. Flat-triangle mode is unchanged.
+
+## Moonlight (28 October)
+
+User: moonlight at night, its intensity following how much of the moon's disc is lit,
+with extra brightness at full moon (the opposition effect), shadowed by cloud the way
+sunlight is obscured.
+
+- CPU (`sky_moon.rs`): `SkyMoon::light` returns the moon's direction from the camera
+  and its strength. The orbit is placed by whichever of `light`/`prepare` runs first.
+  - Strength is `MOONLIGHT_FULL_MOON_SHARE_OF_SUNLIGHT` (0.3) x
+    `moon_phase_brightness`.
+  - Phase brightness is lit fraction (1 + cos a)/2 x (1 + 0.4 exp(-a/0.1 rad)),
+    normalised to 1 at full. Quarter moon is 0.36 of full and the surge lasts about a day
+    either side of full on the 26.4-day month.
+  - 0.3 is a dark-adaptation gain, not physics (this moon gives ~6e-5 of sunlight). With
+    the fixed exposure and ACES toe it renders front-lit full-moon ground at ~0.11
+    luminance, about 1/10 of the frame's daylight look.
+  - `night_can_be_in_view` zeroes the strength when no ground in view (horizon plus a
+    200km peak) can have the sun below its horizon, so daytime costs nothing.
+- Uniform (`CameraUniform`, appended):
+  - `moonlight`: direction plus strength.
+  - `moon_direction_view`: view direction; w = cloud visibility.
+  - `moonlight_transmittance`: rgb = air transmittance toward the moon from the ground
+    under the camera; w = that ground's altitude.
+  - `moon_direction_view.w` and the rgb are written on the GPU. `sun.wgsl
+    cs_sun_visibility` runs the sun disc's own cloud + storm-fog test along the moon ray
+    and samples the transmittance LUT once. `SunRenderer::encode_visibility` copies 16
+    bytes into the camera buffer (offset `CAMERA_MOON_VISIBILITY_OFFSET`; a const assert
+    pins the adjacency).
+  - Shaders that light by the moon declare the longer Camera struct: shared_planet,
+    forest, sun. Shorter declarations elsewhere are unaffected.
+- Shaders (`shared_planet.wgsl`):
+  - `moonlight_colour` is transmittance x `MOONLIGHT_TINT` (cool, Purkinje) x strength
+    x `SURFACE_SUNLIGHT_SCALE`.
+  - `surface_moonlight_share` is night (local sun cosine -0.1045..0, full by civil
+    twilight) x the point's own planet horizon.
+  - Terrain (`terrain_moonlight`, both shading paths) adds share x cloud x cosine to
+    irradiance.
+  - Trees carry the share in the spare lane of the old cloud-visibility slot (no new
+    varying) and get direct light plus leaf back-scatter.
+  - Sea (`ocean_moonlight`, both Gerstner and FFT): body x 0.4 plus a moon glint with the
+    sun's lobe. Cloud is the camera-wide moon visibility, or per-fragment
+    `cloud_shadow_visibility` toward the moon when `PLANET_CLOUD_SHADOW=1` (same switch
+    as the sun).
+- Scenarios. Both use the new `sky_moon` scenario opt-in and the new assertion
+  `lower_half_luminance_bounds`. Both pass with the moon and fail with `PLANET_MOON=0`.
+  - `moonlight_night` (forest_night pose):
+    - Full moon toward the moon 0.024.
+    - Full moon front-lit 0.107.
+    - Crescent front-lit 0.0065.
+    - No moon 0.0004.
+  - `moonlight_sea`: Gerstner moon path 0.033 against 0.0004.
+  - Final runs: `test-runs/moonlight_night/1793206025-1821489`,
+    `test-runs/moonlight_sea/1793206048-1821580`.
+  - The FFT sea also shows the path. Its water albedo (0.03, 0.18, 0.5) makes it much
+    brighter than the land (lower-half 89/255 blue), consistent with its daylight look
+    at 30%.
+- Cloud evidence:
+  - Forced `PLANET_STORM_OVERCAST=1` takes the moonlit ground from 24.6 to 0.1/255.
+  - A 4-hour weather probe at the weather_contrast site dimmed moonlight 10x as storm
+    overcast rose 0.05 -> 0.15, with the moon disc fading alike.
+  - A cloud-shell edge crossing the moon was not captured. That path is the sun disc's
+    shell test, unchanged.
+- Cost, High 1280x800 X11/Immediate, 3 interleaved pairs, p50:
+  - moonlight_night 53.99 -> 54.65ms (+0.68). Per-pixel LUT fetches and a tree varying
+    were removed on the way from +1.05.
+  - forest_performance by day: 55.41 vs 55.41.
+- Not done: lunar eclipse (the moon is drawn lit in the planet's shadow too), moon cast
+  shadows from terrain, moonlight on ships/villages/roads/clouds. Interactive look not
+  seen live. Also removed the unread `NearFieldWindow::biome_ids` left by the 27 October
+  work. Tests: 784 pass / same 6 pre-existing failures / 72 ignored.

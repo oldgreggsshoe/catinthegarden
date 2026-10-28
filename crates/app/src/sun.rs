@@ -13,6 +13,9 @@ pub struct SunRenderer {
 
 /// Bytes of the visibility answer: one vec4<f32>, x the visible fraction.
 const SUN_VISIBILITY_BYTES: u64 = 16;
+/// The whole output: the visibility vec4 and the moon's transmittance
+/// (`SunVisibilityOutput`).
+const SUN_VISIBILITY_OUTPUT_BYTES: u64 = 32;
 
 pub(crate) fn sun_shader_source() -> String {
     format!(
@@ -173,30 +176,60 @@ impl SunRenderer {
         let visibility_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("sun visibility output layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 8,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                entries: &[
+                    // The transmittance LUT, for the moon's light (bindings
+                    // as in the atmosphere group the render pipelines use).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
             });
         let visibility_output = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sun visibility output"),
-            size: SUN_VISIBILITY_BYTES,
+            size: SUN_VISIBILITY_OUTPUT_BYTES,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         let visibility_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("sun visibility output bind group"),
             layout: &visibility_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 8,
-                resource: visibility_output.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(atmosphere.transmittance),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(atmosphere.physical_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: visibility_output.as_entire_binding(),
+                },
+            ],
         });
         let visibility_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -231,13 +264,17 @@ impl SunRenderer {
 
     /// Runs the disc's own visibility test (cloud along the line of sight,
     /// storm fog) once, before the scene, and copies the answer into `target`,
-    /// the shared `sun_visibility_state` uniform the caustics read.
+    /// the shared `sun_visibility_state` uniform the caustics read. The moon's
+    /// answers (its visibility and the air's transmittance toward it) go into
+    /// the camera uniform itself (`camera_buffer`), where every shader that
+    /// lights by the moon already looks.
     pub fn encode_visibility(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         camera_bind_group: &wgpu::BindGroup,
         weather_field_bind_group: &wgpu::BindGroup,
         target: &wgpu::Buffer,
+        camera_buffer: &wgpu::Buffer,
     ) {
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -251,6 +288,16 @@ impl SunRenderer {
             pass.dispatch_workgroups(1, 1, 1);
         }
         encoder.copy_buffer_to_buffer(&self.visibility_output, 0, target, 0, SUN_VISIBILITY_BYTES);
+        // value.y (the moon's visibility) and the moon's transmittance rgb
+        // that follows it, into `moon_direction_view.w` and
+        // `moonlight_transmittance.rgb`, which are laid out the same way.
+        encoder.copy_buffer_to_buffer(
+            &self.visibility_output,
+            size_of::<f32>() as u64,
+            camera_buffer,
+            crate::planet::CAMERA_MOON_VISIBILITY_OFFSET,
+            4 * size_of::<f32>() as u64,
+        );
     }
 
     pub fn resize_depth(&mut self, device: &wgpu::Device, depth_view: &wgpu::TextureView) {
