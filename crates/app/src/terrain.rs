@@ -307,6 +307,9 @@ const TERRAIN_INFO_NEAR_FIELD_BIT: u32 = 1 << 15;
 /// The chunk touches a village path's shaped cells (planet.wgsl vs_main);
 /// the others skip the shaping lookup and its split detail ladder.
 const TERRAIN_INFO_VILLAGE_PATH_BIT: u32 = 1 << 16;
+/// The chunk's footprint reaches a lake level (`lakes.rs`); only these take
+/// the vertex lake lookup.
+const TERRAIN_INFO_LAKE_BIT: u32 = 1 << 17;
 const TERRAIN_DETAIL_FILTER_RATIO: f64 = 0.01;
 
 /// Stop flat topology once its vertex spacing reaches the same continuous
@@ -686,7 +689,7 @@ struct TerrainSettings {
 const TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET: u64 = 48;
 
 impl TerrainSettings {
-    fn from_planet_constants(dense_level: u8, shadow_face_quads: u32) -> Self {
+    fn from_planet_constants(dense_level: u8, shadow_face_quads: u32, lake_face_quads: u32) -> Self {
         Self {
             outmap_height_scale: [
                 crate::body::outmap_height_scale() as f32,
@@ -700,7 +703,13 @@ impl TerrainSettings {
                 0.0,
                 0.0,
             ],
-            outmap_detail: [f32::from(dense_level), shadow_face_quads as f32, 0.0, 0.0],
+            // z: lake face quads (`lakes.rs`), 0 with no lakes.
+            outmap_detail: [
+                f32::from(dense_level),
+                shadow_face_quads as f32,
+                lake_face_quads as f32,
+                0.0,
+            ],
             village_path_frame: [[0.0; 4]; 4],
         }
     }
@@ -933,6 +942,8 @@ pub struct TerrainRenderer {
     village_path_frame: Option<crate::road_network_field::Frame>,
     /// `village_paths::shaped_cells` of the published paths.
     village_path_cells: HashSet<(i32, i32)>,
+    /// Inland lakes (`lakes.rs`), when the outmap has a lake sidecar.
+    lakes: Option<std::sync::Arc<crate::lakes::LakeField>>,
     /// CPU copy of the published path index, so collision sees the same
     /// shaped ground under the paths as the GPU draws.
     village_path_data: Vec<[f32; 4]>,
@@ -1064,6 +1075,11 @@ impl TerrainRenderer {
         shadow_heights: Option<(&wgpu::TextureView, u32)>,
     ) -> Result<Self, TerrainError> {
         let shadow_face_quads = shadow_heights.map_or(0, |(_, quads)| quads);
+        let lake_field = match &source {
+            TerrainSource::Placeholder => None,
+            TerrainSource::Outmap(root) => crate::lakes::LakeField::shared(root),
+        };
+        let lake_textures = crate::lakes::LakeTextures::new(device, queue, lake_field.as_deref());
         let source = match source {
             TerrainSource::Placeholder => TerrainDataSource::Placeholder,
             TerrainSource::Outmap(root) => TerrainDataSource::Outmap(Outmap::open(root)?),
@@ -1112,6 +1128,7 @@ impl TerrainRenderer {
                 contents: bytemuck::bytes_of(&TerrainSettings::from_planet_constants(
                     outmap_dense_level,
                     shadow_face_quads,
+                    lake_field.as_deref().map_or(0, crate::lakes::LakeField::face_quads),
                 )),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -1500,6 +1517,14 @@ impl TerrainRenderer {
                         binding: 22,
                         resource: village_path_buffer.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 23,
+                        resource: wgpu::BindingResource::TextureView(&lake_textures.levels),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 24,
+                        resource: wgpu::BindingResource::TextureView(&lake_textures.land_biomes),
+                    },
                 ],
             })
         });
@@ -1564,6 +1589,7 @@ impl TerrainRenderer {
             village_path_frame: None,
             village_path_data: Vec::new(),
             village_path_cells: HashSet::new(),
+            lakes: lake_field,
             village_parking: Vec::new(),
             road_revision: 0,
             road_cuts: None,
@@ -1816,6 +1842,41 @@ impl TerrainRenderer {
             detail_filter_meters.max(crate::village_paths::SMOOTH_METERS),
         );
         crate::village_paths::shaped_height(height, coarse, shape)
+    }
+
+    fn node_touches_lake(&self, node: QuadtreeNode) -> bool {
+        let Some(lakes) = &self.lakes else {
+            return false;
+        };
+        let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+        CubeFace::from_index(node.face)
+            .is_some_and(|face| lakes.touches(face, [u_min, v_min], [u_max, v_max]))
+    }
+
+    /// The presented water level of the lake owning this point, if any.
+    pub fn lake_level_meters(&self, direction: DVec3) -> Option<f64> {
+        self.lakes.as_ref()?.presented_level_meters(direction)
+    }
+
+    /// The vertex shader's lake lift (planet.wgsl vs_main): a mesh vertex
+    /// under a lake's level is drawn at that level.
+    fn lake_surface_height(&self, direction: DVec3, height: f64, camera_altitude_meters: f64) -> f64 {
+        let Some(lakes) = &self.lakes else {
+            return height;
+        };
+        if self.flat_triangle_experiment || !matches!(self.source, TerrainDataSource::Outmap(_)) {
+            return height;
+        }
+        let level = lakes.level_meters(direction);
+        if level <= crate::lakes::NO_LAKE_THRESHOLD_METERS {
+            return height;
+        }
+        let presented = if level > 0.0 {
+            scaled_outmap_macro_height_meters(level, camera_altitude_meters)
+        } else {
+            level
+        };
+        height.max(presented)
     }
 
     /// Whether any vertex of `node` can fall in a shaped village path cell:
@@ -2745,6 +2806,7 @@ impl TerrainRenderer {
                     }),
                     breakdown.detail_filter_meters,
                 );
+                let height = self.lake_surface_height(direction, height, camera_altitude_meters);
                 let height = self.cut_surface_height(direction, height);
                 Some(direction * (planet_radius_meters() + height))
             };
@@ -3585,6 +3647,10 @@ impl TerrainRenderer {
                         TERRAIN_INFO_VILLAGE_PATH_BIT
                     } else {
                         0
+                    } | if outmap_mode && self.node_touches_lake(render_node.node) {
+                        TERRAIN_INFO_LAKE_BIT
+                    } else {
+                        0
                     },
                     lod_transition: [
                         render_node.transition_progress,
@@ -4156,6 +4222,33 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: None,
+                },
+                count: None,
+            },
+            // Lake water levels and the land biome under the bake's lake tag
+            // (`lakes.rs`): terrain vertices, terrain fragments and the
+            // forest's tree placement all read them.
+            wgpu::BindGroupLayoutEntry {
+                binding: 23,
+                visibility: wgpu::ShaderStages::VERTEX
+                    | wgpu::ShaderStages::FRAGMENT
+                    | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 24,
+                visibility: wgpu::ShaderStages::VERTEX
+                    | wgpu::ShaderStages::FRAGMENT
+                    | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
                 },
                 count: None,
             },
@@ -5623,7 +5716,7 @@ mod tests {
         ActiveNodeIndex, FadingChunk, ForestSurfaceSample,
         LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS, OUTMAP_TILE_GRID_SUBDIVISION_LEVELS,
         SurfaceDetailNode, TERRAIN_INFO_NEAR_FIELD_BIT, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
-        TERRAIN_INFO_VILLAGE_PATH_BIT, TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE,
+        TERRAIN_INFO_LAKE_BIT, TERRAIN_INFO_VILLAGE_PATH_BIT, TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE,
         TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET, TerrainSettings,
         active_node_at_direction, aligned_texture_row_bytes, anchor_radius_excess_meters,
         conservative_outmap_height_bounds, corner_stitch_level_delta, cube_face_uv,
@@ -5838,6 +5931,8 @@ mod tests {
     #[test]
     fn terrain_info_packs_mode_face_and_levels() {
         assert_eq!(TERRAIN_INFO_VILLAGE_PATH_BIT, 1 << 16);
+        assert_eq!(TERRAIN_INFO_LAKE_BIT, 1 << 17);
+        assert!(planet_shader_source().contains("(input.terrain_info & (1u << 17u)) != 0u"));
         assert!(planet_shader_source().contains("(input.terrain_info & (1u << 16u)) != 0u"));
         let packed = pack_terrain_info(true, 5, 18, 7, true, false);
         assert_eq!(packed & 1, 1);
@@ -5866,7 +5961,7 @@ mod tests {
 
     #[test]
     fn shader_reads_outmap_height_scale_from_terrain_settings() {
-        let settings = TerrainSettings::from_planet_constants(4, 0);
+        let settings = TerrainSettings::from_planet_constants(4, 0, 0);
         let shader = planet_shader_source();
         assert_eq!(OUTMAP_TERRAIN_NEAR_HEIGHT_SCALE, 4.0);
         assert_eq!(OUTMAP_TERRAIN_FAR_HEIGHT_SCALE, 4.0);

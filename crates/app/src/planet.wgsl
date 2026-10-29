@@ -72,7 +72,9 @@ struct VertexOutput {
     // Outmap flag and the scaled baked height, packed: the fragment stage
     // needs the height for each octave's headroom and the inter-stage location
     // budget is full.
-    @location(7) outmap_and_macro_height: vec2<f32>,
+    // z: lake water depth at the vertex (presented level minus the drawn
+    // ground, clamped), positive under a lake; its zero is the shoreline.
+    @location(7) outmap_and_macro_height: vec3<f32>,
     @location(8) aerial_transmittance: vec3<f32>,
     // Pack the presentation-mist amount into the otherwise scalar detail
     // location so the final fragment composition can converge to the sky
@@ -1169,6 +1171,25 @@ fn vs_main(input: VertexInput) -> VertexOutput {
             shaped_detail_slope = coarse.slope + keep * (detail.slope - coarse.slope);
         }
     }
+    // Inland lakes (lakes.rs): where a lake's level is above the drawn
+    // ground, this vertex is the lake's surface, flat at that level. The
+    // fragment draws water where the interpolated depth is positive, so the
+    // shoreline is where the detailed ground meets the level.
+    // Only chunks whose footprint reaches a lake level take the lookup
+    // (terrain.rs TERRAIN_INFO_LAKE_BIT).
+    var lake_depth = -1.0e4;
+    if outmap && !flat_triangles && BODY_HAS_OCEAN && (input.terrain_info & (1u << 17u)) != 0u {
+        let lake_level = lake_level_meters(direction);
+        if lake_level > LAKE_NO_LEVEL_THRESHOLD_METERS {
+            let presented_level = scaled_terrain_macro_height(lake_level);
+            lake_depth = presented_level - height;
+            if lake_depth > 0.0 {
+                height = presented_level;
+                shaped_detail_slope = vec3<f32>(0.0);
+            }
+        }
+    }
+    let lake_surface = lake_depth > 0.0;
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
     let biome_id = sample_biome(outmap, source_uv, direction);
@@ -1204,7 +1225,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // Four extra height samples per vertex, on top of the one the displacement
     // already took. The ablation replaces them with the radial direction.
     var normal = direction;
-    if !ABLATE_VERTEX_NORMALS {
+    if !ABLATE_VERTEX_NORMALS && !lake_surface {
         normal = displaced_surface_normal(
             direction,
             source_uv,
@@ -1291,7 +1312,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
             vec2<f32>(0.0),
         ),
         source_uv,
-        vec2<f32>(select(0.0, 1.0, outmap), select(0.0, base_height, outmap)),
+        vec3<f32>(
+            select(0.0, 1.0, outmap),
+            select(0.0, base_height, outmap),
+            // Clamped so a coarse triangle reaching far from a lake still
+            // puts its shoreline between its vertices.
+            clamp(lake_depth, -200.0, 1000.0),
+        ),
         aerial.transmittance,
         vec2<f32>(terrain_detail_meters, fog.amount),
         vec4<f32>(surface_height, fog.color),
@@ -2936,6 +2963,70 @@ fn ocean_fragment_with_transmission_mode(input: OceanVertexOutput, bed: vec4<f32
     return vec4<f32>(misted_water_color, shoreline_alpha);
 }
 
+// Inland lake water (lakes.rs). Still water mirrors the real sky by Fresnel,
+// over a dark body that lets the lit bed show through near the shore; light
+// ripples break the mirror and carry the sun's glint. The local ocean clipmap
+// and its swell are for open sea only.
+const LAKE_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.012, 0.040, 0.050);
+// Depth over which the bed fades from view (presented metres).
+const LAKE_SHALLOW_EFOLD_METERS: f32 = 3.0;
+// Ripple wavelengths (metres) and the steepest slope they reach.
+const LAKE_RIPPLE_WAVELENGTHS: vec3<f32> = vec3<f32>(29.0, 13.0, 7.0);
+const LAKE_RIPPLE_SLOPE: f32 = 0.05;
+const LAKE_GLINT_EXPONENT: f32 = 900.0;
+const LAKE_GLINT_GAIN: f32 = 6.0;
+
+/// The lake surface normal: the radial up tilted by three ripple trains. They
+/// run along fixed planet axes, so they are continuous across chunks; each
+/// fades out once it is under a few pixels across, so they never alias. The
+/// phase is taken as a fraction of the planet radius over the wavelength,
+/// which keeps a few percent of precision in f32 at the shortest one.
+fn lake_ripple_normal(direction: vec3<f32>, view_position: vec3<f32>) -> vec3<f32> {
+    let footprint = length(fwidth(view_position));
+    var normal = direction;
+    let axes = array<vec3<f32>, 3>(
+        normalize(vec3<f32>(0.80, 0.36, 0.48)),
+        normalize(vec3<f32>(-0.42, 0.83, 0.37)),
+        normalize(vec3<f32>(0.33, -0.29, 0.90)),
+    );
+    for (var i = 0u; i < 3u; i += 1u) {
+        let wavelength = LAKE_RIPPLE_WAVELENGTHS[i];
+        let fade = 1.0 - smoothstep(0.1 * wavelength, 0.4 * wavelength, footprint);
+        if fade <= 0.0 {
+            continue;
+        }
+        let along = axes[i] - direction * dot(axes[i], direction);
+        let phase = fract(dot(direction, axes[i]) * (PLANET_RADIUS_METERS / wavelength));
+        normal -= along * (cos(6.2831853 * phase) * LAKE_RIPPLE_SLOPE * fade);
+    }
+    return normalize(normal);
+}
+
+fn lake_water_colour(
+    direction: vec3<f32>,
+    view_position: vec3<f32>,
+    water_height: f32,
+    depth_meters: f32,
+    bed_albedo: vec3<f32>,
+    sun_direction: vec3<f32>,
+) -> vec3<f32> {
+    let normal_view = normalize(planet_to_view(lake_ripple_normal(direction, view_position)));
+    let view_direction = normalize(-view_position);
+    let facing = max(dot(normal_view, view_direction), 0.0);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
+    let sky = storm_overcast_colour(physical_camera_sky_radiance(reflect(-view_direction, normal_view)));
+    let sun_transmittance = surface_direct_sun_transmittance(direction, water_height, sun_direction);
+    let sky_diffuse = sky_diffuse_irradiance(direction, direction, water_height, sun_direction);
+    let light = ocean_sot_body_light(sun_transmittance, sky_diffuse);
+    let bed_visible = exp(-max(depth_meters, 0.0) / LAKE_SHALLOW_EFOLD_METERS);
+    let body = mix(ocean_storm_water_albedo(LAKE_WATER_ALBEDO), bed_albedo * 0.7, bed_visible) * light;
+    let half_vector = normalize(normalize(camera.sun_direction_view.xyz) + view_direction);
+    let glint = sun_transmittance * (1.0 - STORM_SUN_BLOCK * storm_overcast())
+        * SURFACE_SUNLIGHT_SCALE * LAKE_GLINT_GAIN * fresnel
+        * pow(max(dot(normal_view, half_vector), 0.0), LAKE_GLINT_EXPONENT);
+    return mix(body, sky, fresnel) + glint;
+}
+
 fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     let direction = normalize(input.surface_direction);
     let sun_direction = normalize(camera.sun_direction.xyz);
@@ -3019,19 +3110,28 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     if render_debug_mode == RENDER_DEBUG_FLAT_TRIANGLES {
         return flat_triangle_colour(input);
     }
-    // Weighted by the blended lake share, so the shoreline follows the
-    // bilinear field instead of the lake texels' staircase.
     // Organic biome edges (see `sample_biome_blend`). Water ownership above
     // keeps the nearest owner; materials below take the blended dominant one.
-    let biome_blend = sample_biome_blend(
+    var biome_blend = sample_biome_blend(
         input.source_uv,
         biome_edge_push_cells(direction, biome_source_face(input)),
         biome_texels_per_dense_cell(input),
         biome_edge_band(length(input.camera_relative_view_position)),
     );
+    // The bake's `Lake` tag is not water (lakes.rs): paint it as the land
+    // around it. Water comes from the lake levels below.
+    if outmap && any(biome_blend.ids == vec4<u32>(1u)) {
+        biome_blend.ids = select(
+            biome_blend.ids,
+            vec4<u32>(lake_land_biome(direction)),
+            biome_blend.ids == vec4<u32>(1u),
+        );
+    }
     let material_biome_id = select(biome_id, biome_blend_dominant(biome_blend), outmap);
-    let lake_coverage = select(0.0, biome_blend_share(biome_blend, 1u), outmap)
-        * (1.0 - smoothstep(-80.0, 0.0, macro_height_meters));
+    // Lake water wherever the interpolated depth is positive: the shoreline
+    // is exact per pixel, and both sides of it keep their own full lighting.
+    let lake_depth = input.outmap_and_macro_height.z;
+    let lake_coverage = select(0.0, 1.0, outmap && lake_depth > 0.0);
     if lake_coverage > 0.0 {
         if render_debug_mode == RENDER_DEBUG_RAW_ALBEDO {
             return vec4<f32>(mix(
@@ -3040,34 +3140,15 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
                 lake_coverage,
             ), 1.0);
         }
-        // Lakes remain terrain-owned and level. The local ocean clipmap is for
-        // open sea only; small enclosed water must not inherit ocean swell.
-        let surface = flat_ocean_surface(direction);
-        let water_base_height = terrain_height(
-            outmap,
-            input.source_uv,
+        // The drawn surface is the lake's level (vs_main lifts it there).
+        let water_surface_height = input.surface_height_and_fog_color.x;
+        let water_surface_color = lake_water_colour(
             direction,
-            length(input.camera_relative_view_position),
-        );
-        let water_surface_height = water_base_height + surface.vertical_displacement;
-        let sun_transmittance = surface_direct_sun_transmittance(
-            direction,
-            water_surface_height,
-            sun_direction,
-        );
-        let sky_diffuse = sky_diffuse_irradiance(
-            surface.normal,
-            direction,
-            water_surface_height,
-            sun_direction,
-        );
-        let water_surface_color = ocean_lighting(
-            surface.normal,
-            surface.crest_sharpness,
-            0.0,
             input.camera_relative_view_position,
-            sun_transmittance,
-            sky_diffuse,
+            water_surface_height,
+            lake_depth,
+            blended_biome_color(biome_blend),
+            sun_direction,
         );
         if render_debug_mode == RENDER_DEBUG_SURFACE_LIGHTING {
             return vec4<f32>(water_surface_color, 1.0);

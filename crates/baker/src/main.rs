@@ -44,6 +44,27 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     if let Some(index) = arguments
         .iter()
+        .position(|argument| argument == "--derive-lakes")
+    {
+        let output = arguments
+            .get(index + 1)
+            .ok_or("--derive-lakes requires an outmap directory")?;
+        let started = std::time::Instant::now();
+        let report = planet_baker::lakes::derive_lakes(PathBuf::from(output).as_path())?;
+        println!(
+            "derived {} lakes: {} water cells ({:.2}% of {} land cells); {} of {} old lake-tagged cells hold water; {:.1}s",
+            report.lakes,
+            report.water_cells,
+            100.0 * report.water_cells as f64 / report.land_cells.max(1) as f64,
+            report.land_cells,
+            report.water_in_old_lake_cells,
+            report.old_lake_cells,
+            started.elapsed().as_secs_f64()
+        );
+        return Ok(());
+    }
+    if let Some(index) = arguments
+        .iter()
         .position(|argument| argument == "--refine-existing")
     {
         let output = arguments
@@ -272,6 +293,7 @@ fn print_help() {
            --quick                    Small deterministic development bake\n\
            --validate PATH            Validate an existing outmap and exit\n\
            --refine-existing PATH     Expand sparse detail from existing dense macro tiles\n\
+           --derive-lakes PATH        Flood an existing outmap's dense heights into lakes/\n\
            -h, --help                 Show this help"
     );
 }

@@ -191,6 +191,8 @@ pub fn village_biome_is_habitable(biome: BiomeId) -> bool {
 pub(crate) trait VillageSurface {
     fn village_sample(&self, direction: DVec3) -> Option<ForestSurfaceSample>;
     fn village_open_ocean(&self, direction: DVec3) -> Option<bool>;
+    /// The presented level of the lake owning this point (`lakes.rs`), if any.
+    fn village_lake_level(&self, direction: DVec3) -> Option<f64>;
 }
 
 impl VillageSurface for TerrainRenderer {
@@ -199,6 +201,9 @@ impl VillageSurface for TerrainRenderer {
     }
     fn village_open_ocean(&self, direction: DVec3) -> Option<bool> {
         self.dense_level_open_ocean_at(direction)
+    }
+    fn village_lake_level(&self, direction: DVec3) -> Option<f64> {
+        self.lake_level_meters(direction)
     }
 }
 
@@ -272,6 +277,9 @@ fn village_max_site_slope_radians() -> f64 {
 /// `open_ocean_at` is the CPU mirror of the shader's `is_open_ocean_surface`,
 /// so it cannot disagree with what is drawn. Ask it, rather than inventing a
 /// fifth threshold on a fourth field.
+/// Height a village's sited ground must keep above any lake level.
+const VILLAGE_LAKE_CLEARANCE_METERS: f64 = 30.0;
+
 fn village_ground_is_dry(terrain: &impl VillageSurface, direction: DVec3) -> bool {
     terrain.village_open_ocean(direction) == Some(false)
 }
@@ -312,6 +320,14 @@ fn village_footprint_height(
         }
         let sample = terrain.village_sample(direction)?;
         if !village_surface_is_eligible(sample) || !village_ground_is_dry(terrain, direction) {
+            return None;
+        }
+        // Not in a lake, nor on ground so close above one that the drawn
+        // relief (absent from this macro sample) could dip under its level.
+        if terrain
+            .village_lake_level(direction)
+            .is_some_and(|level| level > sample.height_meters - VILLAGE_LAKE_CLEARANCE_METERS)
+        {
             return None;
         }
         lowest = lowest.min(sample.height_meters);

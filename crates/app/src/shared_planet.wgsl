@@ -3518,6 +3518,70 @@ fn face_normal(face: u32) -> vec3<f32> {
     return cross(face_tangent_u(face), face_tangent_v(face));
 }
 
+// Inland lakes (lakes.rs): per cube face, the water level of the lake each
+// point belongs to (stored, unscaled metres; far below any ground where there
+// is none) and the land biome to paint under the bake's `Lake` tag. One
+// gutter sample per side; terrain_settings.outmap_detail.z is the face's
+// quad count, 0 when the outmap has no lakes.
+@group(2) @binding(23)
+var lake_level_faces: texture_2d_array<f32>;
+@group(2) @binding(24)
+var lake_land_biome_faces: texture_2d_array<u32>;
+// Levels below this are the no-lake value blended in (lakes.rs).
+const LAKE_NO_LEVEL_THRESHOLD_METERS: f32 = -50000.0;
+
+/// (face, x, y): the fractional texel of a direction in the lake faces,
+/// gutter included. Same face choice and uv as `direction_to_face_uv`.
+fn lake_face_texel(direction: vec3<f32>) -> vec3<f32> {
+    let a = abs(direction);
+    var face = 4u;
+    if a.x >= a.y && a.x >= a.z {
+        face = select(1u, 0u, direction.x >= 0.0);
+    } else if a.y >= a.z {
+        face = select(3u, 2u, direction.y >= 0.0);
+    } else {
+        face = select(5u, 4u, direction.z >= 0.0);
+    }
+    let along = dot(direction, face_normal(face));
+    let uv = vec2<f32>(
+        dot(direction, face_tangent_u(face)),
+        dot(direction, face_tangent_v(face)),
+    ) / along;
+    let quads = terrain_settings.outmap_detail.z;
+    return vec3<f32>(f32(face), (uv + 1.0) * 0.5 * quads + 1.0);
+}
+
+/// Bilinear lake level at a direction (CPU twin `LakeField::level_meters`);
+/// at or below `LAKE_NO_LEVEL_THRESHOLD_METERS` where there is no lake.
+fn lake_level_meters(direction: vec3<f32>) -> f32 {
+    let quads = terrain_settings.outmap_detail.z;
+    if quads < 0.5 {
+        return -100000.0;
+    }
+    let texel = lake_face_texel(direction);
+    let layer = i32(texel.x);
+    let position = clamp(texel.yz, vec2<f32>(0.0), vec2<f32>(quads + 1.0));
+    let lower = min(floor(position), vec2<f32>(quads));
+    let amount = position - lower;
+    let p = vec2<i32>(lower);
+    let a = textureLoad(lake_level_faces, p, layer, 0).x;
+    let b = textureLoad(lake_level_faces, p + vec2<i32>(1, 0), layer, 0).x;
+    let c = textureLoad(lake_level_faces, p + vec2<i32>(0, 1), layer, 0).x;
+    let d = textureLoad(lake_level_faces, p + vec2<i32>(1, 1), layer, 0).x;
+    return mix(mix(a, b, amount.x), mix(c, d, amount.x), amount.y);
+}
+
+/// The land biome to paint where the bake's biome map says `Lake` (1).
+fn lake_land_biome(direction: vec3<f32>) -> u32 {
+    let quads = terrain_settings.outmap_detail.z;
+    if quads < 0.5 {
+        return 1u;
+    }
+    let texel = lake_face_texel(direction);
+    let p = vec2<i32>(round(clamp(texel.yz, vec2<f32>(0.0), vec2<f32>(quads + 2.0))));
+    return textureLoad(lake_land_biome_faces, p, i32(texel.x), 0).x;
+}
+
 fn face_component(direction: vec3<f32>, face: u32) -> f32 {
     if face <= 1u {
         return abs(direction.x);

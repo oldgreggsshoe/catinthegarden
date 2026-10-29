@@ -143,6 +143,14 @@ fn gpu_forest_generate(
     if road_clears_tree(direction, surface_height) || village_path_clears_tree(direction) {
         return;
     }
+    // No trees standing in a lake (lakes.rs; the terrain draws its water at
+    // this level), nor on the waterline.
+    let lake_level = lake_level_meters(direction);
+    if lake_level > LAKE_NO_LEVEL_THRESHOLD_METERS
+        && scaled_terrain_macro_height(lake_level) > surface_height - 1.0
+    {
+        return;
+    }
     var surface_normal = displaced_surface_normal(
         direction,
         source_uv,

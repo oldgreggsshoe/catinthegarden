@@ -10,7 +10,14 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 29 October: timber villages and pedestrian paths.** Established
+**Current phase, 29 October: inland lakes.** The bake's `Lake` biome tag was not
+water (22% of the planet, much of it sloping far above its own rim), and was drawn
+as blue lumpy ground. `planet-baker --derive-lakes` now floods the dense heights
+into a lake sidecar (15,411 lakes, 2.54% of land) without touching the tiles; the
+terrain lifts vertices under a lake's level to a flat water surface that mirrors the
+sky, and paints the old tags as the surrounding land. See the final dated section.
+
+**Previous phase, 29 October: timber villages and pedestrian paths.** Established
 sites/scatter remain, but houses have timber siding/shingles, windows, doors,
 porches and joinery. The old continuous forest contact floated the replay's
 nearest house ~468m above its drawn triangle; buildings now ground on real raster
@@ -14587,4 +14594,70 @@ Asked: replace the per-vertex segment search with a baked shape atlas.
   `gpu_village_path` pass.
 - What is left of the ~1.2 ms is flagged chunks (most chunks right in a village touch a
   path): their split ladder and lookup. Not pursued further.
+
+## Inland lakes drawn as water (29 October)
+
+Report: lakes look like dry, blue lake beds. Cause: the bake's biome map tags ~5.55M of
+25M dense samples (22% of the planet) `Lake`, and many tagged regions are slopes far
+above their own rim (e.g. one spans raw 2,369-15,156 m against a 6,916 m lowest rim):
+later relief passes moved the ground under an earlier flood. The renderer drew water
+only for lake tags at or below sea level, so every tag above it was blue terrain. The
+photographed spot (lat -0.69, lon -3.98) is such a slope: no basin at all.
+
+- Baker `--derive-lakes DIR` (`crates/baker/src/lakes.rs`, ~16 s): stitches the dense
+  L4 faces (2049^2 each, cross-face neighbours by direction), priority-floods from ocean
+  cells, groups flooded cells into basins, sets each level to
+  `min(spill, floor + MAX_LAKE_DEPTH_METERS 40)` (stored metres; 160 m presented), drops
+  basins under 2 m deep or 4 cells, and carries each level out over 2 rings of dry rim
+  (ground >= level) so the blended level stays flat to the shore. Also writes, for
+  tagged-lake cells, the nearest other land biome. Output `DIR/lakes/`: per face
+  `<face>.level.r32f` and `<face>.land_biome.r8` (2051^2 with gutter) plus
+  `manifest.json` (schema, FNV-1a of the outmap manifest, counts). Tiles, heights,
+  biomes and the outmap manifest are untouched. Active outmap: 15,411 lakes, 427,757
+  water cells, 2.54% of land; only 233,828 of the old tagged cells hold water.
+  Shared contract in `planet_coretypes::lakes`. Tests: basin fills to rim / depth cap /
+  shallow rejected / rim keeps level; old tags take the nearest land biome.
+- App `lakes.rs`: `LakeField::shared(root)` (one copy for terrain and road worker;
+  refuses a sidecar whose checksum doesn't match; `PLANET_LAKES=0` none), CPU
+  `level_meters` bilinear identical to the shader's, `presented_level_meters`,
+  `land_biome`, and `touches(face, uv box)` over a 4/16/64-texel occupancy pyramid.
+  `LakeTextures`: R32Float and R8Uint six-layer arrays at shared bindings 23/24 (~125 MB
+  GPU; 1x1 placeholders without lakes). `terrain_settings.outmap_detail.z` = face quads.
+- Shader: `lake_face_texel` / `lake_level_meters` / `lake_land_biome`
+  (shared_planet.wgsl). vs_main, on chunks flagged `TERRAIN_INFO_LAKE_BIT` (bit 17, set
+  when the node's uv box touches an occupied block): after path shaping and before road
+  cuts, if the presented level is above the drawn height the vertex is lifted to it,
+  takes a radial normal and skips the four normal probes; the depth (level - ground,
+  clamped -200..1000) rides in `outmap_and_macro_height.z`. Fragment: water where the
+  interpolated depth > 0 (exact per-pixel shoreline; both sides fully lit),
+  `lake_water_colour`: Fresnel mirror of the real sky (sky-view LUT), dark lake body
+  with the lit bed showing through over a 3 m e-fold, three fixed-axis ripple trains
+  faded below a few pixels, sun glint. Old `Lake` owners in the biome blend are replaced
+  by `lake_land_biome`. Ocean ownership tests are unchanged (they still see the raw tag).
+- CPU twin: `Terrain::lake_surface_height` in the raster-vertex height (walking, flight
+  and collision stand on the drawn water). GPU forest: no tree where the lake level is
+  within 1 m of the ground. Villages: `VillageSurface::village_lake_level`, footprint
+  points must stay 30 m above any lake level, in both the terrain and the road survey;
+  the survey version now includes the lake sidecar manifest (road precompute results
+  are stale; the live stream has no disk cache).
+- Cost (1280x800 X11/Immediate p50, lakes off/on): `village_paths` 88.429/88.189,
+  87.928/88.097, 88.022/88.038 (noise); looking across a lake (`lake_surface`)
+  40.348/40.384, 40.388/40.779. Before the chunk flag it was +1.3 to +1.5 ms everywhere.
+- Evidence: new scenario `lake_surface` (overview, shore views, the photographed spot;
+  `planet_relative_up`), runs opened, e.g. `test-runs/lake_surface/1793302444-64146`
+  (worktree run, pixel-identical to the main-tree run `1793299631-48377`). Lakes on vs
+  off: `village_paths` and `road_network_parking` pixel-identical; `forest_startup`
+  736 px (a far old-tag blue patch now land); `village_pov` 18 px. The 40 test villages,
+  4,064 path segments and 778 doors are unchanged.
+- Tests: app 809 pass / same 6 failures; baker 57 pass; Vulkan `gpu` filter 27 pass, 3
+  fail (far-road coverage, and two ocean tests that fail identically at plain HEAD).
+- Not done: lakes are walkable surfaces (no swimming, no underwater view); roads are
+  engineered without lakes and may run along a bed under the water, where the road cut
+  would trench the lake (not seen in the test views); old tagged land stays treeless
+  (forest biome rules unchanged); ripples are static; flat-triangle mode keeps its old
+  lake handling; the sidecar must be re-derived after any rebake.
+- Built and measured in a separate worktree (`/home/dad/stuff-lakes`, own target) because
+  a concurrent Codex session was building traffic in the main checkout; its files
+  (traffic*, road_network_render.rs, debug.rs, its main.rs/scenario.rs lines) were not
+  touched or committed.
 

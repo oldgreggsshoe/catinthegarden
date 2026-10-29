@@ -8,6 +8,7 @@ mod birds;
 mod birds_render;
 mod body;
 mod bubbles;
+mod lakes;
 mod debug;
 mod driving;
 mod flock_marker;

@@ -625,3 +625,35 @@ mod tests {
         );
     }
 }
+
+/// Lakes derived from an outmap's dense heights by the baker's
+/// `--derive-lakes`, stored beside the tiles without changing them: per cube
+/// face, the lake water level (`r32float_le`) and the land biome to paint
+/// where the bake tagged `Lake` (`r8uint`), each with a one-sample gutter.
+pub mod lakes {
+    use crate::CubeFace;
+
+    pub const DIRECTORY: &str = "lakes";
+    pub const SCHEMA_VERSION: u32 = 1;
+    /// Stored level where there is no lake: far below any ground, so a
+    /// bilinear blend with it falls below the ground just past the last
+    /// lake sample.
+    pub const NO_LAKE_LEVEL: f32 = -100_000.0;
+    pub const LEVEL_CHANNEL: &str = "level.r32f";
+    pub const LAND_BIOME_CHANNEL: &str = "land_biome.r8";
+
+    pub fn face_file_name(face: CubeFace, channel: &str) -> String {
+        format!("{}.{channel}", face.name())
+    }
+
+    /// Checksum of the outmap manifest a sidecar was derived from; the
+    /// renderer refuses a sidecar from another outmap.
+    pub fn fnv1a(bytes: &[u8]) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in bytes {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{hash:016x}")
+    }
+}

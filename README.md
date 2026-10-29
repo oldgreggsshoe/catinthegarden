@@ -331,6 +331,16 @@ cargo run --release -p planet-baker -- --validate assets/outmaps/test-planet
 
 Baking at full resolution is slow; `--quick` trades resolution for turnaround.
 
+Inland lakes are a separate, fast step over an existing outmap (about 16 s). It
+floods the dense heights from the ocean and writes water levels into
+`assets/outmaps/test-planet/lakes/` without changing the tiles. Rerun it after
+any rebake: the renderer ignores a lake sidecar made from a different outmap,
+and then draws no lakes.
+
+```sh
+cargo run --release -p planet-baker -- --derive-lakes assets/outmaps/test-planet
+```
+
 ## Tests
 
 ```sh
@@ -353,6 +363,7 @@ Rust and WGSL, expect one of them to tell you:
 | `PLANET_MAX_ACTIVE_CHUNKS` | Lift or lower the quadtree leaf budget |
 | `PLANET_FLAT_TRIANGLES` | Flat-triangle experiment (`0`/`false`/`off` disables) |
 | `PLANET_PRESENT_MODE` | `immediate` to bypass vsync when measuring |
+| `PLANET_LAKES` | `0` draws no inland lakes (A/B) |
 | `PLANET_FRAME_LATENCY` | Desired frame latency |
 | `PLANET_SYNC_PRESENT` | GPU-completion fence before presenting; automatic for road experiments, otherwise off; `0`/`1` override |
 

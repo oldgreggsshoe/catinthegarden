@@ -24,6 +24,8 @@ pub struct Surface {
     tiles: HashMap<TileKey, TileData>,
     fine_tiles: RefCell<HashMap<TileKey, Arc<TileData>>>,
     village_sites: RefCell<HashMap<TileKey, Vec<DVec3>>>,
+    /// Lakes (`lakes.rs`): villages are not sited in them.
+    lakes: Option<Arc<crate::lakes::LakeField>>,
 }
 impl Surface {
     pub fn load(root: &Path) -> Result<Self, String> {
@@ -50,6 +52,7 @@ impl Surface {
             tiles,
             fine_tiles: RefCell::new(HashMap::new()),
             village_sites: RefCell::new(HashMap::new()),
+            lakes: crate::lakes::LakeField::shared(root),
         })
     }
     pub fn backbone(&self) -> Result<Backbone, String> {
@@ -60,7 +63,9 @@ impl Surface {
         )
     }
     pub fn version(&self) -> u64 {
-        let bytes = serde_json::to_vec(self.outmap.manifest()).expect("serializable manifest");
+        let mut bytes = serde_json::to_vec(self.outmap.manifest()).expect("serializable manifest");
+        // Lakes move villages, so the network depends on them too.
+        bytes.extend(crate::lakes::LakeField::manifest_bytes(self.outmap.root()));
         let mut hash = 0xcbf29ce484222325_u64;
         for b in bytes
             .iter()
@@ -184,6 +189,9 @@ impl VillageSurface for Surface {
         self.raw(d)
             .ok()
             .map(|(height, biome, _)| terrain::is_open_ocean_sample(height as f32, biome))
+    }
+    fn village_lake_level(&self, d: DVec3) -> Option<f64> {
+        self.lakes.as_ref()?.presented_level_meters(d)
     }
 }
 impl Survey for Surface {
