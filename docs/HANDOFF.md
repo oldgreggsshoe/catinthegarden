@@ -14334,3 +14334,8 @@ Request: "So solar eclipses".
   builds.
 - Not seen live: the permission check refused launching the game and screenshotting the
   desktop.
+- Follow-up: changed to one planet-wide time (UTC-style) at the user's request. The clock
+  now reads `planet_time_hours(sun)` = `local_solar_time_hours(+X, sun)`, the solar time on
+  the zero meridian (+X, `geographic_longitude_degrees` 0). It is the same everywhere and
+  never hidden; 12:00 is noon only at longitude 0. `local_solar_time_hours` is kept, so a
+  local-time readout can be added beside it later.

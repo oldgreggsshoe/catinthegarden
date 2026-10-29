@@ -561,6 +561,12 @@ fn local_solar_time_hours(position: glam::DVec3, sun: glam::DVec3) -> Option<f64
     Some((12.0 + hour_angle.to_degrees() / 15.0).rem_euclid(24.0))
 }
 
+/// Planet time, one reading everywhere (the planet's UTC): solar time on the
+/// zero meridian (+X, longitude 0), so 12:00 is noon there and only there.
+fn planet_time_hours(sun: glam::DVec3) -> Option<f64> {
+    local_solar_time_hours(glam::DVec3::X, sun)
+}
+
 /// "HH:MM" for a clock time in hours.
 fn clock_text(hours: f64) -> String {
     let minutes = (hours * 60.0).floor() as u32 % (24 * 60);
@@ -1726,7 +1732,7 @@ struct State {
     /// Compass heading of the view this frame, and the one last drawn.
     compass_heading_degrees: Option<f64>,
     compass_drawn_degrees: Option<f64>,
-    /// Local solar time this frame (hours), and the minute last drawn.
+    /// Planet time this frame (hours), and the minute last drawn.
     clock_hours: Option<f64>,
     clock_drawn_minute: Option<u32>,
     last_real_clock_seconds: f64,
@@ -4066,10 +4072,10 @@ impl State {
             self.mark_hud_dirty();
         }
         // The clock, redrawn when its minute turns over.
-        self.clock_hours = local_solar_time_hours(
-            camera_position,
-            planet::planet_local_vector(self.sun_direction, planet_rotation_radians),
-        );
+        self.clock_hours = planet_time_hours(planet::planet_local_vector(
+            self.sun_direction,
+            planet_rotation_radians,
+        ));
         let clock_minute = self.clock_hours.map(|hours| (hours * 60.0).floor() as u32);
         if clock_minute != self.clock_drawn_minute {
             self.mark_hud_dirty();
@@ -8564,6 +8570,9 @@ mod tests {
             last = Some(hours);
         }
         assert!((advanced - 24.0).abs() < 1e-6);
+        // Planet time is the zero meridian's, wherever the eye is.
+        assert!((super::planet_time_hours(-east).unwrap() - 18.0).abs() < 1e-9);
+        assert_eq!(crate::planet::geographic_longitude_degrees(DVec3::X), 0.0);
         assert_eq!(super::clock_text(13.999), "13:59");
         assert_eq!(super::clock_text(0.0), "00:00");
         assert_eq!(super::clock_text(23.9999), "23:59");

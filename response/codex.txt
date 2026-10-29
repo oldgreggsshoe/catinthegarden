@@ -251,3 +251,22 @@ The clock is in. Top left of the screen, 24-hour local solar time where you are:
 - It shows in the normal game only, not in test scenes. It hides at the exact poles, where local time has no meaning. The F3 debug panel covers it while that panel is open.
 
 Tests: a new test checks noon, midnight, 06:00 and 18:00, and that the clock moves forward 24 hours per turn of the planet. 792 pass, with the same 6 failures as before.
+
+---
+
+I didn't arrange any. There are no time zones: the clock shows true local solar time, worked out continuously from your exact longitude. Every meridian has its own time, and 12:00 is wherever the sun is highest right now. Moving east puts the clock forward by 4 minutes per degree of longitude, about 4 minutes for every 1,160 km along the equator, and it changes smoothly as you fly with no steps. Latitude doesn't affect it.
+
+If you want something more like Earth, the choices are:
+- 24 zones, each 15 degrees wide, centred on longitude 0 (the +X side of the planet, the same zero the map's longitude uses). The clock would jump a whole hour when you cross a zone edge. Real-world kinks, like zone edges following coastlines or country borders, could come later from village regions.
+- One time for the whole planet, like UTC: the same reading everywhere, so noon would only fall at 12:00 on the zero meridian.
+- Both: the zone time shown large, with the planet-wide time small beside it.
+
+Tell me which one you want.
+
+---
+
+Done. The clock now shows one planet-wide time, like UTC. It reads the same wherever you are, and it is the sun's time on the zero meridian (the +X side of the planet, longitude 0), so 12:00 is noon there and nowhere else. Flying east or west no longer changes it, and it no longer hides at the poles. Committed and pushed.
+
+The local-time calculation is still in the code, in case you later want local time shown small beside it.
+
+Tests: the clock test passes, and now also checks that the reading doesn't depend on where you are. The release build works. Not seen live.
