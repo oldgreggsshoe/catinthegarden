@@ -1238,6 +1238,78 @@ fn terrain_detail_band(
     return TerrainDetail(total, terrain_detail_domain_transpose(gradient));
 }
 
+struct TerrainDetailSplit {
+    full: TerrainDetail,
+    // The same ladder with everything shorter than `split_meters` filtered
+    // out, as `terrain_detail_band` would return it for that filter.
+    coarse: TerrainDetail,
+}
+
+/// `terrain_detail_band` plus its coarse part in one pass, for the footpath
+/// smoothing. Exact, not approximate: octaves run longest first and the
+/// coarse fade retires at most one octave partway, the last one it keeps, so
+/// every octave it keeps sees the same accumulated slope (attenuation) as in
+/// the full ladder. Kept separate so the ordinary ladder stays untouched.
+fn terrain_detail_band_split(
+    anchor_direction: vec3<f32>,
+    local_meters: vec3<f32>,
+    filter_meters: f32,
+    coarsest_meters: f32,
+    scaled_macro_height_meters: f32,
+    split_meters: f32,
+) -> TerrainDetailSplit {
+    var result = TerrainDetailSplit(TerrainDetail(0.0, vec3<f32>(0.0)), TerrainDetail(0.0, vec3<f32>(0.0)));
+    if scaled_macro_height_meters <= 0.0 {
+        return result;
+    }
+    let anchor_domain = terrain_detail_domain(anchor_direction);
+    let local_domain = terrain_detail_domain(local_meters);
+    let span = TERRAIN_DETAIL_START_WAVELENGTH_METERS / max(filter_meters * 2.0, 1.0e-6);
+    let active_octaves = clamp(i32(ceil(log2(max(span, 1.0)))) + 1, 1, TERRAIN_DETAIL_OCTAVES);
+    let coarse_filter = max(filter_meters, split_meters);
+    var total = 0.0;
+    var gradient = vec3<f32>(0.0);
+    var coarse_total = 0.0;
+    var coarse_gradient = vec3<f32>(0.0);
+    var wavelength = TERRAIN_DETAIL_START_WAVELENGTH_METERS;
+    for (var octave = 0; octave < active_octaves; octave = octave + 1) {
+        let high = 1.0 - smoothstep(coarsest_meters * 2.0, coarsest_meters * 4.0, wavelength);
+        let fade = smoothstep(filter_meters * 2.0, filter_meters * 4.0, wavelength) * high;
+        let coarse_fade = smoothstep(coarse_filter * 2.0, coarse_filter * 4.0, wavelength) * high;
+        if fade > 0.0 {
+            let inverse_wavelength = 1.0 / wavelength;
+            let anchor_cells = anchor_domain * (PLANET_RADIUS_METERS * inverse_wavelength);
+            let cell_floor = floor(anchor_cells);
+            let cell_index = vec3<i32>(cell_floor);
+            let cell_fraction = (anchor_cells - cell_floor)
+                + local_domain * inverse_wavelength;
+            let noise = terrain_detail_ridge(
+                terrain_detail_value_noise(cell_index, cell_fraction),
+            );
+            let attenuation = 1.0
+                / (1.0 + length(gradient) / TERRAIN_DETAIL_ATTENUATION_SLOPE);
+            let octave_amplitude =
+                wavelength * TERRAIN_DETAIL_ROUGHNESS * terrain_detail_octave_tilt(wavelength);
+            let shared_amplitude = octave_amplitude
+                * attenuation
+                * terrain_detail_octave_headroom(
+                    scaled_macro_height_meters,
+                    octave_amplitude,
+                );
+            let amplitude = shared_amplitude * fade;
+            total = total + noise.value * amplitude;
+            gradient = gradient + noise.gradient * (amplitude * inverse_wavelength);
+            let coarse_amplitude = shared_amplitude * coarse_fade;
+            coarse_total = coarse_total + noise.value * coarse_amplitude;
+            coarse_gradient = coarse_gradient + noise.gradient * (coarse_amplitude * inverse_wavelength);
+        }
+        wavelength = wavelength * 0.5;
+    }
+    result.full = TerrainDetail(total, terrain_detail_domain_transpose(gradient));
+    result.coarse = TerrainDetail(coarse_total, terrain_detail_domain_transpose(coarse_gradient));
+    return result;
+}
+
 /// Spacing of the baked samples a node is drawing from. This is the scale the
 /// baked data stops carrying information at, and therefore the scale the
 /// synthesised ladder has to start at if the two are not to describe the same

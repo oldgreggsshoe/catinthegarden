@@ -363,3 +363,25 @@ Two things the pictures show:
 - Long village names print smaller than "FOOTPATH".
 
 Next: flattening the paths (part two).
+
+---
+
+Stopped and saved; safe to switch off.
+
+- The working copy is untouched on disk, and a backup of it is pushed as the branch wip/village-path-shaping. Nothing is half-written.
+- The end of docs/HANDOFF.md has a section headed "IN PROGRESS" saying exactly where I am and what's next.
+- Where I am: the path flattening works and its tests pass. It smooths the bumps under the paths and ramps them onto the parking area at the mouth, and walking follows the same ground. But it was costing about 4 ms a frame near villages. The last change, fading it out beyond about 200-400 m, isn't built or timed yet.
+- Next: build, test and time it. If it's still too costly, tighten the limit or ship it switched off by default. Then pictures, notes, commit.
+
+Say "ok ready" (or "carry on") when you're back.
+
+---
+
+Path flattening is finished and pushed. It's switched on.
+
+- Under each village footpath, the small bumps (anything under about 12 m) are smoothed out, and close to the parking area the path now slopes up or down to meet the parking floor. Walking and driving follow the same ground you see.
+- Cost: about 2 ms a frame (86.5 -> 88.5 ms at 1280x800), and only near villages. Before the fix it was about 4 ms; now the flattening fades out between about 200 and 400 m away. Fading it out closer didn't help, because most of the cost comes from the ground within about 100 m of you. Getting it cheaper would mean storing the path shapes in a different way. I can do that next if you want the 2 ms back.
+- To compare: PLANET_VILLAGE_PATH_SHAPING=0 turns it off.
+- In the test pictures the path that used to be lumpy now looks like an even track.
+- Not fixed: at the East Cedarbank gate, the ground just past the gateway still drops into a hollow. The drop there is more than the 4 m the flattening is allowed to move the ground, and I haven't worked out why there's a hollow there.
+- Tests: 804 pass, same 6 old failures; the 3 graphics-card path tests pass.

@@ -143,3 +143,11 @@ Court metadata verified 31/31 near-indexed courts, with 39 near/far destinations
 in the captured resident plans. All 778/778 doors connected to the available
 parking/internal network. No controller-driving changes or live walk acceptance
 are claimed by these camera replays.
+
+## Path ground shaping (29 October, later)
+
+Ground under the paths is smoothed and ramped to each court's floor at the path
+mouth (bounded, faded out 200-400 m away), on the GPU mesh and the CPU walking
+height alike. `PLANET_VILLAGE_PATH_SHAPING=0` turns it off for A/B. Measured
++1.9/+2.2 ms in the `village_paths` replay (two interleaved pairs, command
+above plus the variable); see HANDOFF for the breakdown.

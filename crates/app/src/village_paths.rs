@@ -287,8 +287,142 @@ pub fn footprints(instances: &[HouseInstance], worlds: &[DVec3], frame: &Frame) 
 fn hash(x: i32, y: i32) -> usize {
     ((x as u32).wrapping_mul(73856093) ^ (y as u32).wrapping_mul(19349663)) as usize & (BUCKETS - 1)
 }
+/// Ground shaping under the paths; the same numbers as village_paths.wgsl.
+pub const BANK_METERS: f64 = 1.2;
+pub const RAMP_FULL_METERS: f64 = 3.0;
+pub const RAMP_END_METERS: f64 = 15.0;
+pub const SMOOTH_METERS: f64 = 12.0;
+pub const SMOOTHING: f64 = 0.8;
+pub const MAX_CHANGE_METERS: f64 = 0.8;
+pub const RAMP_MAX_CHANGE_METERS: f64 = 3.2;
+pub const FADE_FILTER_START_METERS: f64 = 2.0;
+pub const FADE_FILTER_END_METERS: f64 = 4.0;
+
+/// Shaping strength by the vertex's detail filter (1% of its distance): full
+/// close by, gone once the mesh is too coarse to carry a path.
+pub fn distance_fade(detail_filter_meters: f64) -> f64 {
+    1.0 - smoothstep(FADE_FILTER_START_METERS, FADE_FILTER_END_METERS, detail_filter_meters)
+}
+
+/// The shape scaled by `distance_fade`, as the vertex shader applies it.
+pub fn faded(shape: GroundShape, fade: f64) -> GroundShape {
+    GroundShape {
+        weight: shape.weight * fade,
+        ramp: shape.ramp * fade,
+        floor_meters: shape.floor_meters,
+        near_mouth: shape.near_mouth * fade,
+    }
+}
+
+/// Mouth coordinate for a path with no court: far enough that no ramp reaches.
+const NO_MOUTH: f32 = 1.0e9;
+
+/// How strongly the ground at a path-frame point belongs to a path (`weight`)
+/// and runs to its court's floor (`ramp`, toward `floor_meters`); `near_mouth`
+/// is the ramp's distance factor, which also widens the allowed change.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GroundShape {
+    pub weight: f64,
+    pub ramp: f64,
+    pub floor_meters: f64,
+    pub near_mouth: f64,
+}
+
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn shaping_enabled() -> bool {
+    !matches!(
+        std::env::var("PLANET_VILLAGE_PATH_SHAPING").as_deref(),
+        Ok("0" | "off")
+    )
+}
+
+/// CPU twin of `village_path_ground_shape`: same index walk, same capsules.
+pub fn ground_shape(data: &[[f32; 4]], p: DVec2) -> GroundShape {
+    let mut shape = GroundShape::default();
+    if data.len() < FLOAT4S || data[0][3] < 0.5 || data[3][3] < 0.5 {
+        return shape;
+    }
+    let coarse = (p / 128.0).floor() + DVec2::splat(128.0);
+    if coarse.min_element() < 0.0 || coarse.max_element() >= 256.0 {
+        return shape;
+    }
+    let bit = (coarse.y as usize) * 256 + coarse.x as usize;
+    let word = bit / 16;
+    if (data[4 + word / 4][word % 4] as u32) & (1 << (bit % 16)) == 0 {
+        return shape;
+    }
+    let cell = (p / CELL).floor();
+    let (x, y) = (cell.x as i32, cell.y as i32);
+    for probe in 0..PROBES {
+        let bucket = data[HEADER + ((hash(x, y) + probe) & (BUCKETS - 1))];
+        if bucket[3] < 0.5 {
+            return shape;
+        }
+        if bucket[0] as i32 != x || bucket[1] as i32 != y {
+            continue;
+        }
+        for j in 0..(bucket[3] as usize).min(128) {
+            let r = bucket[2] as usize + j;
+            let index = data[REFS + r / 4][r % 4] as usize;
+            let segment = data[SEGMENTS + 2 * index].map(f64::from);
+            let extra = data[SEGMENTS + 2 * index + 1].map(f64::from);
+            let a = DVec2::new(segment[0], segment[1]);
+            let b = DVec2::new(segment[2], segment[3]);
+            let delta = b - a;
+            let t = ((p - a).dot(delta) / delta.length_squared().max(0.001)).clamp(0.0, 1.0);
+            let distance = p.distance(a.lerp(b, t));
+            let weight = 1.0 - smoothstep(extra[0], extra[0] + BANK_METERS, distance);
+            if weight <= 0.0 {
+                continue;
+            }
+            let near_mouth = 1.0
+                - smoothstep(
+                    RAMP_FULL_METERS,
+                    RAMP_END_METERS,
+                    p.distance(DVec2::new(extra[1], extra[2])),
+                );
+            shape.weight = shape.weight.max(weight);
+            if weight * near_mouth > shape.ramp {
+                shape.ramp = weight * near_mouth;
+                shape.floor_meters = extra[3];
+                shape.near_mouth = near_mouth;
+            }
+        }
+        return shape;
+    }
+    shape
+}
+
+/// The shaped ground height from the full drawn height and the same height
+/// with relief under `SMOOTH_METERS` filtered out (both before road cuts).
+pub fn shaped_height(full: f64, coarse: f64, shape: GroundShape) -> f64 {
+    if shape.weight <= 0.0 {
+        return full;
+    }
+    let keep = 1.0 - SMOOTHING * shape.weight;
+    let smoothed = coarse + keep * (full - coarse);
+    let ramped = smoothed + (shape.floor_meters - smoothed) * shape.ramp;
+    let limit = MAX_CHANGE_METERS + RAMP_MAX_CHANGE_METERS * shape.near_mouth;
+    full + (ramped - full).clamp(-limit, limit)
+}
+
 /// One bounded sparse index. Failure publishes no partial path network.
+#[cfg(test)]
 pub fn pack(frame: &Frame, trails: &[Trail]) -> Result<Vec<[f32; 4]>, String> {
+    pack_with_mouths(frame, trails, &[])
+}
+
+/// As `pack`, with each trail's court mouth (path-frame xy, court floor height
+/// above the datum) for the ramp; missing entries have none.
+pub fn pack_with_mouths(
+    frame: &Frame,
+    trails: &[Trail],
+    mouths: &[Option<(DVec2, f64)>],
+) -> Result<Vec<[f32; 4]>, String> {
     if trails.len() > MAX_SEGMENTS {
         return Err("village path segment budget".into());
     }
@@ -302,8 +436,10 @@ pub fn pack(frame: &Frame, trails: &[Trail]) -> Result<Vec<[f32; 4]>, String> {
     }
     let mut cells = BTreeMap::<(i32, i32), Vec<usize>>::new();
     for (i, t) in trails.iter().enumerate() {
-        let lo = ((t.a.min(t.b) - DVec2::splat(t.width + 0.5)) / CELL).floor();
-        let hi = ((t.a.max(t.b) + DVec2::splat(t.width + 0.5)) / CELL).floor();
+        // The bank of the ground shaping reaches past the painted wear.
+        let reach = t.width + BANK_METERS + 0.5;
+        let lo = ((t.a.min(t.b) - DVec2::splat(reach)) / CELL).floor();
+        let hi = ((t.a.max(t.b) + DVec2::splat(reach)) / CELL).floor();
         for y in lo.y as i32..=hi.y as i32 {
             for x in lo.x as i32..=hi.x as i32 {
                 cells.entry((x, y)).or_default().push(i);
@@ -329,7 +465,8 @@ pub fn pack(frame: &Frame, trails: &[Trail]) -> Result<Vec<[f32; 4]>, String> {
         frame.forward.z as f32,
         frame.radius as f32,
     ];
-    data[3] = [frame.up.x as f32, frame.up.y as f32, frame.up.z as f32, 0.0];
+    // w: ground shaping on (1) or off (0, `PLANET_VILLAGE_PATH_SHAPING=0`, the A/B override).
+    data[3] = [frame.up.x as f32, frame.up.y as f32, frame.up.z as f32, f32::from(u8::from(shaping_enabled()))];
     let mut count = 0;
     for ((x, y), refs) in cells {
         let coarse_x = x.div_euclid(8) + 128;
@@ -353,7 +490,10 @@ pub fn pack(frame: &Frame, trails: &[Trail]) -> Result<Vec<[f32; 4]>, String> {
     }
     for (i, t) in trails.iter().enumerate() {
         data[SEGMENTS + 2 * i] = [t.a.x as f32, t.a.y as f32, t.b.x as f32, t.b.y as f32];
-        data[SEGMENTS + 2 * i + 1] = [t.width as f32, 0.0, 0.0, 0.0];
+        data[SEGMENTS + 2 * i + 1] = match mouths.get(i).copied().flatten() {
+            Some((mouth, floor)) => [t.width as f32, mouth.x as f32, mouth.y as f32, floor as f32],
+            None => [t.width as f32, NO_MOUTH, NO_MOUTH, 0.0],
+        };
     }
     Ok(data)
 }
@@ -465,6 +605,68 @@ mod tests {
         assert!((entry.distance(court) - (crate::road_parking::RADIUS - 0.5)).abs() < 0.001);
     }
 
+    /// The CPU twin of the shader's shaping lookup finds every capsule whose
+    /// bank reaches a point, including across cell edges, and the ramp
+    /// follows the right court mouth.
+    #[test]
+    fn ground_shape_matches_a_direct_capsule_scan_and_ramps_to_the_mouth() {
+        let frame = Frame::new(DVec3::X, 4e6).unwrap();
+        let trails = [
+            Trail { a: DVec2::new(-43.0, -31.0), b: DVec2::new(43.0, 31.0), width: 1.2 },
+            Trail { a: DVec2::new(-20.0, 30.0), b: DVec2::new(20.0, 30.0), width: 0.8 },
+        ];
+        let mouth = DVec2::new(43.0, 31.0);
+        let data =
+            pack_with_mouths(&frame, &trails, &[Some((mouth, 512.0)), None]).unwrap();
+        let mut seen = [false; 3];
+        for y in -70..=70 {
+            for x in -100..=100 {
+                let p = DVec2::new(x as f64 * 0.5, y as f64 * 0.5);
+                let weights: Vec<f64> = trails
+                    .iter()
+                    .map(|t| {
+                        let d = t.b - t.a;
+                        let a = ((p - t.a).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+                        1.0 - smoothstep(t.width, t.width + BANK_METERS, p.distance(t.a.lerp(t.b, a)))
+                    })
+                    .collect();
+                let shape = ground_shape(&data, p);
+                let expected = weights.iter().copied().fold(0.0, f64::max);
+                assert!((shape.weight - expected).abs() < 1e-4, "{p}: {} vs {expected}", shape.weight);
+                let near = 1.0 - smoothstep(RAMP_FULL_METERS, RAMP_END_METERS, p.distance(mouth));
+                assert!((shape.ramp - weights[0] * near).abs() < 1e-4, "{p} ramp");
+                if shape.ramp > 0.0 {
+                    assert_eq!(shape.floor_meters, 512.0);
+                }
+                seen[0] |= shape.weight == 1.0;
+                seen[1] |= shape.weight > 0.0 && shape.weight < 1.0;
+                seen[2] |= shape.ramp > 0.9;
+            }
+        }
+        assert_eq!(seen, [true; 3]);
+    }
+
+    /// Off a path nothing moves; on one, short relief is mostly smoothed
+    /// away; and the ground never moves more than the bound, except that the
+    /// ramp may lift or lower it further right at the court mouth.
+    #[test]
+    fn shaped_height_smooths_short_relief_and_stays_bounded() {
+        let off = GroundShape::default();
+        assert_eq!(shaped_height(103.0, 100.0, off), 103.0);
+        let on = GroundShape { weight: 1.0, ..GroundShape::default() };
+        let smoothed = shaped_height(100.5, 100.0, on);
+        assert!((smoothed - (100.0 + 0.5 * (1.0 - SMOOTHING))).abs() < 1e-12);
+        // A tall bump is cut by the bound, not flattened to the coarse level.
+        assert_eq!(shaped_height(105.0, 100.0, on), 105.0 - MAX_CHANGE_METERS);
+        let mouth = GroundShape { weight: 1.0, ramp: 1.0, floor_meters: 110.0, near_mouth: 1.0 };
+        assert_eq!(
+            shaped_height(100.0, 100.0, mouth),
+            100.0 + MAX_CHANGE_METERS + RAMP_MAX_CHANGE_METERS
+        );
+        let half = GroundShape { weight: 1.0, ramp: 0.5, floor_meters: 101.0, near_mouth: 0.5 };
+        assert!((shaped_height(100.0, 100.0, half) - 100.5).abs() < 1e-12);
+    }
+
     #[test]
     fn sparse_index_is_bounded_and_carries_only_local_coordinates() {
         let f = Frame::new(DVec3::X, 4_000_000.0).unwrap();
@@ -542,6 +744,7 @@ pub fn build(
             .push(i);
     }
     let mut trails = Vec::new();
+    let mut mouths = Vec::new();
     let mut gates = Vec::new();
     let mut connected = 0;
     let mut doors = 0;
@@ -569,13 +772,21 @@ pub fn build(
             })
         });
         // Mark where the path leaves the court: a gateway over the mouth,
-        // standing on the court floor and facing back across it.
+        // standing on the court floor and facing back across it. The same
+        // point and floor height anchor the path's ramp onto the court.
+        let mut mouth = None;
         if let Some((village, court)) = court_entry_of {
-            let mouth = local.world(goal.extend(0.0)).normalize() * court.length();
-            let outward = mouth - *court;
+            mouth = Some((
+                frame
+                    .local(local.world(goal.extend(0.0)).normalize() * frame.radius)
+                    .truncate(),
+                court.length() - frame.radius,
+            ));
+            let mouth_world = local.world(goal.extend(0.0)).normalize() * court.length();
+            let outward = mouth_world - *court;
             if outward.length() > 1.0 && !houses.is_empty() {
                 gates.push(crate::road_navigation::footpath_gate(
-                    mouth,
+                    mouth_world,
                     outward,
                     &crate::road_navigation::village_name(*village),
                 ));
@@ -613,6 +824,7 @@ pub fn build(
                 .local(local.world(p.extend(0.0)).normalize() * frame.radius)
                 .truncate()
         };
+        mouths.extend(std::iter::repeat_n(mouth, routed.len()));
         trails.extend(routed.into_iter().map(|t| Trail {
             a: project(t.a),
             b: project(t.b),
@@ -622,7 +834,7 @@ pub fn build(
     if cancelled() {
         return Err("village paths superseded".into());
     }
-    let data = pack(&frame, &trails)?;
+    let data = pack_with_mouths(&frame, &trails, &mouths)?;
     // A failed sign bake keeps the paths; it only loses the gateways.
     let gate_mesh = crate::road_signs::bake(&gates, frame).unwrap_or_else(|error| {
         tracing::warn!(target:"planet::villages", %error, "footpath gateways rejected");

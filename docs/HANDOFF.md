@@ -18,6 +18,8 @@ triangles with the real eye's detail filter and bounded refresh. A cancellable
 worker routes door-to-court desire lines around houses/relief, merges shared
 traffic and paints weather-lit dirt directly on terrain; GPU trees clear it.
 778/778 doors in40 test villages; measured cost +2.9ms village/+3.5ms parking.
+Footpath gateways mark each path mouth; path ground is now smoothed and ramped to
+the court floor (+~2ms near villages, `PLANET_VILLAGE_PATH_SHAPING=0` off).
 No engineering/precompute fingerprint, road geometry or lake-stash change.
 See docs/TIMBER_VILLAGES_2026_10_29.md and the final dated section below.
 
@@ -14474,3 +14476,47 @@ Request: "So solar eclipses".
 - Tests: `footpath_gate_faces_the_court_and_leaves_headroom_over_the_path`; sign-kind test
   now covers six kinds; scenario count 157. 802 pass / same 6 failures. Cost not measured
   (one extra small draw near villages).
+
+## Village paths flattened and run to the court floor (29 October)
+
+User asked for village paths to be flattened / carved where possible.
+
+- `village_paths.rs`: `GroundShape`, `ground_shape` (CPU twin of the WGSL lookup),
+  `shaped_height`, `distance_fade`/`faded`, `pack_with_mouths` (segment record `.yzw` =
+  court mouth xy + court floor height; `NO_MOUTH` 1e9), `data[3].w` = shaping on/off.
+  Cell registration reach widened to width + `BANK_METERS` + 0.5. Constants: bank 1.2 m,
+  ramp full 3 m / end 15 m from the mouth, relief shorter than 12 m smoothed by 0.8,
+  max change 0.8 m (+3.2 m near the mouth).
+- `village_paths.wgsl`: `village_path_ground_shape`; `village_path_fragment` +
+  `village_path_albedo_from` (wear computed once per pixel, reused to damp fine detail).
+- `shared_planet.wgsl`: `terrain_detail_band_split` (full ladder plus its >= 12 m part in
+  one pass, exact).
+- `planet.wgsl` vs_main: with paths published (uniform branch) every vertex takes the split
+  ladder; vertices under paths have their short relief smoothed and ramp to the court floor
+  near the mouth, before road cuts; the detail slope is smoothed the same way. Fragment fine
+  detail is damped by path wear. Shaping fades out as the vertex detail filter goes 2 -> 4 m
+  (about 200-400 m away), and the lookup is skipped beyond.
+- `terrain.rs`: binding 22 visible to the vertex stage; CPU copy `village_path_data`;
+  `village_path_shaped_height` (with the same distance fade) in the raster-vertex closure
+  before `cut_surface_height`, so walking/driving heights match the drawn ground.
+- `PLANET_VILLAGE_PATH_SHAPING=0` turns shaping off (A/B); on by default.
+- Cost, `village_paths` replay, 1280x800 X11/Immediate, interleaved p50 pairs, shaping 0 vs 1
+  (pacing files in `test-runs/village-path-shaping-2026-10-29/`):
+  - no fade (last session): +3.6 to +4.6 ms;
+  - 2 -> 4 m fade (shipped): 86.657 / 88.569, 86.294 / 88.500 = **+1.9 / +2.2 ms**;
+  - 1 -> 2 m fade: +2.7 / +2.3 ms (no better: vertex count per distance band is roughly
+    equal on a log scale, so most lookups are in the nearest ~100 m);
+  - lookup compiled in but never run: +0.8 / +0.6 ms (split ladder + branch).
+  So ~1.5 ms is the per-vertex segment search itself. Cost is zero away from villages (no
+  paths published -> original code path). Next lever if wanted: bake each occupied 16 m
+  cell's shape into a small atlas tile on the path worker so the vertex does one bilinear
+  fetch instead of a segment loop (CPU twin samples the same tiles).
+- Tests: `ground_shape_matches_a_direct_capsule_scan_and_ramps_to_the_mouth`,
+  `shaped_height_smooths_short_relief_and_stays_bounded`, Vulkan
+  `gpu_village_path_ground_shape_matches_the_cpu_twin` (3/3 `gpu_village_path` pass).
+  Full suite 804 pass / same 6 failures / 77 ignored.
+- Visual: `village_paths/1793287704-9531` and `village_footpath_gate/1793287773-9669` pass,
+  captures opened. The trunk path reads as an even track instead of lumpy relief. **Not
+  fixed:** past the East Cedarbank gate (gate capture 4) the ground still drops into a
+  hollow beyond the mouth; the drop there is larger than the 4 m the ramp may move, and the
+  hollow's cause is not explained yet.

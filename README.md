@@ -134,6 +134,11 @@ lettering, including tunnel-distance boards. The wood texture and font are
 bundled; no installed system font is needed. Asset credits and the generation
 prompt are in `assets/road_signs/CREDITS.md`.
 
+Village footpaths start under a timber "FOOTPATH" gateway at each parking court.
+The ground under a path is smoothed and ramps to the court floor at its mouth;
+`PLANET_VILLAGE_PATH_SHAPING=0` turns that off and `PLANET_VILLAGE_PATHS=0`
+removes the paths altogether.
+
 Interior overhead boards are spaced 500m along the engineered bore, with a
 separate remaining-exit distance on each face (normally rounded to500m).
 Distances cross region/residency boundaries; portal headers remain. Automated
