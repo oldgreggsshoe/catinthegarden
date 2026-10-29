@@ -396,6 +396,9 @@ struct TerrainSettings {
     outmap_height_scale: vec4<f32>,
     outmap_height_blend: vec4<f32>,
     outmap_detail: vec4<f32>,
+    // Copy of village_path_data[0..4] (terrain.rs): across + paths on,
+    // forward + radius, camera offset, up + shaping on.
+    village_path_frame: array<vec4<f32>, 4>,
 }
 
 @group(2) @binding(5)

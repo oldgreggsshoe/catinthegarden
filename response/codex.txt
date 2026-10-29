@@ -385,3 +385,14 @@ Path flattening is finished and pushed. It's switched on.
 - In the test pictures the path that used to be lumpy now looks like an even track.
 - Not fixed: at the East Cedarbank gate, the ground just past the gateway still drops into a hollow. The drop there is more than the 4 m the flattening is allowed to move the ground, and I haven't worked out why there's a hollow there.
 - Tests: 804 pass, same 6 old failures; the 3 graphics-card path tests pass.
+
+---
+
+Shape atlas: done and pushed, but it didn't get the 2 ms back.
+
+- How it works: the path worker now pre-computes the path shape for every 16 m patch of ground near the paths, as a small grid of samples 1 m apart (3,610 patches in the test villages, about 76 ms in the background). Each ground point now blends 4 stored samples instead of checking every nearby bit of path. I also moved a few values it reads every time into faster GPU memory.
+- Result: about +1.7 ms near villages, against +2.05 ms before. The runs vary by about 1 ms either way, so that's at most a small gain.
+- Why: I ran tests that switched off parts of the work. Even with the searching removed entirely, most of the cost stayed. The cost is mostly in starting the path check and its first memory reads at each ground point, not in the searching.
+- I kept it: it's no slower, it costs the same at every point, so a crowded spot like where many paths meet the parking area can't get expensive, and the walking/driving height check is cheaper too. Pictures are the same apart from a few pixels at path edges and where paths end at doors. It uses 6 MB more graphics memory.
+- If you want the rest back, the next step is to have the CPU mark which pieces of ground actually have a path on them, so the rest skip the check altogether. In the village itself many pieces have paths, so I'd expect well under 1 ms from that.
+- Tests: 806 pass, same 6 old failures; the 3 graphics-card path tests pass.

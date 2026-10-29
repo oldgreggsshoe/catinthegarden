@@ -49,12 +49,40 @@ const VILLAGE_PATH_RAMP_MAX_CHANGE_METERS: f32 = 3.2;
 const VILLAGE_PATH_FADE_FILTER_START_METERS: f32 = 2.0;
 const VILLAGE_PATH_FADE_FILTER_END_METERS: f32 = 4.0;
 
+// Ground-shape atlas (village_paths.rs): per-slot tile numbers, then one
+// tile per occupied 16 m cell -- a header (court floor, mouth x/y, has mouth)
+// and 17x17 samples 1 m apart, each two 12-bit bank distances in one float.
+const VILLAGE_PATH_TILE_INDEX: u32 = 74756u;
+const VILLAGE_PATH_ATLAS: u32 = 76804u;
+const VILLAGE_PATH_TILE_SIDE: u32 = 17u;
+const VILLAGE_PATH_TILE_FLOAT4S: u32 = 74u;
+
+// Stored range of the bank distances (village_paths.rs BANK_STORED_*).
+const VILLAGE_PATH_BANK_STORED_MIN: f32 = -3.0;
+const VILLAGE_PATH_BANK_STORED_MAX: f32 = 2.0;
+
+/// (bank distance to any path, to any path with a court mouth): 0 at the
+/// path's edge, 1 at the bank's outer edge, negative on the path.
+fn village_path_tile_sample(base: u32, x: u32, y: u32) -> vec2<f32> {
+    let index = y * VILLAGE_PATH_TILE_SIDE + x;
+    let packed = u32(village_path_data[base + 1u + index / 4u][index % 4u]);
+    return vec2<f32>(f32(packed & 4095u), f32(packed >> 12u)) / 4095.0
+        * (VILLAGE_PATH_BANK_STORED_MAX - VILLAGE_PATH_BANK_STORED_MIN)
+        + VILLAGE_PATH_BANK_STORED_MIN;
+}
+
 /// (path weight, ramp weight, court floor height, ramp distance factor) at a
 /// path-frame point: how strongly the ground here belongs to a path, and how
-/// strongly it should run to its court's floor.
+/// strongly it should run to its court's floor. Four baked samples, blended;
+/// the CPU twin is `village_paths::ground_shape`.
 fn village_path_ground_shape(p: vec2<f32>) -> vec4<f32> {
+    if village_path_data[0].w < 0.5 || village_path_data[3].w < 0.5 { return vec4<f32>(0.0); }
+    return village_path_ground_shape_published(p);
+}
+/// As `village_path_ground_shape`, for callers that have already checked the
+/// paths are published with shaping on.
+fn village_path_ground_shape_published(p: vec2<f32>) -> vec4<f32> {
     var shape = vec4<f32>(0.0);
-    if village_path_data[0].w < 0.5 || village_path_data[3].w < 0.5 { return shape; }
     let coarse = vec2<i32>(floor(p / 128.0)) + vec2<i32>(128);
     if any(coarse < vec2<i32>(0)) || any(coarse >= vec2<i32>(256)) { return shape; }
     let bit = u32(coarse.y * 256 + coarse.x);
@@ -64,24 +92,28 @@ fn village_path_ground_shape(p: vec2<f32>) -> vec4<f32> {
     let cell = vec2<i32>(floor(p / 16.0));
     let hash = (u32(cell.x) * 73856093u ^ u32(cell.y) * 19349663u) & 8191u;
     for (var probe = 0u; probe < 32u; probe += 1u) {
-        let bucket = village_path_data[1028u + ((hash + probe) & 8191u)];
+        let slot = (hash + probe) & 8191u;
+        let bucket = village_path_data[1028u + slot];
         if bucket.w < 0.5 { return shape; }
         if any(vec2<i32>(bucket.xy) != cell) { continue; }
-        for (var j = 0u; j < min(u32(bucket.w), 128u); j += 1u) {
-            let r = u32(bucket.z) + j;
-            let index = u32(village_path_data[9220u + r / 4u][r % 4u]);
-            let segment = village_path_data[41988u + index * 2u];
-            let extra = village_path_data[41989u + index * 2u];
-            let delta = segment.zw - segment.xy;
-            let t = clamp(dot(p - segment.xy, delta) / max(dot(delta, delta), 0.001), 0.0, 1.0);
-            let distance = length(p - mix(segment.xy, segment.zw, t));
-            let weight = 1.0 - smoothstep(extra.x, extra.x + VILLAGE_PATH_BANK_METERS, distance);
-            if weight <= 0.0 { continue; }
+        let tile = u32(village_path_data[VILLAGE_PATH_TILE_INDEX + slot / 4u][slot % 4u]);
+        let base = VILLAGE_PATH_ATLAS + tile * VILLAGE_PATH_TILE_FLOAT4S;
+        let local = clamp(p - vec2<f32>(cell) * 16.0, vec2<f32>(0.0), vec2<f32>(16.0));
+        let i = min(vec2<u32>(floor(local)), vec2<u32>(15u));
+        let f = local - vec2<f32>(i);
+        let bank = mix(
+            mix(village_path_tile_sample(base, i.x, i.y), village_path_tile_sample(base, i.x + 1u, i.y), f.x),
+            mix(village_path_tile_sample(base, i.x, i.y + 1u), village_path_tile_sample(base, i.x + 1u, i.y + 1u), f.x),
+            f.y,
+        );
+        shape.x = 1.0 - smoothstep(0.0, 1.0, bank.x);
+        let header = village_path_data[base];
+        let ramp_weight = 1.0 - smoothstep(0.0, 1.0, bank.y);
+        if header.w > 0.5 && ramp_weight > 0.0 {
             let near_mouth = 1.0 - smoothstep(VILLAGE_PATH_RAMP_FULL_METERS,
-                VILLAGE_PATH_RAMP_END_METERS, length(p - extra.yz));
-            shape.x = max(shape.x, weight);
-            if weight * near_mouth > shape.y {
-                shape = vec4<f32>(shape.x, weight * near_mouth, extra.w, near_mouth);
+                VILLAGE_PATH_RAMP_END_METERS, length(p - header.yz));
+            if ramp_weight * near_mouth > 0.0 {
+                shape = vec4<f32>(shape.x, ramp_weight * near_mouth, header.x, near_mouth);
             }
         }
         return shape;

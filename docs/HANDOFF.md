@@ -14520,3 +14520,49 @@ User asked for village paths to be flattened / carved where possible.
   fixed:** past the East Cedarbank gate (gate capture 4) the ground still drops into a
   hollow beyond the mouth; the drop there is larger than the 4 m the ramp may move, and the
   hollow's cause is not explained yet.
+
+## Village path shape atlas and uniform frame (29 October, later)
+
+Asked: replace the per-vertex segment search with a baked shape atlas.
+
+- `village_paths.rs` `pack_with_mouths` now also bakes one tile per occupied 16 m cell
+  (`bake_tile`): a header (court floor, mouth x/y, has mouth) and 17x17 samples 1 m apart.
+  Each sample holds two signed bank distances (`bank_distance`: 0 at the path edge, 1 at
+  the bank's outer edge, negative on the path; stored over -3..2 so the clamps fall where
+  the weight is flat), 12 bits each, packed into one float exactly (< 2^24). Layout after
+  the segments: `TILE_INDEX` (tile number per hash slot), `ATLAS` (`MAX_TILES` = 4096 tiles
+  of `TILE_FLOAT4S` = 74). Buffer grows to `FLOAT4S` = 379,908 vec4 (6.1 MB). The village
+  replay bakes 3,610 tiles in ~76 ms on the path worker (logged as "village path index and
+  shape atlas packed").
+- `village_path_ground_shape` (WGSL) and its CPU twin `ground_shape` keep the occupancy check
+  and hash probe, then blend four samples and apply the smoothsteps after blending; the ramp
+  falloff is computed exactly from the tile's mouth. One court mouth per cell (courts belong
+  to separate villages). The fragment wear still uses the exact segments.
+- The first four path records (frame, camera, on/shaping flags) are mirrored into
+  `TerrainSettings::village_path_frame` (group 2 binding 5 uniform, now COPY_DST, written at
+  `TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET` = 48 by `set/clear_village_paths` and
+  `update_village_path_camera`); vs_main reads the frame from there and calls
+  `village_path_ground_shape_published`.
+- Accuracy vs the direct capsule scan: weight/ramp within 0.05 along paths, worst 0.094 at a
+  path's open round end (a few cm of height). Before/after captures: gate views within 4
+  levels; two village views differ in 444 pixels each, specks along path edges/door ends.
+- Timing (`village_paths`, 1280x800 X11/Immediate, interleaved p50 pairs, shaping off/on;
+  files in `test-runs/village-path-shaping-2026-10-29/`, run-to-run noise about +-1 ms):
+  - segment search (shipped earlier today): +1.9, +2.2;
+  - atlas: +1.8, +2.7, +1.9;
+  - atlas + uniform frame (shipped): +1.65, +1.06, +2.26 (mean +1.7).
+  Diagnosis runs (not kept): stopping after the occupancy check +1.4/+3.3; entering the block
+  with no reads after the branch +1.6/+2.8/+1.6; no storage reads at all +0.9/+2.2/-0.4. So
+  the search was never the main cost: entering the block and its first storage reads are.
+  The atlas gives at most ~0.4 ms here, but makes the per-vertex cost constant (the segment
+  loop allowed up to 128 iterations in a dense cell) and the CPU twin cheaper.
+- Remaining ~1.7 ms: ~0.7 split ladder/branch, ~1 ms the per-vertex occupancy/hash reads.
+  Next lever if wanted: a per-chunk CPU flag (chunk overlaps an occupied cell) in the
+  instance data, so chunks with no path skip the block uniformly.
+- Tests: `baked_shape_is_continuous_across_cell_edges`,
+  `shader_atlas_offsets_match_the_packed_layout`, settings offset check in
+  `shader_reads_outmap_height_scale_from_terrain_settings`; scan test tolerance 0.1. Full
+  suite 806 pass / same 6 failures; 3/3 `gpu_village_path` pass; road GPU 12 pass + the
+  known far-road coverage failure. Replays `village_paths/1793292117-24552`,
+  `village_footpath_gate/1793292187-24697` pass.
+

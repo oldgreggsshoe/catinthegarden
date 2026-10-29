@@ -1111,7 +1111,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // village_paths::shaped_height). Uniform branch: with paths published every
     // vertex takes the split ladder, which costs a few multiply-adds, rather
     // than path vertices diverging into a second ladder.
-    let paths_published = village_path_data[0].w > 0.5 && village_path_data[3].w > 0.5;
+    // The path frame and flags come from the uniform copy: storage reads in
+    // this stage measurably cost more than the lookup they feed.
+    let path_frame = terrain_settings.village_path_frame;
+    let paths_published = path_frame[0].w > 0.5 && path_frame[3].w > 0.5;
     var shape = vec4<f32>(0.0);
     let path_fade = 1.0 - smoothstep(VILLAGE_PATH_FADE_FILTER_START_METERS,
         VILLAGE_PATH_FADE_FILTER_END_METERS, vertex_filter_meters);
@@ -1120,8 +1123,9 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         // millimetre at village range.
         let planet_offset = view_to_planet(input.anchor_view_position)
             + anchor_relative_position + direction * base_height;
-        shape = village_path_ground_shape(village_path_xy_from_offset(planet_offset)
-            * village_path_data[1].w / (village_path_data[1].w + base_height));
+        let path_xy = vec2<f32>(dot(planet_offset, path_frame[0].xyz), dot(planet_offset, path_frame[1].xyz))
+            + path_frame[2].xy;
+        shape = village_path_ground_shape_published(path_xy * path_frame[1].w / (path_frame[1].w + base_height));
         shape = vec4<f32>(shape.xy * path_fade, shape.z, shape.w * path_fade);
     }
     var coarse_detail = TerrainDetail(0.0, vec3<f32>(0.0));

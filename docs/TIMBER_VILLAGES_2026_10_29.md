@@ -151,3 +151,7 @@ mouth (bounded, faded out 200-400 m away), on the GPU mesh and the CPU walking
 height alike. `PLANET_VILLAGE_PATH_SHAPING=0` turns it off for A/B. Measured
 +1.9/+2.2 ms in the `village_paths` replay (two interleaved pairs, command
 above plus the variable); see HANDOFF for the breakdown.
+
+The vertex lookup later moved to a baked shape atlas (four blended samples per
+vertex instead of a segment search) with the path frame in a uniform; measured
++1.7 ms mean against +2.05 ms, within noise. See HANDOFF.

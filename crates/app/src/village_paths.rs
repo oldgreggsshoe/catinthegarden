@@ -18,7 +18,24 @@ const MAX_REFS: usize = 131072;
 const HEADER: usize = 4 + 1024; // 256-square, 128m coarse occupancy; 16 bits per float.
 const REFS: usize = HEADER + BUCKETS;
 const SEGMENTS: usize = REFS + MAX_REFS / 4;
-pub const FLOAT4S: usize = SEGMENTS + MAX_SEGMENTS * 2;
+// Ground-shape atlas: one baked tile per occupied cell, so the vertex shader
+// reads four samples instead of searching the cell's segments. The tile index
+// holds each hash slot's tile number.
+const MAX_TILES: usize = BUCKETS / 2;
+const TILE_INDEX: usize = SEGMENTS + MAX_SEGMENTS * 2;
+const ATLAS: usize = TILE_INDEX + BUCKETS / 4;
+/// Samples along a tile side: 1 m apart, both cell edges included.
+const TILE_SIDE: usize = 17;
+const TILE_SAMPLE_SPACING: f64 = CELL / (TILE_SIDE - 1) as f64;
+/// A header (court floor, mouth x/y, has mouth) then one packed float per sample.
+const TILE_FLOAT4S: usize = 1 + (TILE_SIDE * TILE_SIDE).div_ceil(4);
+/// Bank distances are quantised to 12 bits each, two to a float (exact below
+/// 2^24), over this range. Kept signed inside the path and past the bank so
+/// the clamps fall where the weight is flat and blending stays accurate.
+const BANK_LEVELS: f64 = 4095.0;
+const BANK_STORED_MIN: f64 = -3.0;
+const BANK_STORED_MAX: f64 = 2.0;
+pub const FLOAT4S: usize = ATLAS + MAX_TILES * TILE_FLOAT4S;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Trail {
@@ -340,61 +357,119 @@ fn shaping_enabled() -> bool {
     )
 }
 
-/// CPU twin of `village_path_ground_shape`: same index walk, same capsules.
+/// How far into its bank a point is from a capsule: 0 at the path's edge,
+/// 1 at the bank's outer edge, negative on the path. The shaping weight is
+/// `1 - smoothstep(0, 1, ...)` of it.
+fn bank_distance(p: DVec2, a: DVec2, b: DVec2, width: f64) -> f64 {
+    let delta = b - a;
+    let t = ((p - a).dot(delta) / delta.length_squared().max(0.001)).clamp(0.0, 1.0);
+    ((p.distance(a.lerp(b, t)) - width) / BANK_METERS).clamp(BANK_STORED_MIN, BANK_STORED_MAX)
+}
+
+fn quantise_bank(distance: f64) -> f64 {
+    ((distance - BANK_STORED_MIN) / (BANK_STORED_MAX - BANK_STORED_MIN) * BANK_LEVELS).round()
+}
+
+/// The tile slot and tile number of the cell holding `p`, if it has one.
+fn tile_of(data: &[[f32; 4]], p: DVec2) -> Option<(DVec2, usize)> {
+    let coarse = (p / 128.0).floor() + DVec2::splat(128.0);
+    if coarse.min_element() < 0.0 || coarse.max_element() >= 256.0 {
+        return None;
+    }
+    let bit = (coarse.y as usize) * 256 + coarse.x as usize;
+    let word = bit / 16;
+    if (data[4 + word / 4][word % 4] as u32) & (1 << (bit % 16)) == 0 {
+        return None;
+    }
+    let cell = (p / CELL).floor();
+    let (x, y) = (cell.x as i32, cell.y as i32);
+    for probe in 0..PROBES {
+        let slot = (hash(x, y) + probe) & (BUCKETS - 1);
+        let bucket = data[HEADER + slot];
+        if bucket[3] < 0.5 {
+            return None;
+        }
+        if bucket[0] as i32 == x && bucket[1] as i32 == y {
+            return Some((cell * CELL, data[TILE_INDEX + slot / 4][slot % 4] as usize));
+        }
+    }
+    None
+}
+
+/// CPU twin of `village_path_ground_shape`: same index walk, same tile
+/// samples, same bilinear blend.
 pub fn ground_shape(data: &[[f32; 4]], p: DVec2) -> GroundShape {
     let mut shape = GroundShape::default();
     if data.len() < FLOAT4S || data[0][3] < 0.5 || data[3][3] < 0.5 {
         return shape;
     }
-    let coarse = (p / 128.0).floor() + DVec2::splat(128.0);
-    if coarse.min_element() < 0.0 || coarse.max_element() >= 256.0 {
+    let Some((origin, tile)) = tile_of(data, p) else {
         return shape;
-    }
-    let bit = (coarse.y as usize) * 256 + coarse.x as usize;
-    let word = bit / 16;
-    if (data[4 + word / 4][word % 4] as u32) & (1 << (bit % 16)) == 0 {
-        return shape;
-    }
-    let cell = (p / CELL).floor();
-    let (x, y) = (cell.x as i32, cell.y as i32);
-    for probe in 0..PROBES {
-        let bucket = data[HEADER + ((hash(x, y) + probe) & (BUCKETS - 1))];
-        if bucket[3] < 0.5 {
-            return shape;
+    };
+    let base = ATLAS + tile * TILE_FLOAT4S;
+    let local = ((p - origin) / TILE_SAMPLE_SPACING).clamp(DVec2::ZERO, DVec2::splat((TILE_SIDE - 1) as f64));
+    let i = local.floor().min(DVec2::splat((TILE_SIDE - 2) as f64));
+    let f = local - i;
+    let sample = |x: usize, y: usize| {
+        let index = y * TILE_SIDE + x;
+        let packed = data[base + 1 + index / 4][index % 4] as u32;
+        DVec2::new((packed & 4095) as f64, (packed >> 12) as f64) / BANK_LEVELS
+            * (BANK_STORED_MAX - BANK_STORED_MIN)
+            + DVec2::splat(BANK_STORED_MIN)
+    };
+    let (x, y) = (i.x as usize, i.y as usize);
+    let bank = sample(x, y)
+        .lerp(sample(x + 1, y), f.x)
+        .lerp(sample(x, y + 1).lerp(sample(x + 1, y + 1), f.x), f.y);
+    shape.weight = 1.0 - smoothstep(0.0, 1.0, bank.x);
+    let header = data[base].map(f64::from);
+    let ramp_weight = 1.0 - smoothstep(0.0, 1.0, bank.y);
+    if header[3] > 0.5 && ramp_weight > 0.0 {
+        let near_mouth = 1.0
+            - smoothstep(RAMP_FULL_METERS, RAMP_END_METERS, p.distance(DVec2::new(header[1], header[2])));
+        shape.ramp = ramp_weight * near_mouth;
+        if shape.ramp > 0.0 {
+            shape.floor_meters = header[0];
+            shape.near_mouth = near_mouth;
         }
-        if bucket[0] as i32 != x || bucket[1] as i32 != y {
-            continue;
-        }
-        for j in 0..(bucket[3] as usize).min(128) {
-            let r = bucket[2] as usize + j;
-            let index = data[REFS + r / 4][r % 4] as usize;
-            let segment = data[SEGMENTS + 2 * index].map(f64::from);
-            let extra = data[SEGMENTS + 2 * index + 1].map(f64::from);
-            let a = DVec2::new(segment[0], segment[1]);
-            let b = DVec2::new(segment[2], segment[3]);
-            let delta = b - a;
-            let t = ((p - a).dot(delta) / delta.length_squared().max(0.001)).clamp(0.0, 1.0);
-            let distance = p.distance(a.lerp(b, t));
-            let weight = 1.0 - smoothstep(extra[0], extra[0] + BANK_METERS, distance);
-            if weight <= 0.0 {
-                continue;
-            }
-            let near_mouth = 1.0
-                - smoothstep(
-                    RAMP_FULL_METERS,
-                    RAMP_END_METERS,
-                    p.distance(DVec2::new(extra[1], extra[2])),
-                );
-            shape.weight = shape.weight.max(weight);
-            if weight * near_mouth > shape.ramp {
-                shape.ramp = weight * near_mouth;
-                shape.floor_meters = extra[3];
-                shape.near_mouth = near_mouth;
-            }
-        }
-        return shape;
     }
     shape
+}
+
+/// One cell's tile: header then packed (bank distance to any path, to any
+/// path with a court mouth) at each sample. A cell takes the first court
+/// mouth among its segments; cells near two courts do not occur (courts belong
+/// to separate villages).
+fn bake_tile(
+    origin: DVec2,
+    refs: &[usize],
+    trails: &[Trail],
+    mouths: &[Option<(DVec2, f64)>],
+) -> [[f32; 4]; TILE_FLOAT4S] {
+    let mut tile = [[0.0; 4]; TILE_FLOAT4S];
+    let mouth = refs.iter().find_map(|&r| mouths.get(r).copied().flatten());
+    tile[0] = match mouth {
+        Some((m, floor)) => [floor as f32, m.x as f32, m.y as f32, 1.0],
+        None => [0.0, NO_MOUTH, NO_MOUTH, 0.0],
+    };
+    for y in 0..TILE_SIDE {
+        for x in 0..TILE_SIDE {
+            let q = origin + DVec2::new(x as f64, y as f64) * TILE_SAMPLE_SPACING;
+            let (mut any, mut ramp) = (BANK_STORED_MAX, BANK_STORED_MAX);
+            for &r in refs {
+                let t = trails[r];
+                let d = bank_distance(q, t.a, t.b, t.width);
+                any = any.min(d);
+                if mouths.get(r).copied().flatten().is_some() {
+                    ramp = ramp.min(d);
+                }
+            }
+            let index = y * TILE_SIDE + x;
+            tile[1 + index / 4][index % 4] =
+                (quantise_bank(any) + quantise_bank(ramp) * 4096.0) as f32;
+        }
+    }
+    tile
 }
 
 /// The shaped ground height from the full drawn height and the same height
@@ -446,12 +521,13 @@ pub fn pack_with_mouths(
             }
         }
     }
-    if cells.len() > BUCKETS / 2
+    if cells.len() > MAX_TILES
         || cells.values().any(|v| v.len() > 128)
         || cells.values().map(Vec::len).sum::<usize>() > MAX_REFS
     {
         return Err("village path index budget".into());
     }
+    let started = std::time::Instant::now();
     let mut data = vec![[0.0; 4]; FLOAT4S];
     data[0] = [
         frame.across.x as f32,
@@ -468,6 +544,7 @@ pub fn pack_with_mouths(
     // w: ground shaping on (1) or off (0, `PLANET_VILLAGE_PATH_SHAPING=0`, the A/B override).
     data[3] = [frame.up.x as f32, frame.up.y as f32, frame.up.z as f32, f32::from(u8::from(shaping_enabled()))];
     let mut count = 0;
+    let mut tiles = 0;
     for ((x, y), refs) in cells {
         let coarse_x = x.div_euclid(8) + 128;
         let coarse_y = y.div_euclid(8) + 128;
@@ -483,6 +560,11 @@ pub fn pack_with_mouths(
             .find(|&p| data[p][3] == 0.0)
             .ok_or("village path hash budget")?;
         data[slot] = [x as f32, y as f32, count as f32, refs.len() as f32];
+        let slot = slot - HEADER;
+        data[TILE_INDEX + slot / 4][slot % 4] = tiles as f32;
+        let tile = bake_tile(DVec2::new(x as f64, y as f64) * CELL, &refs, trails, mouths);
+        data[ATLAS + tiles * TILE_FLOAT4S..ATLAS + (tiles + 1) * TILE_FLOAT4S].copy_from_slice(&tile);
+        tiles += 1;
         for r in refs {
             data[REFS + count / 4][count % 4] = r as f32;
             count += 1;
@@ -495,12 +577,14 @@ pub fn pack_with_mouths(
             None => [t.width as f32, NO_MOUTH, NO_MOUTH, 0.0],
         };
     }
+    tracing::info!(target:"planet::villages", tiles, pack_ms = started.elapsed().as_secs_f64() * 1e3, "village path index and shape atlas packed");
     Ok(data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    const BAKED_SHAPE_TOLERANCE: f64 = 0.1;
     #[test]
     fn desire_lines_reach_parking_share_lanes_and_avoid_houses() {
         let houses = [
@@ -619,6 +703,7 @@ mod tests {
         let data =
             pack_with_mouths(&frame, &trails, &[Some((mouth, 512.0)), None]).unwrap();
         let mut seen = [false; 3];
+        let mut worst = [0.0_f64; 2];
         for y in -70..=70 {
             for x in -100..=100 {
                 let p = DVec2::new(x as f64 * 0.5, y as f64 * 0.5);
@@ -632,9 +717,9 @@ mod tests {
                     .collect();
                 let shape = ground_shape(&data, p);
                 let expected = weights.iter().copied().fold(0.0, f64::max);
-                assert!((shape.weight - expected).abs() < 1e-4, "{p}: {} vs {expected}", shape.weight);
+                worst[0] = worst[0].max((shape.weight - expected).abs());
                 let near = 1.0 - smoothstep(RAMP_FULL_METERS, RAMP_END_METERS, p.distance(mouth));
-                assert!((shape.ramp - weights[0] * near).abs() < 1e-4, "{p} ramp");
+                worst[1] = worst[1].max((shape.ramp - weights[0] * near).abs());
                 if shape.ramp > 0.0 {
                     assert_eq!(shape.floor_meters, 512.0);
                 }
@@ -644,6 +729,45 @@ mod tests {
             }
         }
         assert_eq!(seen, [true; 3]);
+        // Baked 1 m samples of the bank distance, blended: close to exact
+        // along a path (under 0.05); the worst (0.094) is at a path's open
+        // round end, where the distance curves round the endpoint.
+        assert!(worst[0] < BAKED_SHAPE_TOLERANCE && worst[1] < BAKED_SHAPE_TOLERANCE, "{worst:?}");
+    }
+
+    /// The baked samples are blended, not searched, so the shape is continuous
+    /// across cell edges where the segment search had to agree exactly.
+    #[test]
+    fn baked_shape_is_continuous_across_cell_edges() {
+        let frame = Frame::new(DVec3::X, 4e6).unwrap();
+        let trails = [Trail { a: DVec2::new(-40.0, 3.0), b: DVec2::new(40.0, -5.0), width: 1.0 }];
+        let data = pack(&frame, &trails).unwrap();
+        for x in -3..=3 {
+            let edge = x as f64 * CELL;
+            for k in 0..40 {
+                let y = -8.0 + k as f64 * 0.37;
+                let a = ground_shape(&data, DVec2::new(edge - 1e-6, y)).weight;
+                let b = ground_shape(&data, DVec2::new(edge + 1e-6, y)).weight;
+                assert!((a - b).abs() < 1e-4, "edge {edge} y {y}: {a} vs {b}");
+            }
+        }
+    }
+
+    /// planet.wgsl reads the atlas at fixed offsets; they must be this layout's.
+    #[test]
+    fn shader_atlas_offsets_match_the_packed_layout() {
+        let shader = include_str!("village_paths.wgsl");
+        for (name, value) in [
+            ("VILLAGE_PATH_TILE_INDEX", TILE_INDEX),
+            ("VILLAGE_PATH_ATLAS", ATLAS),
+            ("VILLAGE_PATH_TILE_SIDE", TILE_SIDE),
+            ("VILLAGE_PATH_TILE_FLOAT4S", TILE_FLOAT4S),
+        ] {
+            assert!(shader.contains(&format!("const {name}: u32 = {value}u;")), "{name} = {value}");
+        }
+        assert!(shader.contains("let bucket = village_path_data[1028u + slot];") && HEADER == 1028);
+        assert!(shader.contains(&format!("village_path_data[{}u + r / 4u]", REFS)));
+        assert!(shader.contains(&format!("village_path_data[{}u + index * 2u]", SEGMENTS)));
     }
 
     /// Off a path nothing moves; on one, short relief is mostly smoothed

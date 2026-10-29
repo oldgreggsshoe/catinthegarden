@@ -674,7 +674,13 @@ struct TerrainSettings {
     outmap_height_scale: [f32; 4],
     outmap_height_blend: [f32; 4],
     outmap_detail: [f32; 4],
+    /// The first four records of the village path buffer (frame, camera,
+    /// on/shaping flags), so the vertex stage reads them as uniforms.
+    village_path_frame: [[f32; 4]; 4],
 }
+
+/// Byte offset of `TerrainSettings::village_path_frame`.
+const TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET: u64 = 48;
 
 impl TerrainSettings {
     fn from_planet_constants(dense_level: u8, shadow_face_quads: u32) -> Self {
@@ -692,6 +698,7 @@ impl TerrainSettings {
                 0.0,
             ],
             outmap_detail: [f32::from(dense_level), shadow_face_quads as f32, 0.0, 0.0],
+            village_path_frame: [[0.0; 4]; 4],
         }
     }
 }
@@ -935,7 +942,7 @@ pub struct TerrainRenderer {
     ship_spray: Option<ShipSprayEmitter>,
     ocean_fft: crate::ocean_fft::OceanFft,
     ocean_fft_enabled: bool,
-    _terrain_settings_buffer: wgpu::Buffer,
+    terrain_settings_buffer: wgpu::Buffer,
     _environment_cubemap: wgpu::Texture,
     _moon_marking_cubemap: wgpu::Texture,
     _terrain_material_texture: wgpu::Texture,
@@ -1101,7 +1108,7 @@ impl TerrainRenderer {
                     outmap_dense_level,
                     shadow_face_quads,
                 )),
-                usage: wgpu::BufferUsages::UNIFORM,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
         let terrain_tile_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1561,7 +1568,7 @@ impl TerrainRenderer {
             ship_spray: None,
             ocean_fft,
             ocean_fft_enabled,
-            _terrain_settings_buffer: terrain_settings_buffer,
+            terrain_settings_buffer,
             _environment_cubemap: environment_cubemap,
             _moon_marking_cubemap: moon_marking_texture,
             _terrain_material_texture: terrain_material_texture,
@@ -1711,6 +1718,11 @@ impl TerrainRenderer {
     ) {
         self.queue
             .write_buffer(&self.village_path_buffer, 0, bytemuck::cast_slice(data));
+        self.queue.write_buffer(
+            &self.terrain_settings_buffer,
+            TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET,
+            bytemuck::cast_slice(&data[..4]),
+        );
         self.village_path_frame = Some(frame);
         self.village_path_data = data.to_vec();
         tracing::info!(target:"planet::villages",segments=data[0][3],"village paths published");
@@ -1722,16 +1734,24 @@ impl TerrainRenderer {
             self.village_path_data.clear();
             self.queue
                 .write_buffer(&self.village_path_buffer, 12, bytemuck::bytes_of(&0.0_f32));
+            self.queue.write_buffer(
+                &self.terrain_settings_buffer,
+                TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET + 12,
+                bytemuck::bytes_of(&0.0_f32),
+            );
             self.road_revision += 1;
         }
     }
     pub fn update_village_path_camera(&self, camera: DVec3) {
         if let Some(frame) = self.village_path_frame {
             let p = frame.local(camera);
+            let camera = [[p.x as f32, p.y as f32, 0.0, 0.0]];
+            self.queue
+                .write_buffer(&self.village_path_buffer, 32, bytemuck::cast_slice(&camera));
             self.queue.write_buffer(
-                &self.village_path_buffer,
-                32,
-                bytemuck::cast_slice(&[[p.x as f32, p.y as f32, 0.0, 0.0]]),
+                &self.terrain_settings_buffer,
+                TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET + 32,
+                bytemuck::cast_slice(&camera),
             );
         }
     }
@@ -5552,7 +5572,7 @@ mod tests {
         ActiveNodeIndex, FadingChunk, ForestSurfaceSample,
         LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS, OUTMAP_TILE_GRID_SUBDIVISION_LEVELS,
         SurfaceDetailNode, TERRAIN_INFO_NEAR_FIELD_BIT, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
-        TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TerrainSettings,
+        TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET, TerrainSettings,
         active_node_at_direction, aligned_texture_row_bytes, anchor_radius_excess_meters,
         conservative_outmap_height_bounds, corner_stitch_level_delta, cube_face_uv,
         downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
@@ -5811,6 +5831,12 @@ mod tests {
         assert_eq!(settings.outmap_height_blend[0], 100_000.0);
         assert_eq!(settings.outmap_height_blend[1], 1_000_000.0);
         assert_eq!(settings.outmap_detail[0], 4.0);
+        // The village path frame is written into the uniform at this offset.
+        assert_eq!(
+            std::mem::offset_of!(TerrainSettings, village_path_frame) as u64,
+            TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET
+        );
+        assert!(shader.contains("village_path_frame: array<vec4<f32>, 4>,"));
         assert!(shader.contains("fn scaled_terrain_macro_height("));
         assert!(shader.matches("scaled_terrain_macro_height(").count() >= 3);
         let normal = shader
