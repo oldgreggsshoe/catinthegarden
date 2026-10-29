@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Timber villages and desire paths,29October: textured timber cabins gain windows/doors/porches/trim/shingles; fixed houses floating~468m above raster ground. One bounded worker links doors around buildings/relief to engineered parking entries, sharing/widening lanes; terrain-owned weather-lit dirt masks clear trees. 778/778 doors in40 test villages; +2.9ms village/+3.5ms parking, not FPS-neutral. Engineering/precompute fingerprint and lake stash unchanged. See docs/TIMBER_VILLAGES_2026_10_29.md and HANDOFF.
+
 - Steering auto-centre,29October: the mouse virtual wheel returns to centre by itself once the mouse has been still 0.25s (e-fold 0.25s, ~1s to straight); free-look counts as letting go; steady small corrections keep it; A/D unchanged (already springs back). `MouseSteering` in driving.rs (`hold` turns it off, used by the old held-wheel tests). New test; 793 pass/same 6 failures. Not driven live. See HANDOFF.
 
 - HUD clock,28October: top-left 24-hour planet time (UTC-style, one reading everywhere): solar time on the zero meridian (+X, longitude 0), one rotation = 24h, so 12:00 is noon there only. `planet_time_hours`/`local_solar_time_hours` in main.rs; redrawn when the minute changes, interactive only. Test checks the hour angles, 24h per rotation and that the eye's position doesn't matter. Not seen live. See HANDOFF.

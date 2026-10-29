@@ -26,10 +26,7 @@ use glam::DVec3;
 
 use planet_coretypes::{BiomeId, TileKey, face_uv_to_direction, tile_key_for_direction};
 
-use crate::planet::{
-    GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS, TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS,
-    planet_radius_meters,
-};
+use crate::planet::planet_radius_meters;
 use crate::terrain::{ForestSurfaceSample, TerrainRenderer};
 
 /// Quadtree level for village sites: a 6.1km cell on this planet.
@@ -87,14 +84,6 @@ const VILLAGE_MAX_DRAW_INSTANCES: usize = 4_096;
 /// camera sitting at its cell's edge has ground 8km away sitting two cells
 /// over. Two rings covers 12.2km, which clears it.
 const VILLAGE_SEARCH_RING: i32 = 2;
-/// How far the drawn ground may differ from the sited ground before the drawn
-/// answer is disbelieved.
-///
-/// The runtime detail ladder is the whole legitimate difference between baked
-/// macro geography and the rendered surface, and it is bounded, so this is
-/// that bound with a little room for the separate global detail term.
-const HOUSE_GROUND_DISAGREEMENT_LIMIT_METERS: f64 =
-    TERRAIN_DETAIL_TOTAL_AMPLITUDE_METERS + GLOBAL_TERRAIN_DETAIL_AMPLITUDE_METERS;
 /// Rebuild the instance list when the camera has moved this far. Villages are
 /// static, so the list only changes when the visible set does.
 const VILLAGE_REBUILD_DISTANCE_METERS: f64 = 400.0;
@@ -118,7 +107,7 @@ const HOUSE_PLACEMENT_ATTEMPTS: u32 = 24;
 
 /// The four painted timber colours, in linear space. Falu red first because it
 /// is the one everybody pictures; the others are the usual Nordic palette.
-// The roof's slate lives in `village.wgsl`, which picks it per fragment from
+// The roof's timber shingles live in `village.wgsl`, picked per fragment from
 // the vertex's roof flag; duplicating it here would let the two drift apart.
 const HOUSE_COLOURS: [[f32; 3]; 4] = [
     [0.412, 0.071, 0.055], // falu red
@@ -159,8 +148,8 @@ pub struct GroundShadowVertex {
 pub struct HouseVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
-    /// 0 = painted wall, taking the instance's colour; 1 = roof, which keeps
-    /// its own dark slate whatever the walls are painted.
+    /// Material: 0 painted siding, 1 shingles, 2 trim, 3 door, 4 glass,
+    /// 5 exposed timber, 6 stone footing. Kept in the existing vertex slot.
     pub roof: f32,
     pub _padding: f32,
 }
@@ -512,9 +501,157 @@ fn push_quad(vertices: &mut Vec<HouseVertex>, a: DVec3, b: DVec3, c: DVec3, d: D
     push_triangle(vertices, a, c, d, roof);
 }
 
+// Small solid joinery, not coplanar decals: trim casts its own silhouette.
+fn timber_box(vertices: &mut Vec<HouseVertex>, lo: DVec3, hi: DVec3, material: f32) {
+    let p = |x, y, z| DVec3::new(x, y, z);
+    for q in [
+        [
+            p(lo.x, lo.y, lo.z),
+            p(lo.x, lo.y, hi.z),
+            p(lo.x, hi.y, hi.z),
+            p(lo.x, hi.y, lo.z),
+        ],
+        [
+            p(hi.x, hi.y, lo.z),
+            p(hi.x, hi.y, hi.z),
+            p(hi.x, lo.y, hi.z),
+            p(hi.x, lo.y, lo.z),
+        ],
+        [
+            p(hi.x, lo.y, lo.z),
+            p(hi.x, lo.y, hi.z),
+            p(lo.x, lo.y, hi.z),
+            p(lo.x, lo.y, lo.z),
+        ],
+        [
+            p(lo.x, hi.y, lo.z),
+            p(lo.x, hi.y, hi.z),
+            p(hi.x, hi.y, hi.z),
+            p(hi.x, hi.y, lo.z),
+        ],
+        [
+            p(lo.x, lo.y, hi.z),
+            p(hi.x, lo.y, hi.z),
+            p(hi.x, hi.y, hi.z),
+            p(lo.x, hi.y, hi.z),
+        ],
+        [
+            p(lo.x, hi.y, lo.z),
+            p(hi.x, hi.y, lo.z),
+            p(hi.x, lo.y, lo.z),
+            p(lo.x, lo.y, lo.z),
+        ],
+    ] {
+        push_quad(vertices, q[0], q[1], q[2], q[3], material);
+    }
+}
+
+fn house_joinery(vertices: &mut Vec<HouseVertex>) {
+    let w = HOUSE_WIDTH_METERS * 0.5;
+    let d = HOUSE_DEPTH_METERS * 0.5;
+    let mut beam =
+        |lo: [f64; 3], hi: [f64; 3], m| timber_box(vertices, DVec3::from(lo), DVec3::from(hi), m);
+    // Stone footings and a weathered timber sill carry the painted frame.
+    beam(
+        [-w - 0.08, -d - 0.08, -1.6],
+        [w + 0.08, d + 0.08, 0.22],
+        6.0,
+    );
+    beam([-w - 0.06, -d - 0.06, 0.22], [w + 0.06, d + 0.06, 0.4], 5.0);
+    for x in [-w, w] {
+        for y in [-d, d] {
+            beam(
+                [x - 0.085, y - 0.085, 0.3],
+                [x + 0.085, y + 0.085, 3.1],
+                2.0,
+            );
+        }
+    }
+    for x in [-w, w] {
+        beam([x - 0.11, -d - 0.5, 2.94], [x + 0.11, d + 0.5, 3.12], 2.0);
+    }
+    // Front door, deep timber surround, and a small raised entrance porch.
+    beam([-0.55, -d - 0.055, 0.36], [0.55, -d - 0.02, 2.48], 3.0);
+    for x in [-0.63, 0.63] {
+        beam(
+            [x - 0.07, -d - 0.14, 0.35],
+            [x + 0.07, -d + 0.02, 2.58],
+            2.0,
+        );
+    }
+    beam([-0.7, -d - 0.14, 2.45], [0.7, -d + 0.02, 2.6], 2.0);
+    beam([-0.95, -d - 1.35, 0.05], [0.95, -d - 0.01, 0.35], 5.0);
+    beam([-1.05, -d - 1.60, -0.1], [1.05, -d - 1.30, 0.17], 5.0);
+    for x in [-0.83, 0.83] {
+        beam(
+            [x - 0.055, -d - 1.23, -1.0],
+            [x + 0.055, -d - 1.12, 2.42],
+            5.0,
+        );
+    }
+    // Window joinery on both gables and both long walls, with real projecting
+    // sills. Panes sit behind the frame and never fight the painted wall.
+    for front in [-1.0, 1.0] {
+        for x in [-1.94, 1.94] {
+            let y = front * (d + 0.07);
+            beam(
+                [x - 0.48, y - 0.025, 1.28],
+                [x + 0.48, y + 0.025, 2.35],
+                4.0,
+            );
+            for dx in [-0.54, 0.0, 0.54] {
+                beam(
+                    [x + dx - 0.045, y - 0.07, 1.2],
+                    [x + dx + 0.045, y + 0.07, 2.43],
+                    2.0,
+                );
+            }
+            for z in [1.23, 1.8, 2.4] {
+                beam(
+                    [x - 0.58, y - 0.07, z - 0.04],
+                    [x + 0.58, y + 0.07, z + 0.04],
+                    2.0,
+                );
+            }
+            beam([x - 0.63, y - 0.18, 1.15], [x + 0.63, y + 0.18, 1.25], 5.0);
+        }
+    }
+    for side in [-1.0, 1.0] {
+        for y in [-2.25, 2.25] {
+            let x = side * (w + 0.07);
+            beam([x - 0.025, y - 0.5, 1.28], [x + 0.025, y + 0.5, 2.35], 4.0);
+            for dy in [-0.56, 0.0, 0.56] {
+                beam(
+                    [x - 0.07, y + dy - 0.045, 1.2],
+                    [x + 0.07, y + dy + 0.045, 2.43],
+                    2.0,
+                );
+            }
+            for z in [1.23, 1.8, 2.4] {
+                beam(
+                    [x - 0.07, y - 0.6, z - 0.04],
+                    [x + 0.07, y + 0.6, z + 0.04],
+                    2.0,
+                );
+            }
+            beam([x - 0.18, y - 0.65, 1.15], [x + 0.18, y + 0.65, 1.25], 5.0);
+        }
+    }
+    // A tiny lean-to roof protects the doorway; still inside the original
+    // house's reserved circular footprint, so siting/roads remain compatible.
+    push_quad(
+        vertices,
+        DVec3::new(-1.08, -d - 1.45, 2.4),
+        DVec3::new(1.08, -d - 1.45, 2.4),
+        DVec3::new(1.08, -d + 0.1, 2.7),
+        DVec3::new(-1.08, -d + 0.1, 2.7),
+        1.0,
+    );
+}
+
 /// One house, built in local axes: x across the gable, y along the ridge, z up.
 /// Walls carry `roof = 0` and take the instance colour; the roof carries
-/// `roof = 1` and keeps its own slate.
+/// `roof = 1` and keeps its own timber shingles.
 pub fn build_house_mesh() -> Vec<HouseVertex> {
     let half_width = HOUSE_WIDTH_METERS * 0.5;
     let half_depth = HOUSE_DEPTH_METERS * 0.5;
@@ -599,6 +736,7 @@ pub fn build_house_mesh() -> Vec<HouseVertex> {
         1.0,
     );
 
+    house_joinery(&mut vertices);
     vertices
 }
 
@@ -763,34 +901,19 @@ pub fn collect_house_instances(
                     {
                         continue;
                     }
-                    // Whether the house exists was decided above, on the dense
-                    // level. Where it stands is a different question, and has
-                    // to follow the surface actually being drawn, or the house
-                    // hovers or sinks. This is the same query flight clearance
-                    // uses, and it is the only one that answers it: the forest
-                    // sampler reads the finest *resident* tile, whose detail
-                    // filter widens with the camera, and it put a house 2km
-                    // above ground it shares with a 180m rendered surface.
-                    // Falling back to the siting height keeps the house placed
-                    // if nothing is drawn there yet.
-                    // The raster query answers with the *highest* surface drawn
-                    // at this direction, because flight clearance must not miss
-                    // one. A coarse ancestor patch covers kilometres of ground
-                    // per vertex, so that highest surface can be a mountain
-                    // that is nowhere near this house -- it put one house
-                    // 1,861m above its own ground. The only legitimate gap
-                    // between baked macro geography and the drawn surface is
-                    // the runtime detail ladder, which is bounded, so a larger
-                    // disagreement is another patch's terrain and the sited
-                    // ground is the better answer.
+                    // Keep camera-independent occupancy, but ground the building
+                    // on the actual raster triangle, not a continuous forest
+                    // height that can sit hundreds of metres above its mesh.
                     let drawn_height_meters = terrain
-                        .forest_surface_sample_at(house_direction, camera_altitude_meters)
-                        .map(|drawn| drawn.height_meters)
-                        .filter(|height| {
-                            (height - site_ground.height_meters).abs()
-                                <= HOUSE_GROUND_DISAGREEMENT_LIMIT_METERS
+                        .village_raster_height_at(house_direction, camera_world_position)
+                        .or_else(|| {
+                            terrain
+                                .forest_surface_sample_at(house_direction, camera_altitude_meters)
+                                .map(|s| s.height_meters)
                         })
+                        .filter(|height| height.is_finite())
                         .unwrap_or(site_ground.height_meters);
+                    // Dense data decides siting; drawn triangles decide contact.
                     // Counted before the distance cutoff. Siting is the thing
                     // that has to be camera-independent; how many of those
                     // houses are near enough to draw is allowed to move with
@@ -809,8 +932,7 @@ pub fn collect_house_instances(
                     // How far the drawn ground is from the baked macro ground
                     // the site was judged on. The runtime detail ladder makes
                     // the two legitimately differ, so this is not a float
-                    // measurement -- it is the size of the gap the limit below
-                    // has to police.
+                    // measurement -- it records the real siting/contact gap.
                     build.max_ground_disagreement_meters = build
                         .max_ground_disagreement_meters
                         .max((drawn_height_meters - site_ground.height_meters).abs());
@@ -828,6 +950,7 @@ pub fn collect_house_instances(
                     let house_north = house_east.cross(house_up);
                     let forward =
                         (house_east * facing.cos() + house_north * facing.sin()).normalize();
+                    build.house_sites.push(site_direction);
                     instances.push(HouseInstance {
                         camera_relative_position: to_camera.as_vec3().to_array(),
                         _pad0: 0.0,
@@ -882,10 +1005,7 @@ pub fn beam_cells_around(camera_direction: DVec3, ring: i32) -> Vec<TileKey> {
 /// so a beam is on exactly the ground a village is sited on -- but it does not
 /// build or distance-cull houses, so it can run for cells far outside the
 /// drawing range. The village centre is the foot, not its first house.
-pub fn village_beam_sites_in_cell(
-    terrain: &impl VillageSurface,
-    key: TileKey,
-) -> Vec<DVec3> {
+pub fn village_beam_sites_in_cell(terrain: &impl VillageSurface, key: TileKey) -> Vec<DVec3> {
     let mut sites = Vec::new();
     for up in village_candidates_in_cell(key) {
         let reference = if up.y.abs() < 0.9 { DVec3::Y } else { DVec3::X };
@@ -905,6 +1025,7 @@ pub fn village_beam_sites_in_cell(
 pub struct VillageBuild {
     /// The houses near enough to draw.
     pub instances: Vec<HouseInstance>,
+    pub house_sites: Vec<DVec3>,
     /// Every house the search region sites, whether or not it is near enough
     /// to draw. This is the camera-independent number.
     pub sited_houses: u32,
@@ -923,6 +1044,7 @@ impl Default for VillageBuild {
     fn default() -> Self {
         Self {
             instances: Vec::new(),
+            house_sites: Vec::new(),
             sited_houses: 0,
             max_ground_disagreement_meters: 0.0,
             nearest_site_macro_height_meters: f64::NAN,
@@ -1141,7 +1263,7 @@ mod tests {
         let mesh = build_house_mesh();
         let centre = glam::Vec3::new(0.0, 0.0, (HOUSE_WALL_HEIGHT_METERS * 0.5) as f32);
         let mut inward = Vec::new();
-        for (index, triangle) in mesh.chunks_exact(3).enumerate() {
+        for (index, triangle) in mesh.chunks_exact(3).take(14).enumerate() {
             let a = glam::Vec3::from(triangle[0].position);
             let b = glam::Vec3::from(triangle[1].position);
             let c = glam::Vec3::from(triangle[2].position);
@@ -1159,6 +1281,26 @@ mod tests {
             mesh.len() / 3,
             &inward[..inward.len().min(6)]
         );
+    }
+
+    #[test]
+    fn joinery_boxes_have_outward_faces_and_the_house_has_all_materials() {
+        let mut box_mesh = Vec::new();
+        let lo = DVec3::new(1.0, 2.0, 3.0);
+        let hi = DVec3::new(4.0, 5.0, 6.0);
+        timber_box(&mut box_mesh, lo, hi, 2.0);
+        for t in box_mesh.chunks_exact(3) {
+            let centre = t
+                .iter()
+                .map(|v| DVec3::from(v.position.map(f64::from)))
+                .sum::<DVec3>()
+                / 3.0;
+            assert!(DVec3::from(t[0].normal.map(f64::from)).dot(centre - (lo + hi) * 0.5) > 0.0);
+        }
+        let mesh = build_house_mesh();
+        for material in 0..=6 {
+            assert!(mesh.iter().any(|v| v.roof == material as f32));
+        }
     }
 
     /// Instrument: how much does the ladder vary across a village footprint at

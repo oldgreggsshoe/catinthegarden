@@ -140,7 +140,7 @@ fn gpu_forest_generate(
         base_height,
     );
     let surface_height = base_height + detail.height_meters;
-    if road_clears_tree(direction, surface_height) {
+    if road_clears_tree(direction, surface_height) || village_path_clears_tree(direction) {
         return;
     }
     var surface_normal = displaced_surface_normal(

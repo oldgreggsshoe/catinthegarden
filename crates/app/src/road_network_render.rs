@@ -155,6 +155,7 @@ impl NetworkRenderer {
         }
         drop(std::mem::take(&mut active.snapshot.vertices));
         terrain.set_network_road_cuts(active.snapshot.field.clone());
+        terrain.set_village_parking(&active.snapshot.field.village_parking);
         tracing::info!(target:"planet::roads",source_version=worker.source_version,
             villages=active.snapshot.villages,regions=active.snapshot.keys.len(),segments=active.snapshot.segments,
             field_segments=active.snapshot.field.segments.len(),
@@ -336,6 +337,7 @@ impl NetworkRenderer {
             let mut complete = self.pending.take().unwrap().scene;
             drop(std::mem::take(&mut complete.snapshot.vertices));
             terrain.set_network_road_cuts(complete.snapshot.field.clone());
+            terrain.set_village_parking(&complete.snapshot.field.village_parking);
             tracing::info!(target:"planet::roads",regions=complete.snapshot.keys.len(),villages=complete.snapshot.villages,
                 segments=complete.snapshot.segments,tunnel_segments=complete.snapshot.tunnels,
                 field_segments=complete.snapshot.field.segments.len(),"road network resident set published");

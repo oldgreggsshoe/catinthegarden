@@ -71,6 +71,7 @@ mod terrain;
 mod thunder_clips;
 mod tunnel_visibility;
 mod village;
+mod village_paths;
 mod village_render;
 mod weather;
 mod weather_render;
@@ -6408,7 +6409,7 @@ impl State {
                 .prepare_village_siting_tiles(camera_planet_frame_position.normalize_or_zero());
             self.villages.update(
                 &self.queue,
-                &self.terrain,
+                &mut self.terrain,
                 camera_planet_frame_position,
                 camera_sea_level_altitude_meters,
             );

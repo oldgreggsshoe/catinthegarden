@@ -1992,6 +1992,7 @@ fn flat_triangle_colour(
         input.detail_spacing_and_face_normal.yzw,
         input.surface_direction,
     );
+    fill = village_path_albedo(fill, view_to_planet(input.camera_relative_view_position), input.surface_height_and_fog_color.x);
     let triangle_specular = select(
         0.0,
         input.source_uv_scale_and_latitude.w,
@@ -3232,6 +3233,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     textured_terrain_albedo = road_cut_albedo(textured_terrain_albedo,
         input.outmap_and_macro_height.y + input.terrain_detail_meters_and_fog_amount.x
             - input.surface_height_and_fog_color.x);
+    textured_terrain_albedo = village_path_albedo(textured_terrain_albedo, view_to_planet(input.camera_relative_view_position), input.surface_height_and_fog_color.x);
     // Rain darkens exposed ground; accumulated snow replaces the material only
     // where the coupled surface field says it has persisted. Ocean and lake
     // branches returned above, and non-ice land remains matte.

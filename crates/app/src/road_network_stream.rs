@@ -155,6 +155,7 @@ impl Worker {
                         }
                         let mut snapshot =
                             road_network_mesh::snapshot(&initial_plans, centre, radius, &survey)?;
+                        crate::village_paths::attach_courts(&mut snapshot, &initial_plans);
                         snapshot.inspection = pose.or(snapshot.inspection);
                         let mut generated = crate::road_overlay::Generated::new();
                         for plan in &initial_plans {
@@ -216,6 +217,7 @@ impl Worker {
                                 }
                                 nav_plans = plans.clone();
                                 let mut snapshot = road_network_mesh::snapshot(&plans, request.centre, radius, &survey)?;
+                                crate::village_paths::attach_courts(&mut snapshot, &plans);
                                 if overview_regions != generated.len() {
                                     overview = crate::road_overlay::overview(&backbone, &generated, radius);
                                     overview_regions = generated.len();

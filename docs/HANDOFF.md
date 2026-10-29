@@ -10,7 +10,18 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 28 October: solar eclipses.** The moon's shadow falls on the planet at
+**Current phase, 29 October: timber villages and pedestrian paths.** Established
+sites/scatter remain, but houses have timber siding/shingles, windows, doors,
+porches and joinery. The old continuous forest contact floated the replay's
+nearest house ~468m above its drawn triangle; buildings now ground on real raster
+triangles with the real eye's detail filter and bounded refresh. A cancellable
+worker routes door-to-court desire lines around houses/relief, merges shared
+traffic and paints weather-lit dirt directly on terrain; GPU trees clear it.
+778/778 doors in40 test villages; measured cost +2.9ms village/+3.5ms parking.
+No engineering/precompute fingerprint, road geometry or lake-stash change.
+See docs/TIMBER_VILLAGES_2026_10_29.md and the final dated section below.
+
+**Previous phase, 28 October: solar eclipses.** The moon's shadow falls on the planet at
 new moon in the same eclipse seasons. Every lit point keeps the share of the sun's disc
 the moon leaves it (eclipse.wgsl `moon_shadow_sunlight`, mirrored in sky_moon.rs): direct
 sun on land, sea, trees, cloud, haze; the sky-view LUT per sample (so the sky darkens
@@ -14357,3 +14368,42 @@ Request: "So solar eclipses".
 - `MouseSteering::hold` turns it off; the four older tests about a held wheel set it.
   New test `the_mouse_wheel_returns_to_centre_when_left_alone`. The hover text on the
   steering bar now says so. 793 pass / same 6 failures. Not driven live.
+
+## Timber villages and desire paths (29 October)
+
+- Completed the user's village visual upgrade: painted wood siding, filtered
+  oak grain, cedar-coloured shingle roofs, framed windows/sills, real doors,
+  porches, corner joinery and stone footings; established scatter/spacing retained.
+  Detailed joinery within450m, same textured shell farther out; no new asset/dependency.
+- Diagnosed a pre-existing floating-house defect using actual raster contact:
+  nearest house+5087.748m versus drawn ground+4620.069m. Siting remains unchanged;
+  drawn height now samples the raster with the real eye. Bounded32-nearest+16
+  rotating refresh tracks streaming; old walking query keeps its original argument.
+- One cancellable, body-scoped background worker fits door-to-parking desire
+  lines, routing around oriented footprints, water and costly relief; prior
+  footfall encourages shared lanes and traffic widens them. Gentler court-side
+  entries avoid unnecessarily steep banks; exact connectors eliminate grid gaps.
+  Terrain-owned soft earth colour receives normal wetness/snow/light. No decal
+  layer, z fighting, new path draw or glow. Default GPU trees clear the paths.
+- CPU-only court metadata is attached outside fingerprinted engineering code,
+  including farther drawn courts.31/31 near courts matched their actual indexed
+  geometry;39 destinations in the recorded resident plans. Every one of778 drawn
+  doors in40 villages connected to available parking/internal paths. Before a
+  road court is resident (or roads off), doors use an internal gathering point.
+  This is a captured area, not exhaustive planetary path feasibility.
+- Existing scenario matched p50 High1280x800 requested/1280x647 client, X11/Immediate:
+  village68.557->71.456ms (+2.899), parking96.341->99.838ms (+3.497).
+  Not FPS-neutral and not a60FPS claim. The unoptimised village prototype was~75ms.
+  New village_paths close/overhead/return replay and before/after existing replays
+  pass; final images opened. Report/evidence/command: docs/TIMBER_VILLAGES_2026_10_29.md.
+- Final full regular suite800 pass/same6 failures/76 ignored;33 focused village
+  checks and both new Vulkan tests pass. Explicit broader road GPU run11 pass,
+  one old far-road coverage/luminance expectation fails (~0.192 vs~0.088).
+  Its test body, shader, pipeline, material and CameraUniform are byte-unchanged
+  from HEAD baseline; not retuned/hidden here. Full failure list unchanged.
+  cargo check/release succeed, only existing startup_profile::set_prefix warning.
+- The planetary precompute fingerprint inputs, engineering/profile/road geometry,
+  outmap and lake stash@{0} are untouched. PLANET_VILLAGE_PATHS=0 is the diagnostic
+  path/clearance A/B override. No renderer left running. Camera replays only:
+  house interiors/collision, physical footfall erosion and guaranteed stairs at
+  every possible procedural cliff remain outside this phase.

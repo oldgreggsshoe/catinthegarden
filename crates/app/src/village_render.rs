@@ -203,6 +203,7 @@ impl HouseInstance {
 
 pub struct VillageRenderer {
     pipeline: wgpu::RenderPipeline,
+    timber_bind_group: wgpu::BindGroup,
     ground_shadow_pipeline: wgpu::RenderPipeline,
     beam_pipeline: wgpu::RenderPipeline,
     beam_vertex_buffer: wgpu::Buffer,
@@ -223,6 +224,7 @@ pub struct VillageRenderer {
     vertex_count: u32,
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
+    detailed_count: u32,
     /// Where the camera stood when the visible set was last rebuilt. Villages
     /// are static, so the list only changes when the camera does.
     last_build_position: Option<DVec3>,
@@ -238,6 +240,10 @@ pub struct VillageRenderer {
     instances: Vec<HouseInstance>,
     /// Where those houses stand, in the planet frame.
     house_world_positions: Vec<DVec3>,
+    house_sites: Vec<DVec3>,
+    path_road_revision: u64,
+    ground_cursor: usize,
+    path_worker: crate::village_paths::Worker,
     /// Houses sited in the search region, before the render cutoff.
     sited_houses: u32,
     max_ground_disagreement_meters: f64,
@@ -300,9 +306,45 @@ impl VillageRenderer {
             mapped_at_creation: false,
         });
 
+        let timber = crate::road_material::Material::new(device, queue);
+        let timber_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("village timber layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let timber_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("village timber"),
+            layout: &timber_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&timber.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&timber.sampler),
+                },
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("village pipeline layout"),
-            bind_group_layouts: &[Some(camera_bind_group_layout)],
+            bind_group_layouts: &[Some(camera_bind_group_layout), Some(&timber_layout)],
             immediate_size: 0,
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -447,6 +489,7 @@ impl VillageRenderer {
 
         Self {
             pipeline,
+            timber_bind_group,
             ground_shadow_pipeline,
             beam_pipeline,
             beam_vertex_buffer,
@@ -462,10 +505,15 @@ impl VillageRenderer {
             vertex_count: mesh.len() as u32,
             instance_buffer,
             instance_count: 0,
+            detailed_count: 0,
             last_build_position: None,
             nearest_house_world: None,
             instances: Vec::new(),
             house_world_positions: Vec::new(),
+            house_sites: Vec::new(),
+            path_road_revision: u64::MAX,
+            ground_cursor: 0,
+            path_worker: crate::village_paths::Worker::new(),
             sited_houses: 0,
             max_ground_disagreement_meters: 0.0,
             nearest_site_macro_height_meters: f64::NAN,
@@ -484,7 +532,7 @@ impl VillageRenderer {
     pub fn update(
         &mut self,
         queue: &wgpu::Queue,
-        terrain: &TerrainRenderer,
+        terrain: &mut TerrainRenderer,
         camera_world_position: DVec3,
         camera_altitude_meters: f64,
     ) {
@@ -500,6 +548,7 @@ impl VillageRenderer {
             camera_altitude_meters,
         );
         if camera_altitude_meters >= draw_altitude_meters() {
+            terrain.clear_village_paths();
             self.instance_count = 0;
             self.last_build_position = None;
             self.nearest_house_world = None;
@@ -512,6 +561,23 @@ impl VillageRenderer {
         let moved_far_enough = self
             .last_build_position
             .is_none_or(|last| last.distance(camera_world_position) > rebuild_distance_meters());
+        // Invalidate a pending result before taking it when a new court set
+        // arrived. Publishing that older result must not hide the road revision.
+        if !moved_far_enough && self.path_road_revision != terrain.road_revision() {
+            self.rebuild_paths(terrain, camera_world_position);
+        }
+        if let Some(result) = self.path_worker.take() {
+            match result {
+                Ok((frame, data)) => {
+                    terrain.set_village_paths(frame, &data);
+                    self.path_road_revision = terrain.road_revision();
+                }
+                Err(error) => {
+                    tracing::warn!(target:"planet::villages", %error, "village path build rejected")
+                }
+            }
+        }
+        terrain.update_village_path_camera(camera_world_position);
         if !moved_far_enough {
             // Re-anchoring is not the same as re-siting. The instance buffer
             // holds offsets *from the camera*, so leaving it alone while the
@@ -520,6 +586,38 @@ impl VillageRenderer {
             // capture 24m from a house was indistinguishable from one 150m
             // away. Which houses exist is still only recomputed on a real
             // rebuild; this just re-differences the ones already chosen.
+            // Streaming/refinement can change a drawn triangle without a
+            // 400m camera move. Refresh a bounded batch plus nearby houses.
+            let count = self.house_world_positions.len();
+            let mut nearby: Vec<_> = self
+                .house_world_positions
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p.distance_squared(camera_world_position), i))
+                .filter(|&(distance, _)| distance < 450.0 * 450.0)
+                .collect();
+            if nearby.len() > 32 {
+                nearby.select_nth_unstable_by(32, |a, b| a.0.total_cmp(&b.0));
+                nearby.truncate(32);
+            }
+            let mut refresh: Vec<_> = nearby.into_iter().map(|(_, i)| i).collect();
+            if count > 0 {
+                refresh.extend((0..count.min(16)).map(|i| (self.ground_cursor + i) % count));
+            }
+            refresh.sort_unstable();
+            refresh.dedup();
+            for i in refresh {
+                if let Some(height) = terrain.village_raster_height_at(
+                    self.house_world_positions[i].normalize(),
+                    camera_world_position,
+                ) {
+                    self.house_world_positions[i] = self.house_world_positions[i].normalize()
+                        * (crate::planet::planet_radius_meters() + height);
+                }
+            }
+            if count > 0 {
+                self.ground_cursor = (self.ground_cursor + 16) % count;
+            }
             self.rewrite_camera_relative_positions(queue, camera_world_position);
             return;
         }
@@ -534,6 +632,7 @@ impl VillageRenderer {
             camera_world_position,
         );
         let instances = build.instances;
+        self.house_sites = build.house_sites;
         self.instance_count = instances.len() as u32;
         self.sited_houses = build.sited_houses;
         self.max_ground_disagreement_meters = build.max_ground_disagreement_meters;
@@ -557,6 +656,18 @@ impl VillageRenderer {
         self.instances = instances;
         self.last_build_position = Some(camera_world_position);
         self.upload_instances(queue);
+        self.rebuild_paths(terrain, camera_world_position);
+    }
+
+    fn rebuild_paths(&mut self, terrain: &mut TerrainRenderer, camera: DVec3) {
+        self.path_worker.request(
+            terrain,
+            &self.instances,
+            &self.house_world_positions,
+            &self.house_sites,
+            camera,
+        );
+        self.path_road_revision = terrain.road_revision();
     }
 
     /// Re-differences the built houses against the camera's current position.
@@ -662,13 +773,15 @@ impl VillageRenderer {
         self.beams_enabled
     }
 
-    fn upload_instances(&self, queue: &wgpu::Queue) {
-        if !self.instances.is_empty() {
-            queue.write_buffer(
-                &self.instance_buffer,
-                0,
-                bytemuck::cast_slice(&self.instances),
-            );
+    fn upload_instances(&mut self, queue: &wgpu::Queue) {
+        let detailed = |h: &&HouseInstance| {
+            glam::Vec3::from(h.camera_relative_position).length_squared() < 450.0 * 450.0
+        };
+        let mut ordered: Vec<_> = self.instances.iter().filter(detailed).copied().collect();
+        self.detailed_count = ordered.len() as u32;
+        ordered.extend(self.instances.iter().filter(|h| !detailed(h)).copied());
+        if !ordered.is_empty() {
+            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&ordered));
         }
     }
 
@@ -681,6 +794,7 @@ impl VillageRenderer {
         if !self.enabled {
             return;
         }
+        render_pass.set_bind_group(1, &self.timber_bind_group, &[]);
         // Beams are drawn before the altitude gate below: their whole purpose
         // is to show villages from further away than the houses themselves
         // are worth drawing.
@@ -707,9 +821,13 @@ impl VillageRenderer {
         render_pass.draw(0..self.ground_shadow_vertex_count, 0..self.instance_count);
 
         render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(1, &self.timber_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-        render_pass.draw(0..self.vertex_count, 0..self.instance_count);
+        render_pass.draw(0..self.vertex_count, 0..self.detailed_count);
+        // The first fourteen triangles are the original house shell. Keep
+        // distant buildings textured without submitting subpixel joinery.
+        render_pass.draw(0..42, self.detailed_count..self.instance_count);
     }
 
     /// The house nearest the camera, in world space, or `None` when no house

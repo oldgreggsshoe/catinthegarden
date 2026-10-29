@@ -185,6 +185,7 @@ const CHEAP_VERTEX_AERIAL: bool = {};",
         crate::planet::shared_planet_shader_source(),
         crate::planet::render_feature_constants(),
         crate::road::cut_shader_source(),
+        include_str!("village_paths.wgsl").to_string(),
         ablation_settings,
         fragment_ablation_settings,
         material_ablation_setting,
@@ -918,6 +919,9 @@ pub struct TerrainRenderer {
     /// filled each frame by `sun::SunRenderer::encode_visibility`.
     sun_visibility_buffer: wgpu::Buffer,
     road_cut_buffer: wgpu::Buffer,
+    village_path_buffer: wgpu::Buffer,
+    village_path_frame: Option<crate::road_network_field::Frame>,
+    village_parking: Vec<(DVec3, DVec3)>,
     road_revision: u64,
     road_cuts: Option<std::sync::Arc<crate::road::CutField>>,
     network_road_cuts: Option<std::sync::Arc<crate::road_network_field::Field>>,
@@ -1383,6 +1387,11 @@ impl TerrainRenderer {
             contents: bytemuck::cast_slice(&[1.0_f32, 0.0, 0.0, 0.0]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let village_path_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cached village ground wear"),
+            contents: bytemuck::cast_slice(&vec![[0.0_f32; 4]; crate::village_paths::FLOAT4S]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
         let road_cut_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cached road cut profile"),
             contents: bytemuck::cast_slice(&vec![
@@ -1472,6 +1481,10 @@ impl TerrainRenderer {
                         binding: 21,
                         resource: road_cut_buffer.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 22,
+                        resource: village_path_buffer.as_entire_binding(),
+                    },
                 ],
             })
         });
@@ -1532,6 +1545,9 @@ impl TerrainRenderer {
             shared_bind_groups,
             sun_visibility_buffer,
             road_cut_buffer,
+            village_path_buffer,
+            village_path_frame: None,
+            village_parking: Vec::new(),
             road_revision: 0,
             road_cuts: None,
             network_road_cuts: None,
@@ -1671,6 +1687,48 @@ impl TerrainRenderer {
         self.road_cuts = None;
     }
 
+    pub fn village_path_source(&self) -> (u8, HashMap<TileKey, TileData>) {
+        let level = match &self.source {
+            TerrainDataSource::Outmap(outmap) => outmap.manifest().dense_level,
+            _ => 0,
+        };
+        (level, self.village_siting_tiles.clone())
+    }
+    pub fn village_parking_areas(&self) -> &[(DVec3, DVec3)] {
+        &self.village_parking
+    }
+    pub fn set_village_parking(&mut self, courts: &[(DVec3, DVec3)]) {
+        self.village_parking = courts.to_vec();
+    }
+    pub fn set_village_paths(
+        &mut self,
+        frame: crate::road_network_field::Frame,
+        data: &[[f32; 4]],
+    ) {
+        self.queue
+            .write_buffer(&self.village_path_buffer, 0, bytemuck::cast_slice(data));
+        self.village_path_frame = Some(frame);
+        tracing::info!(target:"planet::villages",segments=data[0][3],"village paths published");
+        // Reuse the existing forest invalidation signal; no road geometry changes.
+        self.road_revision += 1;
+    }
+    pub fn clear_village_paths(&mut self) {
+        if self.village_path_frame.take().is_some() {
+            self.queue
+                .write_buffer(&self.village_path_buffer, 12, bytemuck::bytes_of(&0.0_f32));
+            self.road_revision += 1;
+        }
+    }
+    pub fn update_village_path_camera(&self, camera: DVec3) {
+        if let Some(frame) = self.village_path_frame {
+            let p = frame.local(camera);
+            self.queue.write_buffer(
+                &self.village_path_buffer,
+                32,
+                bytemuck::cast_slice(&[[p.x as f32, p.y as f32, 0.0, 0.0]]),
+            );
+        }
+    }
     pub fn road_revision(&self) -> u64 {
         self.road_revision
     }
@@ -2498,6 +2556,17 @@ impl TerrainRenderer {
         local_surface_direction: DVec3,
         camera_altitude_meters: f64,
     ) -> Option<f64> {
+        self.village_raster_height_at(local_surface_direction, local_surface_direction * (planet_radius_meters() + camera_altitude_meters))
+    }
+
+    /// Actual drawn triangles, filtered for the real eye rather than a pretend
+    /// camera directly over a remote building. No change to village siting.
+    pub fn village_raster_height_at(
+        &self,
+        local_surface_direction: DVec3,
+        camera_position: DVec3,
+    ) -> Option<f64> {
+        let camera_altitude_meters = camera_position.length() - planet_radius_meters();
         let (face, face_uv) = cube_face_uv(local_surface_direction)?;
         let sample_node = |surface: SurfaceDetailNode| {
             let [u_min, v_min, u_max, v_max] = surface.node.uv_bounds();
@@ -2514,8 +2583,6 @@ impl TerrainRenderer {
                 let u = u_min + (u_max - u_min) * x as f64 / grid_quads as f64;
                 let v = v_min + (v_max - v_min) * y as f64 / grid_quads as f64;
                 let direction = cube_face_direction(surface.node.face, u, v);
-                let camera_position =
-                    local_surface_direction * (planet_radius_meters() + camera_altitude_meters);
                 // Match vs_main's macro-displaced detail distance. The shader
                 // no longer filters against the datum sphere: on the moon that
                 // is kilometres below the camera and suppresses terrain detail
@@ -3950,6 +4017,16 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 22,
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     })
 }
@@ -4939,6 +5016,30 @@ fn source_tile_uv_at_direction(key: TileKey, direction: DVec3) -> Option<[f32; 2
     source_tile_uv(key, face, face_uv)
 }
 
+/// A fixed 8m relief filter gives pedestrian routes stable hill/valley costs,
+/// independent of the camera's current terrain LOD. Fine bumps remain material.
+pub(crate) fn village_path_ground(
+    direction: DVec3,
+    level: u8,
+    tiles: &HashMap<TileKey, TileData>,
+) -> Option<f64> {
+    let (face, uv) = cube_face_uv(direction)?;
+    let key = tile_key_for_direction(direction, level);
+    let source_uv = source_tile_uv(key, face, uv)?;
+    let tile = tiles.get(&key)?;
+    let biome = sample_biome_cpu(&tile.biome_ids, source_uv);
+    let raw = sample_height_cpu(&tile.heights_meters, source_uv);
+    if biome == 0 || biome == 1 || raw <= 0.0 {
+        return None;
+    }
+    Some(detailed_outmap_land_height_meters_with_filter(
+        f64::from(raw),
+        direction,
+        0.0,
+        continuous_baked_sample_spacing_meters(uv, level, level),
+        VILLAGE_SITING_DETAIL_FILTER_METERS,
+    ))
+}
 /// The exact camera-independent village sampler, shared with CPU road workers.
 pub(crate) fn dense_siting_surface_sample(
     local_surface_direction: DVec3,

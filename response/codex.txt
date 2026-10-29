@@ -283,3 +283,32 @@ Done: the steering now centres itself. Committed and pushed; I haven't driven it
 - The delay and centring time are two named settings in the driving code and are easy to adjust.
 
 Tests: a new test checks the wheel returns to centre, holds through steady corrections, and lets go during free-look. 793 pass, with the same 6 failures as before.
+
+I’ll inspect the house meshes and parking-area connections first. Then I’ll improve the timber buildings and add worn-earth paths from their entrances, letting shared routes merge naturally. I’ll check the result in screenshots and measure the rendering cost.
+
+The houses are currently plain painted blocks with simple roofs. I’ll keep their established positions, but add timber siding, shingled roofs, framed windows, doors, porches and structural trim.
+For the paths, I’ll use the actual parking courts as destinations, route around buildings, favour gentler ground and widen the stretches that several households share. The worn-earth colour will be applied directly to the terrain, avoiding floating path strips.
+Plan: modify village.rs, village.wgsl and village_render.rs for buildings; add village_paths.rs/.wgsl with terrain/main/forest integration for cached ground-colour paths. Add focused routing/material tests and a matched village scenario; update AGENTS/HANDOFF after validation.
+
+The first screenshots show a clear improvement to the houses. The path prototype needs more work: too many doorways were left disconnected, and it added about 6 ms to this village view. I’m correcting the routing, moving its searches off the render thread, and removing tiny joinery geometry from houses too distant for it to be visible.
+
+I found an underlying placement bug: the nearest houses were about 468 metres above the rendered terrain. That made correctly ground-painted paths appear disconnected from them.
+I’ll fix the ground contact as part of this upgrade, keeping the village sites and road layout unchanged. The paths can then meet the porches and parking courts at ground level.
+
+The paths now connect all 778 rendered doorways across the 40 villages in the test area. Shared stretches widen with traffic, routes favour gentler ground, and parking entries avoid steep banks where possible.
+The matched tests put the upgrade at roughly 2–3 ms extra per frame. I’m finishing the visual checks and keeping these cosmetic changes from invalidating the expensive planetary road precompute.
+
+Done—detailed timber cabins, merging worn-earth paths toward parking, and corrected floating buildings.
+
+Checked 778 doorways across 40 villages. Extra render cost: about 3 ms/frame. Full suite: 800 passed, six existing failures; one additional offscreen-road check fails (details in docs/TIMBER_VILLAGES_2026_10_29.md).
+
+Committed and pushed. Screenshots: test-runs/village_paths/1793272980-980918/screenshots/
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:119-119|note=[Used prior handoff workflow guidance and verified the current checkout directly]
+</citation_entries>
+<rollout_ids>
+01a07b93-6f08-70f2-80be-2f78bae4a1eb
+</rollout_ids>
+</oai-mem-citation>

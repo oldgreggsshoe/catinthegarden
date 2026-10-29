@@ -30,13 +30,15 @@ struct Camera {
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
+@group(1) @binding(0) var timber: texture_2d<f32>;
+@group(1) @binding(1) var timber_sampler: sampler;
 
 struct VertexInput {
     // House-local axes: x across the gable, y along the ridge, z up.
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
-    // 0 = painted wall, 1 = roof. The roof keeps its slate whatever the walls
-    // are painted, so a village reads as painted timber under dark roofs.
+    // Material tag: painted siding, timber shingles, trim, door, glazing,
+    // exposed timber or stone footing.
     @location(2) roof: f32,
     // Per-instance, in planet-local axes.
     @location(3) camera_relative_position: vec3<f32>,
@@ -52,6 +54,9 @@ struct VertexOutput {
     @location(0) @interpolate(flat) normal: vec3<f32>,
     @location(1) @interpolate(flat) colour: vec3<f32>,
     @location(2) @interpolate(flat) up: vec3<f32>,
+    @location(3) local: vec3<f32>,
+    @location(4) @interpolate(flat) local_normal: vec3<f32>,
+    @location(5) @interpolate(flat) material: u32,
 }
 
 fn planet_to_view(vector: vec3<f32>) -> vec3<f32> {
@@ -81,6 +86,9 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.normal = normalize(normal);
     output.colour = select(input.colour, vec3<f32>(0.118, 0.110, 0.106), input.roof > 0.5);
     output.up = up;
+    output.local = input.position;
+    output.local_normal = input.normal;
+    output.material = u32(input.roof + 0.5);
     return output;
 }
 
@@ -106,7 +114,43 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         vec3<f32>(0.24, 0.29, 0.36),
         sky_facing,
     ) * (0.25 + 0.75 * sun_elevation) * eclipse_sky;
-    let lit = input.colour * (sunlight * sun_lambert + sky_light);
+    // All grain and joints are in house-local metres, with filtered mips and
+    // derivative-softened board seams rather than shimmering pixel stripes.
+    let n = abs(input.local_normal);
+    let wall_u = select(input.local.x, input.local.y, n.x > n.y);
+    var uv = vec2<f32>(wall_u * 0.28, input.local.z * 0.16);
+    if input.material == 1u { uv = vec2<f32>(input.local.y * 0.3, input.local.x * 0.32); }
+    if n.z > 0.9 { uv = input.local.xy * 0.3; }
+    let oak = textureSample(timber, timber_sampler, uv);
+    let grain = clamp(dot(oak.rgb, vec3<f32>(0.3,0.5,0.2)) * 3.5, 0.65, 1.25);
+    var albedo = input.colour * grain;
+    if input.material == 0u {
+        let coordinate = wall_u / 0.19;
+        let edge = min(fract(coordinate), 1.0-fract(coordinate));
+        let aa = max(fwidth(coordinate),0.012);
+        albedo *= mix(0.65,1.0,smoothstep(0.015,0.015+aa,edge));
+    } else if input.material == 1u {
+        let row = floor(input.local.x / 0.28);
+        let joint = vec2<f32>(input.local.y / 0.18 + row * 0.5, input.local.x / 0.28);
+        let edge = min(fract(joint),1.0-fract(joint));
+        let aa = max(fwidth(joint),vec2<f32>(0.015));
+        let seams = smoothstep(vec2<f32>(0.02),vec2<f32>(0.02)+aa,edge);
+        albedo = oak.rgb * vec3<f32>(0.35,0.32,0.28) * (0.65+0.35*seams.x*seams.y);
+    } else if input.material == 2u {
+        albedo = vec3<f32>(0.58,0.48,0.32)*grain;
+    } else if input.material == 3u {
+        albedo = oak.rgb * vec3<f32>(0.65,0.52,0.35);
+        let panel = smoothstep(0.04,0.055,abs(input.local.x));
+        albedo *= 0.7+0.3*panel;
+    } else if input.material == 4u {
+        // Non-emissive dark panes with a restrained sky reflection.
+        albedo = vec3<f32>(0.025,0.052,0.065);
+    } else if input.material == 5u {
+        albedo = oak.rgb * vec3<f32>(0.85,0.72,0.5);
+    } else if input.material == 6u {
+        albedo = vec3<f32>(0.11,0.105,0.09) * grain;
+    }
+    let lit = albedo * (sunlight * sun_lambert + sky_light);
     return vec4<f32>(lit, 1.0);
 }
 

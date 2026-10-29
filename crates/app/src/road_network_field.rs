@@ -114,6 +114,8 @@ impl Segment {
 pub struct Field {
     pub frame: Frame,
     pub segments: Vec<Segment>,
+    /// Cosmetic pedestrian destinations, attached only to a live snapshot.
+    pub village_parking: Vec<(DVec3, DVec3)>,
     cells: BTreeMap<(i32, i32), Vec<usize>>,
     data: Vec<[f32; 4]>,
     /// Exact shared ribbon cross-sections for walking the rendered triangles.
@@ -231,6 +233,7 @@ impl Field {
         Ok(Self {
             frame,
             segments,
+            village_parking: Vec::new(),
             cells,
             data,
             deck_sections: None,

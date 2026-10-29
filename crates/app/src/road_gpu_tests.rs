@@ -968,3 +968,102 @@ fn gpu_bore_mask_matches_full_union_at_portals_walls_and_junctions() {
         assert!(results.iter().any(|r| r[1] == 0.0));
     }
 }
+
+#[test]
+#[ignore = "requires Vulkan; executes the production village ground-wear lookup"]
+fn gpu_village_paths_match_capsules_across_negative_cells_and_camera_motion() {
+    use crate::village_paths::{Trail, pack};
+    use glam::DVec2;
+    let frame = crate::road_network_field::Frame::new(DVec3::X, 4_000_000.0).unwrap();
+    let trails = [
+        Trail {
+            a: DVec2::new(-43.0, -31.0),
+            b: DVec2::new(43.0, 31.0),
+            width: 1.2,
+        },
+        Trail {
+            a: DVec2::new(-20.0, 30.0),
+            b: DVec2::new(20.0, 30.0),
+            width: 0.8,
+        },
+    ];
+    let data = pack(&frame, &trails).unwrap();
+    let mut cases = Vec::new();
+    let mut expected = Vec::new();
+    for y in -35..=35 {
+        for x in -48..=48 {
+            let p = DVec2::new(x as f64, y as f64);
+            let wear = trails
+                .iter()
+                .map(|t| {
+                    let d = t.b - t.a;
+                    let a = ((p - t.a).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+                    let distance = p.distance(t.a.lerp(t.b, a));
+                    let t = ((distance - (t.width - 0.14)) / 0.42).clamp(0.0, 1.0);
+                    1.0 - t * t * (3.0 - 2.0 * t)
+                })
+                .fold(0.0, f64::max);
+            cases.push([x as f32, y as f32, 0.0, 0.0]);
+            expected.push(wear as f32);
+        }
+    }
+    let source = format!(
+        "{}\n@group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;\n@group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;\n@compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id:vec3<u32>) {{ results[id.x]=vec4<f32>(village_path_local_coverage(cases[id.x].xy,0.0),0.0,0.0,0.0); }}",
+        include_str!("village_paths.wgsl")
+            .replace("@group(2) @binding(22)", "@group(0) @binding(1)")
+    );
+    let result = execute_cut_shader(&data, &cases, source);
+    for (i, (actual, expected)) in result.iter().zip(expected).enumerate() {
+        assert!(
+            (actual[0] - expected).abs() < 0.001,
+            "case {:?}: {} vs {}",
+            cases[i],
+            actual[0],
+            expected
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires Vulkan; verifies elevated ground wear stays fixed as the eye moves"]
+fn gpu_village_path_world_contact_is_stable_at_altitude_and_across_camera_moves() {
+    use crate::village_paths::{Trail, pack};
+    use glam::DVec2;
+    let frame =
+        crate::road_network_field::Frame::new(DVec3::new(0.64, -0.63, 0.43), 4_000_000.0).unwrap();
+    let trails = [Trail {
+        a: DVec2::new(-30.0, -30.0),
+        b: DVec2::new(30.0, 30.0),
+        width: 1.0,
+    }];
+    let mut data = pack(&frame, &trails).unwrap();
+    for eye_xy in [DVec2::new(40.0, 20.0), DVec2::new(-6500.0, 4000.0)] {
+        let camera = frame.world(eye_xy.extend(5200.0));
+        data[2] = [eye_xy.x as f32, eye_xy.y as f32, 0.0, 0.0];
+        let mut cases = Vec::new();
+        let mut expected = Vec::new();
+        for h in [0.0, 5000.0, 18000.0] {
+            for offset in [0.0, 0.5, 0.85, 1.0, 1.15, 1.6, 3.0] {
+                let p = DVec2::new(-3.0, -3.0) + DVec2::new(1.0, -1.0).normalize() * offset;
+                let world = frame.world(p.extend(0.0)).normalize() * (frame.radius + h);
+                let d = world - camera;
+                cases.push([d.x as f32, d.y as f32, d.z as f32, h as f32]);
+                let t = ((offset - 0.86) / 0.42).clamp(0.0_f64, 1.0);
+                expected.push(1.0 - t * t * (3.0 - 2.0 * t));
+            }
+        }
+        let source = format!(
+            "{}\n@group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;\n@group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;\n@compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id:vec3<u32>) {{ let c=cases[id.x]; let p=village_path_xy_from_offset(c.xyz)*village_path_data[1].w/(village_path_data[1].w+c.w); results[id.x]=vec4<f32>(village_path_local_coverage(p,0.0),0.0,0.0,0.0); }}",
+            include_str!("village_paths.wgsl")
+                .replace("@group(2) @binding(22)", "@group(0) @binding(1)")
+        );
+        let result = execute_cut_shader(&data, &cases, source);
+        for (actual, expected) in result.iter().zip(expected) {
+            assert!(
+                (actual[0] as f64 - expected).abs() < 0.005,
+                "{} vs {expected}",
+                actual[0]
+            );
+        }
+    }
+}
