@@ -1,0 +1,61 @@
+{
+  "name": "beach_night",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 3,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2,
+    3
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3372422,
+        1978479,
+        844259
+      ],
+      "look_at": [
+        3371937.0,
+        1978580.0,
+        845127.0
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        -0.8430954208912178,
+        -0.49461383694847083,
+        -0.21106222677535572
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 54.33381094784369
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 2,
+    "centre_luminance_bounds": [
+      [
+        0,
+        0.006
+      ],
+      [
+        0,
+        0.006
+      ]
+    ]
+  },
+  "skip_birds": true
+}

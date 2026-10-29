@@ -1,0 +1,53 @@
+{
+  "name": "lake_motion",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 4,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_rotation_time_scale": 0.0,
+  "screenshot_times_seconds": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3997886.55848632,
+        -207982.520161692,
+        252842.65645346575
+      ],
+      "look_at": [
+        3997717.041520005,
+        -206477.97717484235,
+        254844.42850700198
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.6703278491289446,
+        -0.25469895452254293,
+        0.6969856650228086
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4
+  },
+  "planet_relative_up": true,
+  "fixed_exposure": true,
+  "skip_birds": true
+}

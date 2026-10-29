@@ -6279,10 +6279,6 @@ impl State {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("render encoder"),
             });
-        if !solid_color_screen && !tunnel_enclosed {
-            self.forest
-                .encode_gpu_generation(&mut encoder, &self.camera_bind_group, &self.terrain);
-        }
         let gpu_slot_index = if self.profile_render && write_log {
             self.gpu_profiler
                 .as_mut()
@@ -6626,6 +6622,13 @@ impl State {
             && self.render_debug_mode != planet::RenderDebugMode::FlatTriangles
             && self.render_debug_mode != planet::RenderDebugMode::SkyOnly;
         let encode_started = Instant::now();
+        // update_patch can reset all indirect counts and change cell/batch
+        // layouts. Generate only after those uploads, using this frame's
+        // descriptors, or an invalidation draws a completely empty forest.
+        if !solid_color_screen && !tunnel_enclosed {
+            self.forest
+                .encode_gpu_generation(&mut encoder, &self.camera_bind_group, &self.terrain);
+        }
         // The FFT field must be current before the foam atlas reads it.
         if !solid_color_screen && !tunnel_enclosed {
             self.terrain.update_ocean_fft(

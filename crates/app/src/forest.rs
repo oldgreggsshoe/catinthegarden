@@ -1387,6 +1387,10 @@ impl ForestRenderer {
             return;
         }
         if self.gpu_resident {
+            debug_assert!(
+                !self.gpu_generation_needed || self.gpu_batches.is_empty(),
+                "forest uploads must be followed by generation before drawing"
+            );
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, camera_bind_group, &[]);
             render_pass.set_bind_group(1, &self.bind_group, &[]);
@@ -2783,6 +2787,21 @@ mod tests {
         }
         assert!(medium.len() * 4 < full.len() * 3);
         assert!(sparse.len() < medium.len());
+    }
+
+    #[test]
+    fn forest_generation_follows_current_frame_cell_updates_before_drawing() {
+        // The update can clear every indirect instance count. Encoding the
+        // generator first leaves a whole frame empty on each invalidation,
+        // and can dispatch old batches against newly uploaded cell descriptors.
+        let frame = include_str!("main.rs");
+        let update = frame.find("self.forest.update_patch(").unwrap();
+        let generate = frame.find(".encode_gpu_generation(").unwrap();
+        let draw = frame.find("self.forest.draw(").unwrap();
+        assert!(
+            update < generate && generate < draw,
+            "regenerate the current forest after uploads and before its draw"
+        );
     }
 
     #[test]

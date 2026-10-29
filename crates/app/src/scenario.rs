@@ -437,6 +437,7 @@ scenarios! {
     "landing_site_ground_detail" => "../scenarios/landing_site_ground_detail.json",
     "landing_site_eye_level" => "../scenarios/landing_site_eye_level.json",
     "forest_startup" => "../scenarios/forest_startup.json",
+    "forest_regeneration" => "../scenarios/forest_regeneration.json",
     "forest_performance" => "../scenarios/forest_performance.json",
     "forest_vast_distance" => "../scenarios/forest_vast_distance.json",
     "forest_night" => "../scenarios/forest_night.json",
@@ -474,6 +475,8 @@ scenarios! {
     "road_traffic_tunnel" => "../scenarios/road_traffic_tunnel.json",
     "village_footpath_gate" => "../scenarios/village_footpath_gate.json",
     "lake_surface" => "../scenarios/lake_surface.json",
+    "lake_motion" => "../scenarios/lake_motion.json",
+    "beach_night" => "../scenarios/beach_night.json",
     "village_pov" => "../scenarios/village_pov.json",
     "village_altitude_stability" => "../scenarios/village_altitude_stability.json",
     "mountain_site_probe" => "../scenarios/mountain_site_probe.json",
@@ -1252,7 +1255,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 160);
+        assert_eq!(SCENARIO_NAMES.len(), 163);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

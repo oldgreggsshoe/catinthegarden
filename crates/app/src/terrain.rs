@@ -6333,6 +6333,23 @@ mod tests {
     }
 
     #[test]
+    fn lake_ripples_use_the_running_water_clock_not_the_planet_rotation() {
+        let shader = include_str!("planet.wgsl");
+        let ripples = shader
+            .split("fn lake_ripple_normal(")
+            .nth(1)
+            .unwrap()
+            .split("\nfn ")
+            .next()
+            .unwrap();
+        assert!(
+            ripples.contains("camera.projection.z"),
+            "lake waves must advance with the same unpaused water clock as the sea"
+        );
+        assert!(ripples.contains("LAKE_RIPPLE_FREQUENCIES"));
+    }
+
+    #[test]
     fn planet_shader_validates_with_filtered_runtime_detail_noise() {
         let shader = planet_shader_source();
         let module = wgpu::naga::front::wgsl::parse_str(&shader)

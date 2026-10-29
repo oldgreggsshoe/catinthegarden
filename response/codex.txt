@@ -460,3 +460,37 @@ MEMORY.md:79-83|note=[repository workflow and preserving unrelated edits]
 01a0e3cd-c8e6-7a00-8147-66c8ebea1f94
 </rollout_ids>
 </oai-mem-citation>
+
+I’ll check whether this is a forest culling or buffer-update problem, reproduce it in flight, and fix the cause without reducing tree density.
+
+I’ve found a suspicious ordering issue: forest generation is queued before the frame updates the forest buffers. That could leave a frame with cleared tree counts and no regeneration.
+
+My plan is to capture consecutive flight frames, then check this against two alternatives: whole-forest culling and terrain/road invalidation. If the ordering is responsible, the fix should be a small change in `main.rs`, with regression coverage in the forest tests and a repeatable flight scenario.
+
+Thanks. I reproduced the forest flash twice: the entire forest disappears on exactly the same flight frames. Buffer resets are happening after generation was queued.
+
+I’ll fix that first, then check the faintly visible beaches at night and whether the lake waves are actually static.
+
+The fixed forest replay now has trees in every captured frame. The lake ripples are indeed static—the shader has no time input.
+
+Next I’ll animate those ripples using the existing water clock, and test a moonless beach view to distinguish normal lighting from a possible underwater-lighting leak.
+
+The lake’s held-camera images are pixel-identical in the water area, confirming the waves aren’t moving.
+
+The beach test points to moonlight rather than glowing sand: it goes black with the moon disabled and becomes visible with moonlight enabled. I’ll leave that lighting intact and fix the lake animation.
+
+Fixed:
+- **Tree flashing:** corrected GPU update order. All 48 captured flight frames retain trees; steady-view screenshots remain pixel-identical. Density unchanged.
+- **Lakes:** ripples now animate, even with planet rotation paused.
+- **Beaches:** the tested beach goes black without the moon. Its night visibility was moonlight, so lighting is unchanged.
+
+Release rebuilt. Tests: 824 pass, with the same six existing failures.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:83-83|note=[repository workflow and preserving unrelated changes]
+</citation_entries>
+<rollout_ids>
+01a0e3cd-c8e6-7a00-8147-66c8ebea1f94
+</rollout_ids>
+</oai-mem-citation>

@@ -2972,6 +2972,11 @@ const LAKE_WATER_ALBEDO: vec3<f32> = vec3<f32>(0.012, 0.040, 0.050);
 const LAKE_SHALLOW_EFOLD_METERS: f32 = 3.0;
 // Ripple wavelengths (metres) and the steepest slope they reach.
 const LAKE_RIPPLE_WAVELENGTHS: vec3<f32> = vec3<f32>(29.0, 13.0, 7.0);
+// Deep-water gravity dispersion, cycles per second. Constant-folded; the
+// existing water clock keeps these moving even when planet rotation is paused.
+const LAKE_RIPPLE_FREQUENCIES: vec3<f32> = sqrt(
+    vec3<f32>(9.81) / (6.2831853 * LAKE_RIPPLE_WAVELENGTHS),
+);
 const LAKE_RIPPLE_SLOPE: f32 = 0.05;
 const LAKE_GLINT_EXPONENT: f32 = 900.0;
 const LAKE_GLINT_GAIN: f32 = 6.0;
@@ -2996,7 +3001,10 @@ fn lake_ripple_normal(direction: vec3<f32>, view_position: vec3<f32>) -> vec3<f3
             continue;
         }
         let along = axes[i] - direction * dot(axes[i], direction);
-        let phase = fract(dot(direction, axes[i]) * (PLANET_RADIUS_METERS / wavelength));
+        // Reduce the spatial and temporal phases separately, so large world
+        // coordinates cannot round small frame-to-frame motion away.
+        let phase = fract(dot(direction, axes[i]) * (PLANET_RADIUS_METERS / wavelength))
+            - fract(camera.projection.z * LAKE_RIPPLE_FREQUENCIES[i]);
         normal -= along * (cos(6.2831853 * phase) * LAKE_RIPPLE_SLOPE * fade);
     }
     return normalize(normal);

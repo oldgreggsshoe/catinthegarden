@@ -10,7 +10,17 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 29 October: NPC road traffic.** Generated roads now carry bounded
+**Current phase, 29 October: forest continuity and water presentation checks.**
+Reproduced whole-forest blank frames twice: generation was encoded before this
+frame's cell/layout updates and indirect-count resets. Moved it after uploads;
+48/48 captured flight frames now retain trees, with identical stationary PNGs and
+no density reduction. Lake ripple phases really were static; they now advance on
+the existing water clock (even with planet rotation paused), without new geometry
+or ocean work. The tested night beach is dark without moon and visible with moon,
+so legitimate moonlight is retained. Full824 pass/same6 failures; evidence, limits
+and clean timing results in docs/FOREST_WATER_FIXES_2026_10_29.md and the final section.
+
+**Previous phase, 29 October: NPC road traffic.** Generated roads now carry bounded
 local timber carts and covered carriages: worker-built A* shortest-distance
 itineraries, left-hand lanes, bend/grade braking, queues, junction/court reservations,
 village stops and real parking turns. 32 agents by default (64 cap), 30 Hz interpolated
@@ -14717,3 +14727,52 @@ unbuilt red plans carry no traffic. Models use magic drive, no horses. No crash
 damage/impulses/overtaking/contact-shadow pass. Unsupported routes fail closed.
 Busy interactive queues and long multi-residency driving await human playtesting.
 No renderer left running by this phase.
+
+
+## 29 October — whole-forest blinking, static lake ripples and night beaches
+
+User reported every tree flashing off/on while flying; then asked to check faint
+night beaches and apparently static lake waves. Reproduced the forest symptom
+in two24-consecutive-frame replays: captures10/18 are exactly pixel-identical to
+a forest-disabled control. CPU population logs still show trees. Root cause:
+`State` encoded forest generation BEFORE this frame's `update_patch`, which can
+reset all indirect counts/change batch layouts. Dirty=false skips generation and
+draws zero; dirty=true can dispatch old bindings over newly uploaded descriptors.
+Moved generation after current uploads, before scene draws. Debug invariant
+(allowing an empty resident set) and an actual-call-site source-order regression
+now guard the lifecycle. That regression was observed failing before the fix.
+No density/range/mesh/culling or road/traffic change.
+
+Two corrected flights keep trees48/48; final assertion-enabled forest_regeneration
+1793309294-129787 passes24 captures plus luminance bands that reject missing-tree
+frames. Initial stationary PNGs are bit-identical before/after the ordering fix.
+Actual baseline off frame and corrected frames opened; see the detailed evidence
+in docs/FOREST_WATER_FIXES_2026_10_29.md, not just the CPU instance counter.
+
+Lake normal ripples truly had no time term. `planet.wgsl` now advances the existing
+29/13/7m trains on the existing water clock (`camera.projection.z`) at gravity-wave
+frequencies; spatial/time phases reduced separately, so small timesteps aren't
+rounded away by planetary coordinates. Still normal-only ripples, same amplitude,
+no new mesh/FFT/physics or sea changes. Held-camera water ROI before0/222460 pixels
+change over3s, after213160/222460; final lake_motion1793309314-129942 opened/pass.
+
+Night beach check: tested dry sand is black with moon off, visible with moon on;
+normal moon lighting, not a sand emission term. Before moonless beach_night
+1793309051-127213 versus moon-on1793309060-127260 opened; centre patch0.00176 versus
+0.14497 (moonless residual includes blue water). Kept legitimate moon/twilight
+lighting unchanged. Final moonless beach_night1793309326-130047 passes the new
+0..0.006 centre bound. This does not claim every coast/exposure state was checked.
+
+Tests: cargo check and release pass;40 forest checks, lake clock regression,
+composed planet WGSL validation and163-scenario registry pass. Full824 pass,
+78ignored,same6 baseline failures. Both new source regressions failed before fixes.
+Clean High/X11/Immediate1280x647 forest_performance p50 before62.307/62.316ms,
+after60.128/60.167ms (before/after/after/before order; no other renderer/Cargo).
+No slowdown observed, no general FPS-gain attribution; includes lake shader edit.
+An earlier build-overlapped perf pair is discarded. Raw run lists/test logs/pacing
+and immutable debug binaries: test-runs/forest-flash-2026-10-29/. No precompute,
+asset, dependency, controller, navigation, vegetation-density or moon tuning edits.
+
+Final rebuilt-release stationary verification: forest_startup1793309609-132108
+passes; both PNGs are pixel-identical to baseline1793308884-126181, including the
+new lake shader. Final view opened. All test renderers have exited.
