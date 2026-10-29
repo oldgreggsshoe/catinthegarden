@@ -396,6 +396,38 @@ fn tile_of(data: &[[f32; 4]], p: DVec2) -> Option<(DVec2, usize)> {
     None
 }
 
+/// The 16 m cells that have a shape tile, empty when shaping is off. The
+/// terrain flags chunks touching one (`touches_cells`) so the rest skip the
+/// shaping lookup in the vertex stage.
+pub fn shaped_cells(data: &[[f32; 4]]) -> std::collections::HashSet<(i32, i32)> {
+    if data.len() < FLOAT4S || data[0][3] < 0.5 || data[3][3] < 0.5 {
+        return Default::default();
+    }
+    data[HEADER..HEADER + BUCKETS]
+        .iter()
+        .filter(|bucket| bucket[3] >= 0.5)
+        .map(|bucket| (bucket[0] as i32, bucket[1] as i32))
+        .collect()
+}
+
+/// Whether a path-frame box overlaps any of `cells` (closed cells: a box
+/// touching a cell's edge counts).
+pub fn touches_cells(cells: &std::collections::HashSet<(i32, i32)>, min: DVec2, max: DVec2) -> bool {
+    if cells.is_empty() {
+        return false;
+    }
+    let lo = (min / CELL).floor();
+    let hi = (max / CELL).floor();
+    let span = (hi - lo + DVec2::ONE).max(DVec2::ZERO);
+    if span.x * span.y <= cells.len() as f64 {
+        (lo.y as i32..=hi.y as i32).any(|y| (lo.x as i32..=hi.x as i32).any(|x| cells.contains(&(x, y))))
+    } else {
+        cells.iter().any(|&(x, y)| {
+            (lo.x as i32..=hi.x as i32).contains(&x) && (lo.y as i32..=hi.y as i32).contains(&y)
+        })
+    }
+}
+
 /// CPU twin of `village_path_ground_shape`: same index walk, same tile
 /// samples, same bilinear blend.
 pub fn ground_shape(data: &[[f32; 4]], p: DVec2) -> GroundShape {
@@ -751,6 +783,33 @@ mod tests {
                 assert!((a - b).abs() < 1e-4, "edge {edge} y {y}: {a} vs {b}");
             }
         }
+    }
+
+    /// Chunks are flagged for shaping exactly when their box meets a shaped
+    /// cell; every point with any shape lies in one.
+    #[test]
+    fn shaped_cells_cover_every_shaped_point_and_boxes_find_them() {
+        let frame = Frame::new(DVec3::X, 4e6).unwrap();
+        let trails = [Trail { a: DVec2::new(-40.0, 3.0), b: DVec2::new(40.0, -5.0), width: 1.0 }];
+        let data = pack(&frame, &trails).unwrap();
+        let cells = shaped_cells(&data);
+        assert!(!cells.is_empty());
+        for y in -40..=40 {
+            for x in -120..=120 {
+                let p = DVec2::new(x as f64 * 0.5, y as f64 * 0.5);
+                if ground_shape(&data, p).weight > 0.0 {
+                    assert!(touches_cells(&cells, p, p), "{p}");
+                }
+            }
+        }
+        // Both search orders: a small box, and one bigger than the set.
+        assert!(touches_cells(&cells, DVec2::new(-1.0, -1.0), DVec2::new(1.0, 1.0)));
+        assert!(!touches_cells(&cells, DVec2::new(500.0, 500.0), DVec2::new(510.0, 510.0)));
+        assert!(touches_cells(&cells, DVec2::splat(-5000.0), DVec2::splat(5000.0)));
+        assert!(!touches_cells(&cells, DVec2::new(1000.0, -5000.0), DVec2::new(5000.0, 5000.0)));
+        let mut off = data.clone();
+        off[3][3] = 0.0;
+        assert!(shaped_cells(&off).is_empty());
     }
 
     /// planet.wgsl reads the atlas at fixed offsets; they must be this layout's.

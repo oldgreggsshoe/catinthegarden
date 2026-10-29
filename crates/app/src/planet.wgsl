@@ -1108,13 +1108,14 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     );
     // Village footpaths smooth the short relief under them and run up or down
     // to their court's floor at the mouth (bounded; CPU twin in terrain.rs via
-    // village_paths::shaped_height). Uniform branch: with paths published every
-    // vertex takes the split ladder, which costs a few multiply-adds, rather
-    // than path vertices diverging into a second ladder.
-    // The path frame and flags come from the uniform copy: storage reads in
-    // this stage measurably cost more than the lookup they feed.
+    // village_paths::shaped_height). Only chunks the CPU found touching a
+    // shaped path cell (terrain.rs TERRAIN_INFO_VILLAGE_PATH_BIT) take the
+    // lookup and the split ladder; the branch is uniform per chunk, and the
+    // split ladder's full height equals the plain one, so flagged and
+    // unflagged neighbours agree. The path frame comes from the uniform copy.
     let path_frame = terrain_settings.village_path_frame;
-    let paths_published = path_frame[0].w > 0.5 && path_frame[3].w > 0.5;
+    let paths_published = path_frame[0].w > 0.5 && path_frame[3].w > 0.5
+        && (input.terrain_info & (1u << 16u)) != 0u;
     var shape = vec4<f32>(0.0);
     let path_fade = 1.0 - smoothstep(VILLAGE_PATH_FADE_FILTER_START_METERS,
         VILLAGE_PATH_FADE_FILTER_END_METERS, vertex_filter_meters);

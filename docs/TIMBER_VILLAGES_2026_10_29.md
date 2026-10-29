@@ -155,3 +155,5 @@ above plus the variable); see HANDOFF for the breakdown.
 The vertex lookup later moved to a baked shape atlas (four blended samples per
 vertex instead of a segment search) with the path frame in a uniform; measured
 +1.7 ms mean against +2.05 ms, within noise. See HANDOFF.
+Terrain chunks that touch no path now skip the lookup entirely; shaping costs
++1.2 ms in the `village_paths` replay.

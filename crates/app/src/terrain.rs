@@ -304,6 +304,9 @@ const OUTMAP_GEOMETRIC_ERROR: GeometricErrorRatio = GeometricErrorRatio {
 const LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS: f64 = 250_000.0;
 const TERRAIN_INFO_SOURCE_EDGE_FADE_BIT: u32 = 1 << 14;
 const TERRAIN_INFO_NEAR_FIELD_BIT: u32 = 1 << 15;
+/// The chunk touches a village path's shaped cells (planet.wgsl vs_main);
+/// the others skip the shaping lookup and its split detail ladder.
+const TERRAIN_INFO_VILLAGE_PATH_BIT: u32 = 1 << 16;
 const TERRAIN_DETAIL_FILTER_RATIO: f64 = 0.01;
 
 /// Stop flat topology once its vertex spacing reaches the same continuous
@@ -928,6 +931,8 @@ pub struct TerrainRenderer {
     road_cut_buffer: wgpu::Buffer,
     village_path_buffer: wgpu::Buffer,
     village_path_frame: Option<crate::road_network_field::Frame>,
+    /// `village_paths::shaped_cells` of the published paths.
+    village_path_cells: HashSet<(i32, i32)>,
     /// CPU copy of the published path index, so collision sees the same
     /// shaped ground under the paths as the GPU draws.
     village_path_data: Vec<[f32; 4]>,
@@ -1558,6 +1563,7 @@ impl TerrainRenderer {
             village_path_buffer,
             village_path_frame: None,
             village_path_data: Vec::new(),
+            village_path_cells: HashSet::new(),
             village_parking: Vec::new(),
             road_revision: 0,
             road_cuts: None,
@@ -1725,6 +1731,7 @@ impl TerrainRenderer {
         );
         self.village_path_frame = Some(frame);
         self.village_path_data = data.to_vec();
+        self.village_path_cells = crate::village_paths::shaped_cells(data);
         tracing::info!(target:"planet::villages",segments=data[0][3],"village paths published");
         // Reuse the existing forest invalidation signal; no road geometry changes.
         self.road_revision += 1;
@@ -1732,6 +1739,7 @@ impl TerrainRenderer {
     pub fn clear_village_paths(&mut self) {
         if self.village_path_frame.take().is_some() {
             self.village_path_data.clear();
+            self.village_path_cells.clear();
             self.queue
                 .write_buffer(&self.village_path_buffer, 12, bytemuck::bytes_of(&0.0_f32));
             self.queue.write_buffer(
@@ -1808,6 +1816,45 @@ impl TerrainRenderer {
             detail_filter_meters.max(crate::village_paths::SMOOTH_METERS),
         );
         crate::village_paths::shaped_height(height, coarse, shape)
+    }
+
+    /// Whether any vertex of `node` can fall in a shaped village path cell:
+    /// its 5x5 sample points' path-frame box, padded for the curve between
+    /// them, meets one.
+    fn node_touches_village_path(&self, node: QuadtreeNode) -> bool {
+        let Some(frame) = self.village_path_frame else {
+            return false;
+        };
+        if self.village_path_cells.is_empty() {
+            return false;
+        }
+        let [u_min, v_min, u_max, v_max] = node.uv_bounds();
+        let mut min = glam::DVec2::splat(f64::INFINITY);
+        let mut max = glam::DVec2::splat(f64::NEG_INFINITY);
+        for j in 0..=4 {
+            for i in 0..=4 {
+                let direction = cube_face_direction(
+                    node.face,
+                    u_min + (u_max - u_min) * f64::from(i) / 4.0,
+                    v_min + (v_max - v_min) * f64::from(j) / 4.0,
+                );
+                if direction.dot(frame.up) < 0.5 {
+                    // Far round the planet the frame projection folds; no
+                    // village path is there.
+                    continue;
+                }
+                let p = glam::DVec2::new(direction.dot(frame.across), direction.dot(frame.forward))
+                    * frame.radius;
+                min = min.min(p);
+                max = max.max(p);
+            }
+        }
+        if min.x > max.x {
+            return false;
+        }
+        let edge = std::f64::consts::FRAC_PI_2 * frame.radius / f64::from(1_u32 << node.level);
+        let pad = glam::DVec2::splat(2.0 + 0.02 * edge);
+        crate::village_paths::touches_cells(&self.village_path_cells, min - pad, max + pad)
     }
 
     fn cut_surface_height(&self, direction: DVec3, height: f64) -> f64 {
@@ -3534,7 +3581,11 @@ impl TerrainRenderer {
                                 outmap_dense_level,
                             ),
                         near_field,
-                    ),
+                    ) | if outmap_mode && self.node_touches_village_path(render_node.node) {
+                        TERRAIN_INFO_VILLAGE_PATH_BIT
+                    } else {
+                        0
+                    },
                     lod_transition: [
                         render_node.transition_progress,
                         if render_node.transition_incoming {
@@ -5572,7 +5623,8 @@ mod tests {
         ActiveNodeIndex, FadingChunk, ForestSurfaceSample,
         LOW_FLIGHT_SOURCE_LIMIT_BYPASS_ALTITUDE_METERS, OUTMAP_TILE_GRID_SUBDIVISION_LEVELS,
         SurfaceDetailNode, TERRAIN_INFO_NEAR_FIELD_BIT, TERRAIN_INFO_SOURCE_EDGE_FADE_BIT,
-        TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE, TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET, TerrainSettings,
+        TERRAIN_INFO_VILLAGE_PATH_BIT, TERRAIN_MATERIAL_LAYER_COUNT, TERRAIN_MATERIAL_TEXTURE_SIZE,
+        TERRAIN_SETTINGS_VILLAGE_PATH_OFFSET, TerrainSettings,
         active_node_at_direction, aligned_texture_row_bytes, anchor_radius_excess_meters,
         conservative_outmap_height_bounds, corner_stitch_level_delta, cube_face_uv,
         downsample_srgb_rgba8, edge_stitch_info, edge_stitch_level_delta, fallback_uv_transform,
@@ -5785,6 +5837,8 @@ mod tests {
 
     #[test]
     fn terrain_info_packs_mode_face_and_levels() {
+        assert_eq!(TERRAIN_INFO_VILLAGE_PATH_BIT, 1 << 16);
+        assert!(planet_shader_source().contains("(input.terrain_info & (1u << 16u)) != 0u"));
         let packed = pack_terrain_info(true, 5, 18, 7, true, false);
         assert_eq!(packed & 1, 1);
         assert_eq!((packed >> 1) & 0x7, 5);

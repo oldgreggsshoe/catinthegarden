@@ -396,3 +396,13 @@ Shape atlas: done and pushed, but it didn't get the 2 ms back.
 - I kept it: it's no slower, it costs the same at every point, so a crowded spot like where many paths meet the parking area can't get expensive, and the walking/driving height check is cheaper too. Pictures are the same apart from a few pixels at path edges and where paths end at doors. It uses 6 MB more graphics memory.
 - If you want the rest back, the next step is to have the CPU mark which pieces of ground actually have a path on them, so the rest skip the check altogether. In the village itself many pieces have paths, so I'd expect well under 1 ms from that.
 - Tests: 806 pass, same 6 old failures; the 3 graphics-card path tests pass.
+
+---
+
+Done and pushed. The CPU now marks which pieces of ground (terrain chunks) actually have a village path on them, and the rest skip the path check entirely.
+
+- Path flattening now costs 1.2 ms near villages, down from 1.7 ms. Three runs gave 1.21, 1.24 and 1.20 ms, so this time the result is clear. Away from villages it costs nothing.
+- Over today: about 4 ms -> 2 ms (fade with distance) -> 1.7 ms (atlas) -> 1.2 ms (this).
+- The pictures are pixel-for-pixel the same as before.
+- What's left is the ground right around the village, where nearly every chunk has a path on it. Getting below 1.2 ms would mean doing less flattening work there, so I've stopped.
+- Tests: 807 pass, same 6 old failures; the 3 graphics-card path tests pass.

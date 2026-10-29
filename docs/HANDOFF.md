@@ -14566,3 +14566,25 @@ Asked: replace the per-vertex segment search with a baked shape atlas.
   known far-road coverage failure. Replays `village_paths/1793292117-24552`,
   `village_footpath_gate/1793292187-24697` pass.
 
+## Village path shaping skipped on chunks with no path (29 October, later)
+
+- `village_paths::shaped_cells` (the 16 m cells with a shape tile; empty when shaping is off)
+  is kept by the terrain on publish (`Terrain::village_path_cells`). Each frame, while
+  building instances, `node_touches_village_path` projects a 5x5 grid of the chunk's
+  points into the path frame, pads the box (2 m + 2% of the chunk edge) and asks
+  `village_paths::touches_cells`; a hit sets `TERRAIN_INFO_VILLAGE_PATH_BIT` (bit 16).
+- vs_main takes the lookup and the split ladder only on flagged chunks. The branch is
+  uniform per chunk, and the split ladder's full height equals the plain ladder's, so
+  flagged and unflagged neighbours agree.
+- Timing (`village_paths`, 1280x800 X11/Immediate, interleaved p50 pairs, shaping off/on):
+  85.383/86.589, 85.336/86.579, 85.423/86.623 = **+1.21/+1.24/+1.20 ms** (was +1.7 mean
+  with the atlas alone, +2.05 with the segment search, +3.6-4.6 before the distance fade).
+  Files `chunkflag-pair*` in `test-runs/village-path-shaping-2026-10-29/`.
+- All 8 `village_paths`/`village_footpath_gate` captures are pixel-identical to the atlas
+  build (`village_paths/1793294656-34401`, `village_footpath_gate/1793294735-34573`).
+- Tests: `shaped_cells_cover_every_shaped_point_and_boxes_find_them`, bit/shader check in
+  `terrain_info_packs_mode_face_and_levels`. 807 pass / same 6 failures; 3/3
+  `gpu_village_path` pass.
+- What is left of the ~1.2 ms is flagged chunks (most chunks right in a village touch a
+  path): their split ladder and lookup. Not pursued further.
+
