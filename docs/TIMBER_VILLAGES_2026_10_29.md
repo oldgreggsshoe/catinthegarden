@@ -143,4 +143,3 @@ Court metadata verified 31/31 near-indexed courts, with 39 near/far destinations
 in the captured resident plans. All 778/778 doors connected to the available
 parking/internal network. No controller-driving changes or live walk acceptance
 are claimed by these camera replays.
-
