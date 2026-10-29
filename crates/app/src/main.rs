@@ -6437,6 +6437,7 @@ impl State {
             self.terrain
                 .prepare_village_siting_tiles(camera_planet_frame_position.normalize_or_zero());
             self.villages.update(
+                &self.device,
                 &self.queue,
                 &mut self.terrain,
                 camera_planet_frame_position,

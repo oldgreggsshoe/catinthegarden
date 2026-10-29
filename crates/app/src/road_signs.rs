@@ -22,7 +22,7 @@ pub struct Mesh {
     pub size: [u32; 2],
     pub pixels: Vec<u8>,
     pub inspection: Option<(DVec3, DVec3)>,
-    pub counts: [usize; 5],
+    pub counts: [usize; 6],
 }
 impl Mesh {
     pub fn empty() -> Self {
@@ -31,7 +31,7 @@ impl Mesh {
             size: [1, 1],
             pixels: vec![255; 4],
             inspection: None,
-            counts: [0; 5],
+            counts: [0; 6],
         }
     }
 }
@@ -87,7 +87,7 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
         size,
         pixels,
         inspection: None,
-        counts: [0; 5],
+        counts: [0; 6],
     };
     let mut text = galleys.iter();
     let view = std::env::var("PLANET_ROAD_SIGN_VIEW").ok();
@@ -151,6 +151,26 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
                 beam(&mut mesh.vertices, frame, at, at + board.up * 1.4, 0.035);
             }
         }
+        if board.kind == Kind::Footpath {
+            // Two timber posts either side of the path and a crossbeam the
+            // board hangs from (by the hangers above), buried a little at the
+            // foot like the roadside posts.
+            let ground = board.centre
+                - board.up * (crate::road_navigation::FOOTPATH_GATE_CLEARANCE + height / 2.0);
+            let top = board.centre + board.up * 1.4;
+            let half = crate::road_navigation::FOOTPATH_GATE_HALF_SPAN;
+            for side in [-1.0, 1.0] {
+                let post = board.right * (side * half);
+                timber(&mut mesh.vertices, frame, ground + post - board.up * 0.6, top + post + board.up * 0.12, 0.11);
+            }
+            timber(
+                &mut mesh.vertices,
+                frame,
+                top - board.right * (half + 0.35),
+                top + board.right * (half + 0.35),
+                0.09,
+            );
+        }
         for (line, _) in board.lines.iter().enumerate() {
             let galley = text.next().unwrap();
             let scale = ((board.width - 0.40) / galley.rect.width() as f64)
@@ -191,6 +211,7 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
             Some("distance") => board.kind == Kind::Distance,
             Some("junction") => board.kind == Kind::Junction,
             Some("branch") => board.kind == Kind::Branch,
+            Some("footpath") => board.kind == Kind::Footpath,
             _ => true,
         };
         if wanted {
@@ -201,7 +222,7 @@ pub fn bake(boards: &[Board], frame: Frame) -> Result<Mesh, String> {
             return Err("road sign vertex budget exceeded".into());
         }
     }
-    tracing::info!(kinds=?mesh.counts,vertices=mesh.vertices.len(),"road sign meshes built (junction/distance/village/tunnel/branch)");
+    tracing::info!(kinds=?mesh.counts,vertices=mesh.vertices.len(),"road sign meshes built (junction/distance/village/tunnel/branch/footpath)");
     Ok(mesh)
 }
 /// Stable per-board glow drift in -1..1 from where the board stands, so a sign
@@ -289,6 +310,20 @@ fn wood_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView
         &wood_mips(),
     );
     texture.create_view(&Default::default())
+}
+
+/// A square wooden beam from `a` to `b`, half-width `r`, grain along it.
+fn timber(out: &mut Vec<Vertex>, f: Frame, a: DVec3, b: DVec3, r: f64) {
+    let axis = (b - a).normalize();
+    let reference = if axis.z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
+    let x = axis.cross(reference).normalize() * r;
+    let y = axis.cross(x).normalize() * r;
+    let ends = [a, b].map(|p| [p - x - y, p + x - y, p + x + y, p - x + y]);
+    let length = a.distance(b);
+    for i in 0..4 {
+        let j = (i + 1) % 4;
+        wood(out, f, [ends[0][i], ends[0][j], ends[1][j], ends[1][i]], [0.55; 3], [2.0 * r, length]);
+    }
 }
 
 fn beam(out: &mut Vec<Vertex>, f: Frame, a: DVec3, b: DVec3, r: f64) {
@@ -434,11 +469,11 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
     }
-    pub fn draw<'a>(
-        &'a self,
-        pass: &mut wgpu::RenderPass<'a>,
-        camera: &'a wgpu::BindGroup,
-        instance: &'a wgpu::Buffer,
+    pub fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        camera: &wgpu::BindGroup,
+        instance: &wgpu::Buffer,
     ) {
         if self.count == 0 {
             return;
@@ -562,6 +597,7 @@ mod tests {
             Kind::Village,
             Kind::Tunnel,
             Kind::Branch,
+            Kind::Footpath,
         ]
         .into_iter()
         .enumerate()
@@ -577,7 +613,7 @@ mod tests {
         })
         .collect();
         let mesh = bake(&boards, frame).unwrap();
-        assert_eq!(mesh.counts, [1; 5]);
+        assert_eq!(mesh.counts, [1; 6]);
         assert!(mesh.vertices.iter().filter(|v| v.uv[0] <= -2.0).count() >= 5 * 42);
         let glyphs: Vec<_> = mesh.vertices.iter().filter(|v| v.uv[0] >= 0.0).collect();
         assert!(!glyphs.is_empty());

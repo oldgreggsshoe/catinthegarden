@@ -394,6 +394,8 @@ pub enum Kind {
     Village,
     Tunnel,
     Branch,
+    /// The timber gateway over a village footpath where it leaves its court.
+    Footpath,
 }
 #[derive(Clone)]
 pub struct Board {
@@ -510,6 +512,32 @@ fn village_sign(access: DVec3, toward_road: DVec3, name: &str) -> Board {
     let toward = (toward_road - up * toward_road.dot(up)).normalize();
     let court = access - toward * crate::road_parking::OFFSET;
     roadside(court, -toward, vec![name.into()], false, true)
+}
+
+/// Clear height under a footpath gateway's board, and half the gap between
+/// its posts (wider than the widest shared lane, 1.4m each side).
+pub const FOOTPATH_GATE_CLEARANCE: f64 = 2.25;
+pub const FOOTPATH_GATE_HALF_SPAN: f64 = 1.9;
+
+/// A gateway over the footpath where it leaves the parking court: two posts
+/// either side of the path, a crossbeam, and a hanging board naming the
+/// village, facing back into the court. `entry` is on the court floor at the
+/// path mouth; `outward` points from the court centre along the path.
+pub fn footpath_gate(entry: DVec3, outward: DVec3, name: &str) -> Board {
+    let up = entry.normalize();
+    let outward = (outward - up * outward.dot(up)).normalize();
+    let lines = vec![name.to_owned(), "FOOTPATH".to_owned()];
+    let height = 0.30 + 0.62 * lines.len() as f64;
+    Board {
+        kind: Kind::Footpath,
+        centre: entry + up * (FOOTPATH_GATE_CLEARANCE + height / 2.0),
+        right: outward.cross(up),
+        up,
+        lines,
+        width: 2.0 * FOOTPATH_GATE_HALF_SPAN - 0.4,
+        village: true,
+        support: None,
+    }
 }
 
 /// A finger board on the departure branch, readable from either main-road
@@ -891,6 +919,21 @@ mod tests {
             );
         }
         assert!(board.right.cross(board.up).dot(toward_road) > 0.99);
+    }
+
+    #[test]
+    fn footpath_gate_faces_the_court_and_leaves_headroom_over_the_path() {
+        let entry = DVec3::Z * 4e6;
+        let outward = DVec3::X;
+        let gate = footpath_gate(entry, outward, "OAK HOLLOW");
+        let normal = gate.right.cross(gate.up);
+        assert!(normal.dot(-outward) > 0.999, "board must face back into the court");
+        let height = 0.30 + 0.62 * 2.0;
+        let bottom = (gate.centre - entry).dot(gate.up) - height / 2.0;
+        assert!((bottom - FOOTPATH_GATE_CLEARANCE).abs() < 1e-9);
+        assert!(gate.width / 2.0 < FOOTPATH_GATE_HALF_SPAN);
+        assert!(FOOTPATH_GATE_HALF_SPAN > 1.4 + 0.3, "posts must clear the widest lane");
+        assert_eq!(gate.lines, ["OAK HOLLOW", "FOOTPATH"]);
     }
 
     #[test]

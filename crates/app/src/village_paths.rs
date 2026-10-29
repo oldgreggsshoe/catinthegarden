@@ -532,7 +532,7 @@ pub fn build(
     sites: &[DVec3],
     camera: DVec3,
     cancelled: &impl Fn() -> bool,
-) -> Result<(Frame, Vec<[f32; 4]>), String> {
+) -> Result<(Frame, Vec<[f32; 4]>, crate::road_signs::Mesh), String> {
     let frame = Frame::new(camera.normalize(), crate::planet::planet_radius_meters())?;
     let mut groups = BTreeMap::<[u64; 3], Vec<usize>>::new();
     for (i, site) in sites.iter().enumerate() {
@@ -542,6 +542,7 @@ pub fn build(
             .push(i);
     }
     let mut trails = Vec::new();
+    let mut gates = Vec::new();
     let mut connected = 0;
     let mut doors = 0;
     for indices in groups.values() {
@@ -553,10 +554,10 @@ pub fn build(
         let hs: Vec<_> = indices.iter().map(|&i| instances[i]).collect();
         let ws: Vec<_> = indices.iter().map(|&i| worlds[i]).collect();
         let houses = footprints(&hs, &ws, &local);
-        let court = courts
+        let court_entry_of = courts
             .iter()
-            .find(|(village, _)| village.distance(site) * frame.radius < 0.5)
-            .map(|(_, court)| court);
+            .find(|(village, _)| village.distance(site) * frame.radius < 0.5);
+        let court = court_entry_of.map(|(_, court)| court);
         let mut goal = court.map_or(DVec2::ZERO, |&c| {
             let p = local.local(c.normalize() * frame.radius).truncate();
             court_entry(p, |p| {
@@ -567,6 +568,19 @@ pub fn build(
                 )
             })
         });
+        // Mark where the path leaves the court: a gateway over the mouth,
+        // standing on the court floor and facing back across it.
+        if let Some((village, court)) = court_entry_of {
+            let mouth = local.world(goal.extend(0.0)).normalize() * court.length();
+            let outward = mouth - *court;
+            if outward.length() > 1.0 && !houses.is_empty() {
+                gates.push(crate::road_navigation::footpath_gate(
+                    mouth,
+                    outward,
+                    &crate::road_navigation::village_name(*village),
+                ));
+            }
+        }
         if court.is_none() && houses.iter().any(|h| h.blocks(goal)) {
             goal = (0..64)
                 .map(|i| {
@@ -609,8 +623,13 @@ pub fn build(
         return Err("village paths superseded".into());
     }
     let data = pack(&frame, &trails)?;
-    tracing::info!(target:"planet::villages", villages=groups.len(), segments=trails.len(), connected_doors=connected, doors=doors, "village desire lines built");
-    Ok((frame, data))
+    // A failed sign bake keeps the paths; it only loses the gateways.
+    let gate_mesh = crate::road_signs::bake(&gates, frame).unwrap_or_else(|error| {
+        tracing::warn!(target:"planet::villages", %error, "footpath gateways rejected");
+        crate::road_signs::Mesh::empty()
+    });
+    tracing::info!(target:"planet::villages", villages=groups.len(), segments=trails.len(), connected_doors=connected, doors=doors, gateways=gates.len(), "village desire lines built");
+    Ok((frame, data, gate_mesh))
 }
 
 struct Request {
@@ -623,7 +642,7 @@ struct Request {
     sites: Vec<DVec3>,
     camera: DVec3,
 }
-type ResultData = Result<(Frame, Vec<[f32; 4]>), String>;
+type ResultData = Result<(Frame, Vec<[f32; 4]>, crate::road_signs::Mesh), String>;
 #[derive(Default)]
 struct Pending {
     request: Option<Request>,

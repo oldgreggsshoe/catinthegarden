@@ -244,6 +244,11 @@ pub struct VillageRenderer {
     path_road_revision: u64,
     ground_cursor: usize,
     path_worker: crate::village_paths::Worker,
+    /// Timber gateways where footpaths leave their courts, baked with the
+    /// paths in the same frame and drawn by the road-sign pipeline.
+    gates: crate::road_signs::Renderer,
+    gate_instance: wgpu::Buffer,
+    gate_frame: Option<crate::road_network_field::Frame>,
     /// Houses sited in the search region, before the render cutoff.
     sited_houses: u32,
     max_ground_disagreement_meters: f64,
@@ -514,6 +519,19 @@ impl VillageRenderer {
             path_road_revision: u64::MAX,
             ground_cursor: 0,
             path_worker: crate::village_paths::Worker::new(),
+            gates: crate::road_signs::Renderer::new(
+                device,
+                queue,
+                hdr_format,
+                camera_bind_group_layout,
+            ),
+            gate_instance: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("footpath gateway frame"),
+                size: 64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            gate_frame: None,
             sited_houses: 0,
             max_ground_disagreement_meters: 0.0,
             nearest_site_macro_height_meters: f64::NAN,
@@ -531,6 +549,7 @@ impl VillageRenderer {
     /// which is almost all of them.
     pub fn update(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         terrain: &mut TerrainRenderer,
         camera_world_position: DVec3,
@@ -549,6 +568,8 @@ impl VillageRenderer {
         );
         if camera_altitude_meters >= draw_altitude_meters() {
             terrain.clear_village_paths();
+            self.gates.clear();
+            self.gate_frame = None;
             self.instance_count = 0;
             self.last_build_position = None;
             self.nearest_house_world = None;
@@ -568,8 +589,10 @@ impl VillageRenderer {
         }
         if let Some(result) = self.path_worker.take() {
             match result {
-                Ok((frame, data)) => {
+                Ok((frame, data, gates)) => {
                     terrain.set_village_paths(frame, &data);
+                    self.gates.upload(device, queue, gates);
+                    self.gate_frame = Some(frame);
                     self.path_road_revision = terrain.road_revision();
                 }
                 Err(error) => {
@@ -578,6 +601,18 @@ impl VillageRenderer {
             }
         }
         terrain.update_village_path_camera(camera_world_position);
+        if let Some(f) = self.gate_frame {
+            // The sign shader's frame instance: origin relative to the eye,
+            // then the frame's axes (the w lanes are unused here).
+            let v = |p: DVec3| [p.x as f32, p.y as f32, p.z as f32, 0.0];
+            let frame = [
+                v(f.up * f.radius - camera_world_position),
+                v(f.across),
+                v(f.forward),
+                v(f.up),
+            ];
+            queue.write_buffer(&self.gate_instance, 0, bytemuck::cast_slice(&frame));
+        }
         if !moved_far_enough {
             // Re-anchoring is not the same as re-siting. The instance buffer
             // holds offsets *from the camera*, so leaving it alone while the
@@ -828,6 +863,10 @@ impl VillageRenderer {
         // The first fourteen triangles are the original house shell. Keep
         // distant buildings textured without submitting subpixel joinery.
         render_pass.draw(0..42, self.detailed_count..self.instance_count);
+        if self.gate_frame.is_some() {
+            self.gates
+                .draw(render_pass, camera_bind_group, &self.gate_instance);
+        }
     }
 
     /// The house nearest the camera, in world space, or `None` when no house

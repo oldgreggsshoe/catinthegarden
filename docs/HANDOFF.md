@@ -14437,3 +14437,40 @@ Request: "So solar eclipses".
   "move back to straighten" mouse text, now auto-centring).
 - Test `top_speed_follows_its_own_bounded_multiplier`. 801 pass / same 6 failures. Not
   driven live.
+
+## Footpath gateways at the parking courts (29 October)
+
+- Request: show where the village path meets the parking area so it's easy to walk to the
+  village. Each village with a court now gets a timber gateway over the path mouth.
+- Where: `village_paths::build` already chose the mouth (`court_entry`, the gentlest point
+  on the village-facing half of the court rim, 0.5 m inside it). The gateway stands there
+  on the court floor (court world position's radius), facing back across the court
+  (normal = -outward). Only villages with a court and at least one house get one.
+- What: `road_navigation::footpath_gate` makes a `Kind::Footpath` board ("<VILLAGE NAME>",
+  "FOOTPATH", name from `village_name` of the same village centre as the road nameplate),
+  board bottom `FOOTPATH_GATE_CLEARANCE` 2.25 m up, width 3.4 m. `road_signs::bake` adds,
+  for that kind, two square oak posts at +-`FOOTPATH_GATE_HALF_SPAN` 1.9 m (buried 0.6 m)
+  and a crossbeam at board centre + 1.4 m, using a new wood-textured `timber` beam; the board
+  hangs on the existing ceiling-mount hangers. Same oak, ink and violet night glow as the
+  other signs.
+- How it's drawn: the path worker bakes the gate boards into a `road_signs::Mesh` in the
+  path frame alongside the path mask (worker result is now (frame, mask, mesh)); a sign bake
+  failure only loses the gates. `VillageRenderer` owns a second `road_signs::Renderer` and
+  a 64-byte frame instance rewritten each frame against the eye, draws it after the houses,
+  and clears it with the paths above the village draw altitude. `VillageRenderer::update`
+  now takes the device (for the atlas upload). `road_signs::Renderer::draw` lifetimes were
+  relaxed so it can be called from the village pass.
+- Evidence: `PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village` replay builds 27
+  gateways for 40 villages, 778/778 doors still connected. New scenario
+  `village_footpath_gate` (two gates, 16 m and 7 m from inside their courts, eye height);
+  captures copied to `test-runs/footpath-gateway-2026-10-29/` and opened: posts, beam and
+  board read clearly ("GREAT ROWANBOURNE / FOOTPATH", "EAST CEDARBANK / FOOTPATH"), a
+  second gate visible across the valley. Long names print smaller than "FOOTPATH" (each line
+  is fitted to the board width).
+- Seen in the captures, not fixed by this: at one mouth (capture 4) the court floor is well
+  above the ground beyond, so the path drops off the court edge; at another (capture 2) the
+  approach road's timber parapet runs out beside the right post. The carving work below is
+  meant to deal with the first.
+- Tests: `footpath_gate_faces_the_court_and_leaves_headroom_over_the_path`; sign-kind test
+  now covers six kinds; scenario count 157. 802 pass / same 6 failures. Cost not measured
+  (one extra small draw near villages).

@@ -348,3 +348,18 @@ Fix:
 - When the car's setting isn't 1x, a "LIMIT ... km/h [ / ]" line under the speed shows the current cap.
 
 The village path marker and flattening are still in progress.
+
+---
+
+Part one is in: a gateway now marks where each village path leaves its parking area. Committed and pushed.
+
+- It's a timber gateway over the path mouth: two oak posts either side of the path, a crossbeam, and a hanging board with the village name and "FOOTPATH". The board faces back into the parking area, so you see it from the car. You walk under it, with about 2.25 m of headroom.
+- Same oak and lettering as the road signs, and it glows violet after dark like them, so you can find it at night.
+- In the village test area: 27 gateways across 40 villages.
+- Pictures: test-runs/footpath-gateway-2026-10-29/ (a new test scene, village_footpath_gate).
+
+Two things the pictures show:
+- At one village the parking area sits well above the ground where the path leaves it, so the path drops off the edge. That's what the flattening work is for.
+- Long village names print smaller than "FOOTPATH".
+
+Next: flattening the paths (part two).
