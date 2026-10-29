@@ -513,6 +513,11 @@ fn sea_controls_visible(fft: bool, ocean: Option<bool>, tunnel: bool, driving: b
     fft && ocean == Some(true) && !tunnel && !driving
 }
 
+/// The car's speed cap when `[`/`]` has moved it off the usual one.
+fn driving_limit_text(top_speed: f64) -> String {
+    format!("LIMIT {:.0} km/h  [ / ]", top_speed * 3.6)
+}
+
 fn driving_speed_text(speed: f64) -> String {
     format!(
         "{}{:.0} km/h",
@@ -1680,6 +1685,9 @@ struct State {
     flock_watch_enabled: bool,
     flight_speed: FlightSpeedState,
     flight_speed_scale: f64,
+    /// The car's own `[`/`]` speed-cap multiplier, kept apart from walking and
+    /// flying so slowing those down never caps the car.
+    driving_speed_scale: f64,
     flight_travel_direction: glam::DVec3,
     surface_physics: surface_camera::SurfacePhysicsState,
     surface_jump_requested: bool,
@@ -2332,6 +2340,7 @@ impl State {
             flock_watch_enabled: false,
             flight_speed: FlightSpeedState::default(),
             flight_speed_scale: 1.0,
+            driving_speed_scale: 1.0,
             flight_travel_direction: glam::DVec3::ZERO,
             surface_physics: surface_camera::SurfacePhysicsState::default(),
             surface_jump_requested: false,
@@ -2911,6 +2920,17 @@ impl State {
         if self.scenario.is_some() {
             return;
         }
+        if self.camera_mode == CameraMode::Driving {
+            self.driving_speed_scale = (self.driving_speed_scale * scale_factor)
+                .clamp(driving::MIN_SPEED_SCALE, driving::MAX_SPEED_SCALE);
+            tracing::info!(
+                target: "planet::controls",
+                driving_speed_scale = self.driving_speed_scale,
+                "car speed cap changed"
+            );
+            self.mark_hud_dirty();
+            return;
+        }
         self.flight_speed_scale =
             adjusted_flight_speed_scale(self.flight_speed_scale, scale_factor);
         tracing::info!(
@@ -3414,7 +3434,7 @@ impl State {
             );
             let (distance, yaw) =
                 self.car
-                    .travel(throttle, steer, self.driving_brake, self.flight_speed_scale);
+                    .travel(throttle, steer, self.driving_brake, self.driving_speed_scale);
             let heading = glam::DQuat::from_axis_angle(radial, -yaw) * heading;
             let candidate = advance_surface_position_on_sphere(previous, heading, distance);
             let moved_radial = candidate.normalize();
@@ -5157,6 +5177,10 @@ impl State {
         });
         let driving_speed = (self.camera_mode == CameraMode::Driving)
             .then(|| driving_speed_text(self.car.speed));
+        // Say when the cap is not the usual one, so a low cap is never a mystery.
+        let driving_limit = (self.camera_mode == CameraMode::Driving
+            && self.driving_speed_scale != 1.0)
+            .then(|| driving_limit_text(driving::top_speed(self.car.magic_running(), self.driving_speed_scale)));
         let magic_charge = (self.camera_mode == CameraMode::Driving && self.car.magic)
             .then(|| self.car.charge());
         let driving_steering = self.car.steering_fraction();
@@ -5191,6 +5215,11 @@ impl State {
                             ui.label(egui::RichText::new(speed).size(22.0).strong()
                                 .color(egui::Color32::WHITE)
                                 .background_color(egui::Color32::from_black_alpha(150)));
+                            if let Some(limit) = &driving_limit {
+                                ui.label(egui::RichText::new(limit).size(14.0)
+                                    .color(egui::Color32::from_gray(210))
+                                    .background_color(egui::Color32::from_black_alpha(150)));
+                            }
                             draw_steering_indicator(ui, driving_steering);
                             if let Some(charge) = magic_charge {
                                 // Spent, the orb only glows as an ember; say how to refill it.

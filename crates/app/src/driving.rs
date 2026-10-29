@@ -64,6 +64,16 @@ impl MouseSteering {
     }
 }
 
+/// Bounds of the car's own `[`/`]` speed-cap multiplier (steps of 2 from 1).
+pub const MIN_SPEED_SCALE: f64 = 0.125;
+pub const MAX_SPEED_SCALE: f64 = 2.0;
+
+/// Forward speed cap, m/s: 45 under magic power, 30 on the plain drive, times
+/// the driver's `[`/`]` multiplier.
+pub fn top_speed(magic: bool, scale: f64) -> f64 {
+    (if magic { MAGIC_TOP_SPEED } else { 30.0 }) * scale.clamp(MIN_SPEED_SCALE, MAX_SPEED_SCALE)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Car {
     pub speed: f64,
@@ -82,7 +92,7 @@ impl Car {
     pub fn charge(&self) -> f64 {
         (1.0 - self.spent).clamp(0.0, 1.0)
     }
-    fn magic_running(&self) -> bool {
+    pub fn magic_running(&self) -> bool {
         self.magic && self.spent < 1.0
     }
 
@@ -137,8 +147,7 @@ impl Car {
         }
         let drag = (if brake { 12.0 } else { 0.35 }) + 0.0015 * self.speed * self.speed;
         self.speed = self.speed.signum() * (self.speed.abs() - drag * STEP).max(0.0);
-        let maximum = if magic { MAGIC_TOP_SPEED } else { 30.0 } * scale.clamp(0.1, 2.0);
-        self.speed = self.speed.clamp(-8.0, maximum);
+        self.speed = self.speed.clamp(-8.0, top_speed(magic, scale));
         let curvature = (self.steering.tan() / WHEELBASE).clamp(
             -MAX_LATERAL_ACCELERATION / self.speed.powi(2).max(1.0),
             MAX_LATERAL_ACCELERATION / self.speed.powi(2).max(1.0),
@@ -224,6 +233,21 @@ mod tests {
     /// Let go of the mouse and the wheels come back straight: held through
     /// the short delay, then about a second to centre; moving the mouse again
     /// restarts the delay, and free-looking counts as letting go.
+    /// The car's cap: 162 km/h magic, 108 plain at 1x, 324 at the top of the
+    /// bracket range, and never under an eighth whatever is asked.
+    #[test]
+    fn top_speed_follows_its_own_bounded_multiplier() {
+        assert_eq!(top_speed(true, 1.0), 45.0);
+        assert_eq!(top_speed(false, 1.0), 30.0);
+        assert_eq!(top_speed(true, 2.0) * 3.6, 324.0);
+        assert_eq!(top_speed(true, 0.01), 45.0 * MIN_SPEED_SCALE);
+        assert_eq!(top_speed(true, 9.0), 45.0 * MAX_SPEED_SCALE);
+        let mut car = Car { grounded: true, magic: true, ..Car::default() };
+        for _ in 0..(20.0 / STEP) as usize {
+            car.travel(1.0, 0.0, false, 0.25);
+        }
+        assert!((car.speed - 45.0 * 0.25).abs() < 1e-9, "{}", car.speed);
+    }
     #[test]
     fn the_mouse_wheel_returns_to_centre_when_left_alone() {
         let mut mouse = MouseSteering::default();

@@ -323,3 +323,28 @@ Done: the magic now recharges whenever you're not using the power, so coasting r
 - When empty, the HUD now says "MAGIC 0% - let go of W/S to recharge".
 
 Tests: the magic test now also checks that coasting refills the charge while the car is still rolling, and that holding W or S doesn't. The suite shows the usual 6 failures. One run showed a seventh that went away on a rerun; another session was committing village work at the time.
+
+---
+
+Yes. C works from any camera mode in the normal game. In test scenes it does nothing.
+
+- Walking, flying, orbit or the ship: C puts the car on the ground directly below you, facing the way you're looking. From orbit or the ship it first switches to flight, then drops the car straight down, however high up you are. If the ground below hasn't loaded yet, the car starts where you are and falls under gravity until it lands.
+- The car doesn't need a road. Off-road it drives over any terrain; the hard edges, kerbs and tunnel walls only apply on roads.
+- Pressing C again puts you back on foot where the car is.
+- One catch, read from the code but not tried: the car doesn't check for water. Over the sea it would go to the ground under the water, the seabed, and drive along the bottom.
+
+I can stop the car going into the sea, or make it float, if you want.
+
+---
+
+Found the 16 km/h problem and fixed it. Committed and pushed; not driven live.
+
+Why: [ and ] set one speed setting shared by walking, flying and the car's top speed. It must have been turned down, for slow flying or walking, before you pressed C. At its lowest the magic car's 162 km/h became 16 km/h. In the tunnel it had been turned up, which allows up to 324 km/h.
+
+Fix:
+- The car now has its own top-speed setting.
+- While driving, [ and ] change only that, from 1/8x to 2x: 162 km/h with the magic at 1x, 324 km/h at 2x.
+- Walking and flying speed no longer affect the car.
+- When the car's setting isn't 1x, a "LIMIT ... km/h [ / ]" line under the speed shows the current cap.
+
+The village path marker and flattening are still in progress.

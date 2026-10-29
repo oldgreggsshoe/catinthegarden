@@ -14421,3 +14421,19 @@ Request: "So solar eclipses".
   held on an empty charge leave it empty. Suite: the usual 6 failures (one run showed a
   seventh, gone on rerun; another session was committing village work at the time).
   Not driven live.
+
+## Car speed cap separated from walk/fly speed (29 October)
+
+- Report: stopped on a road, pressed C, top speed 16 km/h; in a tunnel earlier it passed
+  300 km/h. Cause: `Car::travel`'s cap was `(magic ? 45 : 30) * flight_speed_scale.clamp(0.1,
+  2)`, and `flight_speed_scale` is the one `[`/`]` multiplier walking and flying also use.
+  Turned down for slow flight (any value <= 0.1), it capped the magic car at 4.5 m/s = 16
+  km/h; at 2x it allows 90 m/s = 324 km/h.
+- Now `State::driving_speed_scale` (default 1, bounds `driving::MIN_SPEED_SCALE` 1/8 to
+  `MAX_SPEED_SCALE` 2, steps of 2) is the car's own; `adjust_flight_speed_scale` changes it
+  instead of the flight scale while in Driving mode. `driving::top_speed(magic, scale)` is
+  the single cap formula. HUD under the speed: "LIMIT N km/h  [ / ]" whenever the car's
+  scale isn't 1x (`driving_limit_text`). README driving paragraph updated (and its stale
+  "move back to straighten" mouse text, now auto-centring).
+- Test `top_speed_follows_its_own_bounded_multiplier`. 801 pass / same 6 failures. Not
+  driven live.
