@@ -14407,3 +14407,17 @@ Request: "So solar eclipses".
   path/clearance A/B override. No renderer left running. Camera replays only:
   house interiors/collision, physical footfall erosion and guaranteed stairs at
   every possible procedural cliff remain outside this phase.
+
+## Magic charge refills while coasting (29 October)
+
+- `Car::travel` (driving.rs) used to refill the magic charge only when throttle was off
+  *and* the car was under 0.5 m/s. The speed condition is gone: any physics step with
+  neither W nor S held regains `STEP / MAGIC_RECHARGE_SECONDS` (120s empty to full),
+  parked or rolling. Holding W or S (throttle or reverse/brake, even with the charge at 0)
+  never recharges. Space-bar braking with W/S released does recharge.
+- Empty HUD text is now "MAGIC 0% - let go of W/S to recharge".
+- `magic_motor_is_faster_spends_charge_and_falls_back_when_empty` now also checks a car
+  coasting from 20 m/s regains exactly 5/120 in 5s while still rolling, and that W and S
+  held on an empty charge leave it empty. Suite: the usual 6 failures (one run showed a
+  seventh, gone on rerun; another session was committing village work at the time).
+  Not driven live.

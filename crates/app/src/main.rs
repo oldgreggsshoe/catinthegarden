@@ -5197,7 +5197,7 @@ impl State {
                                 let text = if charge > 0.0 {
                                     format!("MAGIC {:.0}%", charge * 100.0)
                                 } else {
-                                    "MAGIC 0% - stop to recharge".to_owned()
+                                    "MAGIC 0% - let go of W/S to recharge".to_owned()
                                 };
                                 ui.label(egui::RichText::new(text)
                                     .size(16.0).strong()

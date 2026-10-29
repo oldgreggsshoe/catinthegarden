@@ -8,7 +8,8 @@ const GRAVITY: f64 = 9.80665;
 const MAX_LATERAL_ACCELERATION: f64 = 6.5;
 /// Placeholder numbers for the magic motor: its substance is not worked out
 /// yet, so it is just a charge that full throttle spends in `MAGIC_FULL_BURN_SECONDS`
-/// and a parked car slowly regains over `MAGIC_RECHARGE_SECONDS`.
+/// and regains over `MAGIC_RECHARGE_SECONDS` whenever neither W nor S is held
+/// (parked or coasting).
 const MAGIC_ACCELERATION: f64 = 14.0;
 const MAGIC_TOP_SPEED: f64 = 45.0;
 const MAGIC_FULL_BURN_SECONDS: f64 = 90.0;
@@ -126,7 +127,7 @@ impl Car {
         if self.magic {
             if throttle.abs() > 1e-6 {
                 self.spent = (self.spent + throttle.abs().min(1.0) * STEP / MAGIC_FULL_BURN_SECONDS).min(1.0);
-            } else if self.speed.abs() < 0.5 {
+            } else {
                 self.spent = (self.spent - STEP / MAGIC_RECHARGE_SECONDS).max(0.0);
             }
         }
@@ -546,5 +547,19 @@ mod tests {
             parked.travel(0.0, 0.0, false, 1.0);
         }
         assert!(parked.charge() > 0.5);
+        // Coasting recharges too; holding W or S (even empty) does not.
+        let mut coasting = Car { grounded: true, magic: true, spent: 0.5, speed: 20.0, ..Car::default() };
+        for _ in 0..(5.0 / STEP) as usize {
+            coasting.travel(0.0, 0.0, false, 1.0);
+        }
+        assert!(coasting.speed > 5.0, "still rolling: {}", coasting.speed);
+        assert!((coasting.charge() - (0.5 + 5.0 / MAGIC_RECHARGE_SECONDS)).abs() < 1e-6);
+        for throttle in [1.0, -1.0] {
+            let mut driven = Car { grounded: true, magic: true, spent: 1.0, ..Car::default() };
+            for _ in 0..(5.0 / STEP) as usize {
+                driven.travel(throttle, 0.0, false, 1.0);
+            }
+            assert_eq!(driven.charge(), 0.0, "recharged with throttle {throttle}");
+        }
     }
 }

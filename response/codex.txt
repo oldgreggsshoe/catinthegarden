@@ -312,3 +312,14 @@ MEMORY.md:119-119|note=[Used prior handoff workflow guidance and verified the cu
 01a07b93-6f08-70f2-80be-2f78bae4a1eb
 </rollout_ids>
 </oai-mem-citation>
+
+---
+
+Done: the magic now recharges whenever you're not using the power, so coasting refills it as well as stopping. Committed and pushed; not driven live.
+
+- Holding W or S: no recharging, as before. That includes reverse and braking with S, and holding W with the charge empty.
+- Neither key held: it recharges, whether you're parked, rolling or braking with Space.
+- The rate is unchanged: empty to full in 2 minutes.
+- When empty, the HUD now says "MAGIC 0% - let go of W/S to recharge".
+
+Tests: the magic test now also checks that coasting refills the charge while the car is still rolling, and that holding W or S doesn't. The suite shows the usual 6 failures. One run showed a seventh that went away on a rerun; another session was committing village work at the time.
