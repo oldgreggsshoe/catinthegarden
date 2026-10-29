@@ -131,7 +131,9 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_DRIVE=1 cargo run --
 
 NPC timber carts and covered carriages now use generated roads in normal play.
 They keep left, follow A* shortest-distance routes, slow for bends/grades, queue,
-reserve junctions and stop/turn in village courts. They use the player's magic
+reserve junctions and stop/turn in village courts. NPC motion and parking/wait
+timers follow scene-time speed (comma/period) and pause with F10; player controls
+are unchanged. Extreme fast-forward is work-limited to protect FPS. They use the player's magic
 motor concept, not horses. Traffic is streamed locally (32 vehicles by default,
 64 maximum), not simulated persistently across the whole planet.
 `PLANET_TRAFFIC=0` disables it; `PLANET_TRAFFIC_COUNT=16` sets the population.

@@ -10,6 +10,9 @@ use std::{
 
 pub const STEP: f64 = 1.0 / 30.0;
 pub const MAX_AGENTS: usize = 64;
+// Simulation seconds, not wall seconds. Covers 40x even at 5 FPS, while
+// bounding catch-up to ~240 safe fixed steps at extreme time multipliers.
+const MAX_ADVANCE_SECONDS: f64 = 8.0;
 const MAX_ROUTES: usize = 16;
 const LANE: f64 = 2.05;
 // Includes the outward sweep of a steered front wheel.
@@ -948,7 +951,7 @@ impl Simulation {
         if self.clock == 0.0 && self.agents.is_empty() {
             self.spawn(eye, forward);
         }
-        self.accumulator += (if dt.is_finite() { dt } else { 0.0 }).clamp(0.0, 0.25);
+        self.accumulator += (if dt.is_finite() { dt } else { 0.0 }).clamp(0.0, MAX_ADVANCE_SECONDS);
         while self.accumulator >= STEP {
             self.accumulator -= STEP;
             self.spawn(eye, forward);
@@ -1242,7 +1245,7 @@ pub struct Controller {
     worker: Option<Worker>,
     requested: Option<Arc<Field>>,
     pub simulation: Option<Simulation>,
-    log_time: f64,
+    log_time: std::time::Instant,
     request_eye: DVec3,
 }
 impl Controller {
@@ -1251,7 +1254,7 @@ impl Controller {
             worker: active.then(Worker::new),
             requested: None,
             simulation: None,
-            log_time: 0.0,
+            log_time: std::time::Instant::now(),
             request_eye: DVec3::ZERO,
         }
     }
@@ -1288,9 +1291,9 @@ impl Controller {
         }
         if let Some(sim) = &mut self.simulation {
             sim.advance(dt, eye, forward, player);
-            self.log_time += dt;
-            if self.log_time >= 2.0 {
-                self.log_time = 0.0;
+            // Fast-forward the traffic, not its diagnostic I/O cadence.
+            if self.log_time.elapsed() >= std::time::Duration::from_secs(2) {
+                self.log_time = std::time::Instant::now();
                 tracing::info!(target:"planet::traffic",agents=sim.agents.len(),moving=sim.agents.iter().filter(|a|a.speed>0.1).count(),trips=sim.trips,junction_wait_ticks=sim.waits,travelled=sim.agents.iter().map(|a|a.travelled).sum::<f64>(),"traffic simulation");
             }
         }
@@ -1667,6 +1670,100 @@ mod tests {
         }
         assert!(sim.agents[0].distance <= 113.001);
     }
+    #[test]
+    fn traffic_scene_time_scales_motion_and_dwell_without_a_small_frame_delta_cap() {
+        let network = route_network();
+        let route = network.routes[0].clone();
+        let eye = route.at(50.0).position;
+        for scale in [0.1, 0.25, 0.5, 1.0, 2.0, 10.0, 40.0] {
+            let mut scaled = Simulation::new(network.clone());
+            let mut reference = Simulation::new(network.clone());
+            for sim in [&mut scaled, &mut reference] {
+                sim.target_population = 0;
+                sim.agents = vec![agent(route.clone(), 1, 30.0, 0.0)];
+            }
+            // Eight real seconds at 15 FPS, including slow-rendering 40x play.
+            for _ in 0..120 {
+                scaled.advance(scale / 15.0, eye, DVec3::Y, None);
+            }
+            for _ in 0..(8.0 * scale / STEP).round() as usize {
+                reference.advance(STEP, eye, DVec3::Y, None);
+            }
+            assert!(
+                (scaled.clock - reference.clock).abs() < STEP * 1.01,
+                "{scale}x clock"
+            );
+            assert!(
+                scaled.agents[0]
+                    .pose(1.0)
+                    .position
+                    .distance(reference.agents[0].pose(1.0).position)
+                    < 0.3,
+                "{scale}x position"
+            );
+            assert_eq!(scaled.trips, reference.trips, "{scale}x arrivals");
+            assert!(
+                (scaled.agents[0].dwell - reference.agents[0].dwell).abs() < STEP * 1.01,
+                "{scale}x dwell"
+            );
+        }
+    }
+
+    #[test]
+    fn traffic_pause_does_not_advance_or_retime_the_visible_vehicle() {
+        let network = route_network();
+        let route = network.routes[0].clone();
+        let eye = route.at(50.0).position;
+        let mut sim = Simulation::new(network);
+        sim.target_population = 0;
+        sim.agents = vec![agent(route, 1, 30.0, 6.0)];
+        sim.advance(STEP * 1.5, eye, DVec3::Y, None);
+        let before = sim.agents[0].pose(sim.alpha()).position;
+        let clock = sim.clock;
+        for _ in 0..120 {
+            sim.advance(0.0, eye, DVec3::Y, None);
+        }
+        assert_eq!(sim.clock, clock);
+        assert_eq!(sim.agents[0].pose(sim.alpha()).position, before);
+        sim.advance(STEP * 0.5, eye, DVec3::Y, None);
+        assert!(sim.clock > clock);
+    }
+
+    #[test]
+    fn extreme_time_speed_is_work_limited_without_leaving_a_catch_up_debt() {
+        let network = route_network();
+        let route = network.routes[0].clone();
+        let eye = route.at(50.0).position;
+        let mut sim = Simulation::new(network);
+        sim.target_population = 0;
+        sim.agents = vec![agent(route, 1, 30.0, 6.0)];
+        sim.advance(163_840.0, eye, DVec3::Y, None);
+        assert!(sim.clock > MAX_ADVANCE_SECONDS - STEP * 1.01);
+        assert!(sim.clock <= MAX_ADVANCE_SECONDS + 1e-9);
+        assert!(sim.alpha() < 1.0);
+        let clock = sim.clock;
+        for dt in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            sim.advance(dt, eye, DVec3::Y, None);
+            assert_eq!(sim.clock, clock);
+        }
+        sim.advance(STEP, eye, DVec3::Y, None);
+        assert!((sim.clock - clock - STEP).abs() < 1e-9);
+    }
+
+    #[test]
+    fn traffic_is_wired_to_scene_time_not_the_unscaled_camera_delta() {
+        let frame = include_str!("main.rs");
+        let call = frame
+            .split("roads.update_traffic(")
+            .nth(1)
+            .unwrap()
+            .split(");")
+            .next()
+            .unwrap();
+        assert!(call.contains("delta_scene_time"));
+        assert!(!call.contains("delta_camera_motion_seconds"));
+    }
+
     #[test]
     fn fixed_steps_do_not_depend_on_the_render_frame_rate() {
         let network = route_network();

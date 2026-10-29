@@ -6106,7 +6106,8 @@ impl State {
         } else {
             camera_radius - planet::planet_radius_meters()
         };
-        let delta_sim_time = (sim_time - self.previous_sim_time).max(f64::EPSILON);
+        let delta_scene_time = (sim_time - self.previous_sim_time).max(0.0);
+        let delta_sim_time = delta_scene_time.max(f64::EPSILON);
         let delta_camera_motion_seconds = if self.scenario.is_none() {
             f64::from(frame_time).max(f64::EPSILON)
         } else {
@@ -6453,7 +6454,7 @@ impl State {
         if let Some(roads) = &mut self.road_network {
             roads.update_traffic(
                 &self.queue,
-                delta_camera_motion_seconds,
+                delta_scene_time,
                 camera_planet_frame_position,
                 camera_planet_frame_direction,
                 matches!(self.camera_mode, CameraMode::Driving | CameraMode::Surface)

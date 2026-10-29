@@ -494,3 +494,24 @@ MEMORY.md:83-83|note=[repository workflow and preserving unrelated changes]
 01a0e3cd-c8e6-7a00-8147-66c8ebea1f94
 </rollout_ids>
 </oai-mem-citation>
+
+I’ll check which clock drives NPC traffic and make it follow the game’s time-speed control, without tying it to planet rotation or the visual water clock.
+
+NPCs currently use the real-time camera delta, and their simulation also has a 0.25-second catch-up clamp.
+
+I’ll change `main.rs` to pass scaled scene time, update the budget in `traffic.rs`, and add tests for pause, slow motion and acceleration through 40×. Extreme multipliers will remain work-limited to protect FPS.
+
+Done—NPC movement and parking waits now follow time speed, including slow motion and F10 pause.
+
+Tested 0.1×–40×; extreme fast-forward remains work-limited to protect FPS. All four matched 1× screenshots are pixel-identical.
+
+Release rebuilt. Tests: 828 pass, same six existing failures.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:83-83|note=[repository workflow and preserving unrelated changes]
+</citation_entries>
+<rollout_ids>
+01a0e3cd-c8e6-7a00-8147-66c8ebea1f94
+</rollout_ids>
+</oai-mem-citation>

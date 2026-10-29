@@ -10,7 +10,16 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 29 October: forest continuity and water presentation checks.**
+**Current phase, 29 October: NPC traffic follows scene-time speed.** Road traffic
+now uses scaled scene delta, not the player's real-time camera delta. Comma/period
+retime motion, acceleration, braking and village waits; F10 pauses visible poses.
+The old0.25s delta cap already lost time at10x/15FPS. Accepts up to8 game seconds
+per rendered frame with unchanged30Hz fixed steps (~240 max); extreme excess time
+is dropped, not carried as debt. Population diagnostics remain2s wall time.
+Player movement, routes, physics rules and rendering are unchanged.18 focused
+checks/full828 pass, same6 existing failures; see the final dated section.
+
+**Previous phase, 29 October: forest continuity and water presentation checks.**
 Reproduced whole-forest blank frames twice: generation was encoded before this
 frame's cell/layout updates and indirect-count resets. Moved it after uploads;
 48/48 captured flight frames now retain trees, with identical stationary PNGs and
@@ -14776,3 +14785,39 @@ asset, dependency, controller, navigation, vegetation-density or moon tuning edi
 Final rebuilt-release stationary verification: forest_startup1793309609-132108
 passes; both PNGs are pixel-identical to baseline1793308884-126181, including the
 new lake shader. Final view opened. All test renderers have exited.
+
+
+## 29 October — NPC speed follows the time-speed control
+
+User requested traffic speed track time speed. Found two independent problems:
+`State` passed the real-time camera delta to traffic, and `Simulation::advance`
+clamped any input to0.25s (saturates at10x on15FPS frames). New `delta_scene_time`
+is the nonnegative difference of the existing scaled simulation clock; other
+consumers retain their existing epsilon floor, but NPCs get an exact zero when
+paused. Comma/period therefore retime traffic and F10 freezes its interpolated
+pose. Planet-rotation-only controls and the player's driving/camera remain separate.
+
+Kept30Hz safe fixed substeps and raised the per-frame input allowance to8 game
+seconds (~240 steps), so ordinary fast-forward through40x is not frame-rate
+capped at15FPS. At extreme multipliers beyond the budget, excess time is dropped
+to preserve responsiveness; no promise of exact163840x NPC simulation and no
+backlog to drain after slowing or pausing. No bigger physics step, junction skip,
+new route job, changed collision/vehicle limits or rendering/density change.
+Population logging now uses an Instant/two wall seconds, avoiding accelerated
+per-frame diagnostic I/O. Wheel travel, braking, arrivals and dwell all follow
+simulation time, rather than only multiplying visible velocity.
+
+The scaling/reference journey test failed before at10x; the actual-call-site
+clock wiring guard also failed before. Four new checks cover0.1/0.25/0.5/1/2/10/40x
+versus elapsed-time reference at15FPS, arrivals/dwell, frozen pose/resume and
+extreme/invalid input with no retained catch-up debt.18 focused checks pass;
+full828 pass/78ignored/same6 baseline failures; cargo check and release build pass.
+Raw test logs and immutable before/after binaries: test-runs/traffic-time-2026-10-29/.
+Keyboard-driven live acceptance at every ladder rung is not claimed. README and
+traffic design doc describe the clock and explicit work-limit trade-off.
+
+Matched1x visual verification: road_traffic before1793310547-137396 and after
+1793310664-138452 both pass32-NPC/motion/four-capture assertions. All four PNG
+pairs are pixel-identical; matched cart view opened. High640x360/X11/Immediate,
+village site, PLANET_TRAFFIC_WAIT=1. No FPS-gain claim or extreme-rung live sign-off.
+All renderer test processes exited; source/runnable release match this phase.
