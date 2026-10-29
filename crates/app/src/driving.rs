@@ -14,22 +14,40 @@ const MAGIC_TOP_SPEED: f64 = 45.0;
 const MAGIC_FULL_BURN_SECONDS: f64 = 90.0;
 const MAGIC_RECHARGE_SECONDS: f64 = 120.0;
 
+/// Mouse still for this long before the wheel starts back to centre, so a
+/// steady hand between small corrections is not fought.
+const AUTO_CENTRE_DELAY_SECONDS: f64 = 0.25;
+/// E-fold of the wheel's return to centre once the mouse is still: about
+/// 95% of the way back a second after letting go.
+const AUTO_CENTRE_SECONDS: f64 = 0.25;
+
 /// Relative mouse motion acts as a bounded virtual steering wheel. Keyboard
 /// steering overrides/recentres it; free-look never changes wheel position.
+/// Left alone (mouse still, or free-looking) it returns to centre by itself.
 #[derive(Default)]
 pub struct MouseSteering {
     value: f64,
     filtered: f64,
+    still_seconds: f64,
     pub free_look: bool,
+    /// Hold the wheel where it is left (no auto-centre).
+    pub hold: bool,
 }
 impl MouseSteering {
     pub fn motion(&mut self, pixels: f64) {
         if !self.free_look && pixels.is_finite() {
             self.value = (self.value + pixels / 300.0).clamp(-1.0, 1.0);
+            if pixels != 0.0 {
+                self.still_seconds = 0.0;
+            }
         }
     }
     /// Called at the fixed120Hz physics step, never once per render frame.
     pub fn input(&mut self, keyboard: f64) -> f64 {
+        self.still_seconds += STEP;
+        if !self.hold && self.still_seconds > AUTO_CENTRE_DELAY_SECONDS {
+            self.value *= (-STEP / AUTO_CENTRE_SECONDS).exp();
+        }
         if keyboard != 0.0 {
             self.value = 0.0;
             self.filtered = 0.0;
@@ -174,8 +192,8 @@ mod tests {
     use super::*;
     #[test]
     fn mouse_wheel_is_bounded_frame_independent_and_keyboard_can_override() {
-        let mut a = MouseSteering::default();
-        let mut b = MouseSteering::default();
+        let mut a = MouseSteering { hold: true, ..MouseSteering::default() };
+        let mut b = MouseSteering { hold: true, ..MouseSteering::default() };
         a.motion(150.0);
         for _ in 0..15 {
             b.motion(10.0);
@@ -202,9 +220,50 @@ mod tests {
         }
         assert!((a.input(0.0) + 1.0).abs() < 1e-10);
     }
+    /// Let go of the mouse and the wheels come back straight: held through
+    /// the short delay, then about a second to centre; moving the mouse again
+    /// restarts the delay, and free-looking counts as letting go.
+    #[test]
+    fn the_mouse_wheel_returns_to_centre_when_left_alone() {
+        let mut mouse = MouseSteering::default();
+        let mut car = Car {
+            grounded: true,
+            ..Car::default()
+        };
+        mouse.motion(300.0);
+        let mut steer = 0.0;
+        for _ in 0..24 {
+            car.speed = 10.0;
+            steer = mouse.input(0.0);
+            car.travel(0.0, steer, false, 1.0);
+        }
+        assert!(steer > 0.9, "held during the delay: {steer}");
+        for _ in 0..150 {
+            car.speed = 10.0;
+            steer = mouse.input(0.0);
+            car.travel(0.0, steer, false, 1.0);
+        }
+        assert!(steer.abs() < 0.03, "not back to centre: {steer}");
+        assert!(car.steering_fraction().abs() < 0.03);
+        // Small steady corrections keep the wheel where they put it.
+        mouse.motion(150.0);
+        for _ in 0..120 {
+            mouse.motion(0.0);
+            if mouse.still_seconds > 0.2 {
+                mouse.motion(0.5);
+            }
+            steer = mouse.input(0.0);
+        }
+        assert!(steer > 0.3, "fought a steady hand: {steer}");
+        mouse.free_look = true;
+        for _ in 0..240 {
+            steer = mouse.input(0.0);
+        }
+        assert!(steer.abs() < 0.01, "free look should let go: {steer}");
+    }
     #[test]
     fn tiny_mouse_corrections_ramp_smoothly_through_the_vehicle_controller() {
-        let mut mouse = MouseSteering::default();
+        let mut mouse = MouseSteering { hold: true, ..MouseSteering::default() };
         let mut car = Car {
             grounded: true,
             ..Car::default()
@@ -261,7 +320,7 @@ mod tests {
     #[test]
     fn opposite_mouse_corrections_reverse_the_turn_within_a_tenth_of_a_second() {
         for speed in [2.0, 10.0, 30.0] {
-            let mut mouse = MouseSteering::default();
+            let mut mouse = MouseSteering { hold: true, ..MouseSteering::default() };
             let mut car = Car {
                 grounded: true,
                 ..Car::default()

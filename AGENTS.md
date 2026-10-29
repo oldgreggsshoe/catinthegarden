@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Steering auto-centre,29October: the mouse virtual wheel returns to centre by itself once the mouse has been still 0.25s (e-fold 0.25s, ~1s to straight); free-look counts as letting go; steady small corrections keep it; A/D unchanged (already springs back). `MouseSteering` in driving.rs (`hold` turns it off, used by the old held-wheel tests). New test; 793 pass/same 6 failures. Not driven live. See HANDOFF.
+
 - HUD clock,28October: top-left 24-hour planet time (UTC-style, one reading everywhere): solar time on the zero meridian (+X, longitude 0), one rotation = 24h, so 12:00 is noon there only. `planet_time_hours`/`local_solar_time_hours` in main.rs; redrawn when the minute changes, interactive only. Test checks the hour angles, 24h per rotation and that the eye's position doesn't matter. Not seen live. See HANDOFF.
 
 - Solar eclipses,28October: at new moon in the eclipse seasons the moon's ~1,800km umbra (always total; moon 6x the sun) crosses the planet. One shared function (eclipse.wgsl moon_shadow_sunlight, CPU mirror in sky_moon.rs) dims direct sun on land/sea/trees/clouds, the sky-view LUT per sample, aerial haze and skylight; dark-adapted floors keep totality deep blue and readable; pearly corona round the black moon, glare follows the visible crescent. New solar_eclipse scenario with centre-luminance assertion (fails with PLANET_SOLAR_ECLIPSE=0). +1.4ms during an eclipse at 1280x800, zero otherwise. 791 pass/same 6 failures. See HANDOFF.

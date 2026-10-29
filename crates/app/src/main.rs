@@ -586,7 +586,7 @@ fn geographic_longitude_degrees_east_check() -> bool {
 /// A centred, non-interactive steering bar: actual wheels, not mouse motion.
 fn draw_steering_indicator(ui: &mut egui::Ui, steering: f64) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(96.0, 20.0), egui::Sense::hover());
-    response.on_hover_text("Steering: move the mouse back to centre, or tap A/D to reset it.");
+    response.on_hover_text("Steering: centres itself when the mouse is still; tap A/D to reset it at once.");
     let painter = ui.painter();
     painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(150));
     let mid = rect.center();

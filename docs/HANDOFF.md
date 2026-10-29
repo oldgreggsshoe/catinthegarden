@@ -14339,3 +14339,21 @@ Request: "So solar eclipses".
   the zero meridian (+X, `geographic_longitude_degrees` 0). It is the same everywhere and
   never hidden; 12:00 is noon only at longitude 0. `local_solar_time_hours` is kept, so a
   local-time readout can be added beside it later.
+
+## Steering auto-centre (29 October)
+
+- The mouse steers a virtual wheel (`driving::MouseSteering`, 300 px to full lock) that
+  used to stay wherever it was left. It now returns to centre by itself: once the mouse has
+  been still for `AUTO_CENTRE_DELAY_SECONDS` 0.25s, the wheel position decays with an e-fold
+  of `AUTO_CENTRE_SECONDS` 0.25s, so it is straight about a second after letting go. The
+  existing 15ms filter and the car's 8 rad/s wheel rate limit still smooth the tyres.
+- The time without mouse motion (`still_seconds`) is counted at the 120Hz physics step and
+  reset by any non-zero motion, so a steady hand making small corrections holds a turn.
+  Free-look (hold RMB) ignores mouse motion, so it counts as letting go and the car
+  straightens while you look round.
+- Keyboard A/D is unchanged: it already returns to straight on release.
+- The centring is the same at every speed, parked included, for predictability; a
+  speed-dependent self-aligning return would be the more realistic alternative.
+- `MouseSteering::hold` turns it off; the four older tests about a held wheel set it.
+  New test `the_mouse_wheel_returns_to_centre_when_left_alone`. The hover text on the
+  steering bar now says so. 793 pass / same 6 failures. Not driven live.

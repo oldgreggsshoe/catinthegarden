@@ -270,3 +270,16 @@ Done. The clock now shows one planet-wide time, like UTC. It reads the same wher
 The local-time calculation is still in the code, in case you later want local time shown small beside it.
 
 Tests: the clock test passes, and now also checks that the reading doesn't depend on where you are. The release build works. Not seen live.
+
+---
+
+Done: the steering now centres itself. Committed and pushed; I haven't driven it live.
+
+- With the mouse, the wheel used to stay wherever you left it. Now, once the mouse has been still for a quarter of a second, the wheel goes back to straight, almost fully within about a second.
+- Small steady corrections keep a turn going. To hold a long bend you keep nudging the mouse, the way you keep hands on a real wheel.
+- Holding the right button to look around counts as letting go, so the car straightens while you look.
+- A/D steering already sprang back when released, and is unchanged.
+- It centres at the same rate at any speed, even parked. Real cars only straighten themselves when rolling, faster at speed; I can make it do that instead.
+- The delay and centring time are two named settings in the driving code and are easy to adjust.
+
+Tests: a new test checks the wheel returns to centre, holds through steady corrections, and lets go during free-look. 793 pass, with the same 6 failures as before.
