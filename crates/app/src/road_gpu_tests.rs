@@ -1067,3 +1067,46 @@ fn gpu_village_path_world_contact_is_stable_at_altitude_and_across_camera_moves(
         }
     }
 }
+
+#[test]
+#[ignore = "requires Vulkan; executes the production footpath ground-shaping lookup"]
+fn gpu_village_path_ground_shape_matches_the_cpu_twin() {
+    use crate::village_paths::{Trail, ground_shape, pack_with_mouths};
+    use glam::DVec2;
+    let frame = crate::road_network_field::Frame::new(DVec3::X, 4_000_000.0).unwrap();
+    let trails = [
+        Trail { a: DVec2::new(-43.0, -31.0), b: DVec2::new(43.0, 31.0), width: 1.2 },
+        Trail { a: DVec2::new(-20.0, 30.0), b: DVec2::new(20.0, 30.0), width: 0.8 },
+    ];
+    let mouths = [Some((DVec2::new(43.0, 31.0), 512.25)), None];
+    let data = pack_with_mouths(&frame, &trails, &mouths).unwrap();
+    let mut cases = Vec::new();
+    let mut expected = Vec::new();
+    for y in -70..=70 {
+        for x in -100..=100 {
+            let p = DVec2::new(x as f64 * 0.5 + 0.13, y as f64 * 0.5 - 0.07);
+            cases.push([p.x as f32, p.y as f32, 0.0, 0.0]);
+            expected.push(ground_shape(&data, p));
+        }
+    }
+    let source = format!(
+        "{}\n@group(0) @binding(0) var<storage,read_write> results: array<vec4<f32>>;\n@group(0) @binding(2) var<storage,read> cases: array<vec4<f32>>;\n@compute @workgroup_size(1) fn test_cut(@builtin(global_invocation_id) id:vec3<u32>) {{ results[id.x]=village_path_ground_shape(cases[id.x].xy); }}",
+        include_str!("village_paths.wgsl")
+            .replace("@group(2) @binding(22)", "@group(0) @binding(1)")
+    );
+    let result = execute_cut_shader(&data, &cases, source);
+    let mut shaped = 0;
+    for (i, (actual, expected)) in result.iter().zip(expected).enumerate() {
+        let near = |a: f32, b: f64| (a as f64 - b).abs() < 1e-3;
+        assert!(
+            near(actual[0], expected.weight)
+                && near(actual[1], expected.ramp)
+                && near(actual[3], expected.near_mouth)
+                && (expected.ramp <= 0.0 || near(actual[2], expected.floor_meters)),
+            "case {:?}: gpu {actual:?} vs cpu {expected:?}",
+            cases[i]
+        );
+        shaped += usize::from(expected.weight > 0.0);
+    }
+    assert!(shaped > 1000, "too few shaped cases: {shaped}");
+}

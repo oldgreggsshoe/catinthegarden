@@ -921,6 +921,9 @@ pub struct TerrainRenderer {
     road_cut_buffer: wgpu::Buffer,
     village_path_buffer: wgpu::Buffer,
     village_path_frame: Option<crate::road_network_field::Frame>,
+    /// CPU copy of the published path index, so collision sees the same
+    /// shaped ground under the paths as the GPU draws.
+    village_path_data: Vec<[f32; 4]>,
     village_parking: Vec<(DVec3, DVec3)>,
     road_revision: u64,
     road_cuts: Option<std::sync::Arc<crate::road::CutField>>,
@@ -1547,6 +1550,7 @@ impl TerrainRenderer {
             road_cut_buffer,
             village_path_buffer,
             village_path_frame: None,
+            village_path_data: Vec::new(),
             village_parking: Vec::new(),
             road_revision: 0,
             road_cuts: None,
@@ -1708,12 +1712,14 @@ impl TerrainRenderer {
         self.queue
             .write_buffer(&self.village_path_buffer, 0, bytemuck::cast_slice(data));
         self.village_path_frame = Some(frame);
+        self.village_path_data = data.to_vec();
         tracing::info!(target:"planet::villages",segments=data[0][3],"village paths published");
         // Reuse the existing forest invalidation signal; no road geometry changes.
         self.road_revision += 1;
     }
     pub fn clear_village_paths(&mut self) {
         if self.village_path_frame.take().is_some() {
+            self.village_path_data.clear();
             self.queue
                 .write_buffer(&self.village_path_buffer, 12, bytemuck::bytes_of(&0.0_f32));
             self.road_revision += 1;
@@ -1741,6 +1747,47 @@ impl TerrainRenderer {
                 .as_ref()
                 .is_some_and(|cuts| cuts.clears_tree(direction, height))
         }
+    }
+
+    /// The vertex shader's footpath shaping (planet.wgsl vs_main), applied to
+    /// one mesh vertex's drawn height before road cuts.
+    fn village_path_shaped_height(
+        &self,
+        direction: DVec3,
+        height: f64,
+        baked_meters: f64,
+        camera_altitude_meters: f64,
+        baked_spacing_meters: f64,
+        detail_filter_meters: f64,
+    ) -> f64 {
+        let Some(frame) = self.village_path_frame else {
+            return height;
+        };
+        let fade = crate::village_paths::distance_fade(detail_filter_meters);
+        if self.flat_triangle_experiment
+            || fade <= 0.0
+            || baked_meters <= 0.0
+            || !matches!(self.source, TerrainDataSource::Outmap(_))
+        {
+            return height;
+        }
+        let p = glam::DVec2::new(direction.dot(frame.across), direction.dot(frame.forward))
+            * frame.radius;
+        let shape = crate::village_paths::faded(
+            crate::village_paths::ground_shape(&self.village_path_data, p),
+            fade,
+        );
+        if shape.weight <= 0.0 {
+            return height;
+        }
+        let coarse = outmap_surface_height_meters_with_filter(
+            baked_meters,
+            direction,
+            camera_altitude_meters,
+            baked_spacing_meters,
+            detail_filter_meters.max(crate::village_paths::SMOOTH_METERS),
+        );
+        crate::village_paths::shaped_height(height, coarse, shape)
     }
 
     fn cut_surface_height(&self, direction: DVec3, height: f64) -> f64 {
@@ -2620,6 +2667,17 @@ impl TerrainRenderer {
                     } else {
                         breakdown.height_meters
                     };
+                let height = self.village_path_shaped_height(
+                    direction,
+                    height,
+                    baked,
+                    camera_altitude_meters,
+                    continuous_baked_sample_spacing_meters([u, v], key.level, match &self.source {
+                        TerrainDataSource::Placeholder => 0,
+                        TerrainDataSource::Outmap(outmap) => outmap.manifest().dense_level,
+                    }),
+                    breakdown.detail_filter_meters,
+                );
                 let height = self.cut_surface_height(direction, height);
                 Some(direction * (planet_radius_meters() + height))
             };
@@ -4019,7 +4077,10 @@ pub fn create_shared_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroup
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 22,
-                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                // Vertex too: the terrain shapes the ground under the paths.
+                visibility: wgpu::ShaderStages::VERTEX
+                    | wgpu::ShaderStages::FRAGMENT
+                    | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,

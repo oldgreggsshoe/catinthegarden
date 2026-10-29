@@ -1101,23 +1101,69 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     // probes deliberately do not re-run it -- they are pure texture reads --
     // so this is the whole of its per-vertex cost.
     var detail = TerrainDetail(0.0, vec3<f32>(0.0));
+    let baked_spacing_meters = continuous_baked_sample_spacing_meters(
+        input.node_uv_origin_span.xy + tile_uv * input.node_uv_origin_span.zw,
+        source_level(input.terrain_info),
+        source_edge_fade_enabled(input.terrain_info),
+    );
+    // Village footpaths smooth the short relief under them and run up or down
+    // to their court's floor at the mouth (bounded; CPU twin in terrain.rs via
+    // village_paths::shaped_height). Uniform branch: with paths published every
+    // vertex takes the split ladder, which costs a few multiply-adds, rather
+    // than path vertices diverging into a second ladder.
+    let paths_published = village_path_data[0].w > 0.5 && village_path_data[3].w > 0.5;
+    var shape = vec4<f32>(0.0);
+    let path_fade = 1.0 - smoothstep(VILLAGE_PATH_FADE_FILTER_START_METERS,
+        VILLAGE_PATH_FADE_FILTER_END_METERS, vertex_filter_meters);
+    if paths_published && path_fade > 0.0 && outmap && !flat_triangles && macro_height > 0.0 {
+        // Base height for the projection: the detail moves it by well under a
+        // millimetre at village range.
+        let planet_offset = view_to_planet(input.anchor_view_position)
+            + anchor_relative_position + direction * base_height;
+        shape = village_path_ground_shape(village_path_xy_from_offset(planet_offset)
+            * village_path_data[1].w / (village_path_data[1].w + base_height));
+        shape = vec4<f32>(shape.xy * path_fade, shape.z, shape.w * path_fade);
+    }
+    var coarse_detail = TerrainDetail(0.0, vec3<f32>(0.0));
     if !ABLATE_VERTEX_DETAIL {
-        detail = terrain_detail(
-        anchor_direction,
-        anchor_relative_position,
-        vertex_filter_meters,
-        continuous_baked_sample_spacing_meters(
-            input.node_uv_origin_span.xy + tile_uv * input.node_uv_origin_span.zw,
-            source_level(input.terrain_info),
-            source_edge_fade_enabled(input.terrain_info),
-        ),
-        // Each octave asks this separately for its own headroom, so the
-        // ladder no longer needs a single scalar weight on the outside.
-        select(0.0, base_height, outmap),
-        );
+        if paths_published {
+            let split = terrain_detail_band_split(
+                anchor_direction,
+                anchor_relative_position,
+                vertex_filter_meters,
+                baked_spacing_meters,
+                select(0.0, base_height, outmap),
+                VILLAGE_PATH_SMOOTH_METERS,
+            );
+            detail = split.full;
+            coarse_detail = split.coarse;
+        } else {
+            detail = terrain_detail(
+            anchor_direction,
+            anchor_relative_position,
+            vertex_filter_meters,
+            baked_spacing_meters,
+            // Each octave asks this separately for its own headroom, so the
+            // ladder no longer needs a single scalar weight on the outside.
+            select(0.0, base_height, outmap),
+            );
+        }
     }
     let terrain_detail_meters = detail.height_meters;
-    let height = base_height + terrain_detail_meters;
+    var height = base_height + terrain_detail_meters;
+    var shaped_detail_slope = detail.slope;
+    if shape.x > 0.0 {
+        {
+            let coarse = coarse_detail;
+            let keep = 1.0 - VILLAGE_PATH_SMOOTHING * shape.x;
+            let smoothed = base_height + coarse.height_meters
+                + keep * (terrain_detail_meters - coarse.height_meters);
+            let ramped = smoothed + (shape.z - smoothed) * shape.y;
+            let limit = VILLAGE_PATH_MAX_CHANGE_METERS + VILLAGE_PATH_RAMP_MAX_CHANGE_METERS * shape.w;
+            height += clamp(ramped - height, -limit, limit);
+            shaped_detail_slope = coarse.slope + keep * (detail.slope - coarse.slope);
+        }
+    }
     // Polar ice overrides ocean in the baked biome contract. Lift it just
     // above sea level so the cap remains visible rather than becoming water.
     let biome_id = sample_biome(outmap, source_uv, direction);
@@ -1167,7 +1213,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     if outmap {
         // The slope already carries each octave's own headroom, so there is no
         // scalar weight left to apply here.
-        normal = terrain_detail_perturbed_normal(normal, direction, detail.slope);
+        normal = terrain_detail_perturbed_normal(normal, direction, shaped_detail_slope);
     }
     var flat_specular = 0.0;
     if flat_triangles && material_allows_specular(biome_id) {
@@ -3233,7 +3279,8 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     textured_terrain_albedo = road_cut_albedo(textured_terrain_albedo,
         input.outmap_and_macro_height.y + input.terrain_detail_meters_and_fog_amount.x
             - input.surface_height_and_fog_color.x);
-    textured_terrain_albedo = village_path_albedo(textured_terrain_albedo, view_to_planet(input.camera_relative_view_position), input.surface_height_and_fog_color.x);
+    let village_path = village_path_fragment(view_to_planet(input.camera_relative_view_position), input.surface_height_and_fog_color.x);
+    textured_terrain_albedo = village_path_albedo_from(textured_terrain_albedo, village_path);
     // Rain darkens exposed ground; accumulated snow replaces the material only
     // where the coupled surface field says it has persisted. Ocean and lake
     // branches returned above, and non-ice land remains matte.
@@ -3337,10 +3384,12 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
                 input.outmap_and_macro_height.y,
             );
             let vertex_normal = terrain_normal;
+            // The ground is smoothed under footpaths; so is its finest relief.
+            let path_keep = 1.0 - VILLAGE_PATH_SMOOTHING * village_path.x * village_path_data[3].w;
             let detail_normal = terrain_detail_perturbed_normal(
                 vertex_normal,
                 direction,
-                fine_detail.slope,
+                fine_detail.slope * path_keep,
             );
             let ambient = 0.18;
             let vertex_lambert = max(dot(vertex_normal, sun_direction), 0.0);
@@ -3364,7 +3413,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
                 fine_detail.height_meters / max(pixel_filter_meters, 0.05),
                 -1.0,
                 1.0,
-            );
+            ) * path_keep;
             textured_surface_lighting *= 1.0
                 + surface_texture * TERRAIN_DETAIL_ALBEDO_STRENGTH
                     * terrain_detail_steep_fade(vertex_normal, direction);

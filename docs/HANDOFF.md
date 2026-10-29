@@ -14474,3 +14474,45 @@ Request: "So solar eclipses".
 - Tests: `footpath_gate_faces_the_court_and_leaves_headroom_over_the_path`; sign-kind test
   now covers six kinds; scenario count 157. 802 pass / same 6 failures. Cost not measured
   (one extra small draw near villages).
+
+## IN PROGRESS, uncommitted on the branch, backed up as `wip/village-path-shaping` (29 October)
+
+User asked for village paths to be flattened / carved where possible. Work stopped
+mid-measurement because the laptop was switched off. State of the working tree:
+
+- Done and tested (CPU + GPU):
+  - `village_paths.rs`: `GroundShape`, `ground_shape` (CPU twin of the WGSL lookup),
+    `shaped_height`, `pack_with_mouths` (segment record `.yzw` = court mouth xy + court
+    floor height; `NO_MOUTH` 1e9), `data[3].w` = shaping on/off
+    (`PLANET_VILLAGE_PATH_SHAPING=0` turns it off for A/B), cell registration reach widened
+    to width + `BANK_METERS` + 0.5. Constants: bank 1.2 m, ramp full 3 m / end 15 m,
+    smooth 12 m, smoothing 0.8, max change 0.8 m (+3.2 m at the mouth).
+  - `village_paths.wgsl`: `village_path_ground_shape`, `village_path_fragment` +
+    `village_path_albedo_from` (wear computed once per pixel).
+  - `shared_planet.wgsl`: `terrain_detail_band_split` (full ladder + its >= 12 m part in one
+    pass, exact; measured free).
+  - `planet.wgsl` vs_main: uses the split ladder whenever paths are published (uniform
+    branch), shapes height and the detail slope under paths before road cuts; fragment
+    fine detail damped by path wear.
+  - `terrain.rs`: binding 22 now VERTEX visible; CPU copy `village_path_data`;
+    `village_path_shaped_height` applied in the raster-vertex closure before
+    `cut_surface_height`.
+  - Tests: `ground_shape_matches_a_direct_capsule_scan_and_ramps_to_the_mouth`,
+    `shaped_height_smooths_short_relief_and_stays_bounded`, Vulkan
+    `gpu_village_path_ground_shape_matches_the_cpu_twin` (all pass, 804 pass / same 6).
+- Problem being fixed: the per-vertex path lookup cost +3.6 to +4.6 ms in `village_paths`
+  at 1280x800 (shaping 0: ~87.0 ms, 1: ~90.7-91.4 ms, interleaved pairs). The split ladder
+  alone costs nothing (lookup disabled: 86.16 vs 86.19); the lookup is the cost.
+- Last edit (applied, built? NOT confirmed, not timed): distance fade, shaping fades out
+  between a 2 m and 4 m vertex detail filter (about 200-400 m away), skipping the lookup
+  beyond. GPU `VILLAGE_PATH_FADE_FILTER_*` in village_paths.wgsl + `path_fade` in vs_main;
+  CPU `village_paths::distance_fade` / `faded` in `village_path_shaped_height`.
+- Next: `cargo build --release -p planet-app`, full tests + `--ignored gpu_village_path`,
+  then re-time two interleaved pairs (command in the TIMBER_VILLAGES doc with
+  `PLANET_VIEWPORT=1280x800 PLANET_VILLAGE_PATH_SHAPING=0/1 --scenario village_paths`).
+  If still costly: gate the lookup more tightly or ship shaping off by default. Then
+  visual check (`village_paths`, `village_footpath_gate`), docs (AGENTS/HANDOFF/README),
+  commit + push, reply to the user in response/codex.txt.
+- Visual so far: paths read as smooth, even tracks (the trunk path lost its lumpy relief);
+  mouths' 8 m-filtered ground is only ~1-7 m off the court floor in the test area. The
+  deep hollow seen past the East Cedarbank gate is not explained yet.
