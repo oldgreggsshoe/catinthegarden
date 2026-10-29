@@ -10,7 +10,17 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 29 October: inland lakes.** The bake's `Lake` biome tag was not
+**Current phase, 29 October: NPC road traffic.** Generated roads now carry bounded
+local timber carts and covered carriages: worker-built A* shortest-distance
+itineraries, left-hand lanes, bend/grade braking, queues, junction/court reservations,
+village stops and real parking turns. 32 agents by default (64 cap), 30 Hz interpolated
+simulation, two instanced mesh draws, actual bore lantern lighting and swept player-car
+blocking. No global persistent transport economy or horses yet. Existing replays keep
+traffic off by default; `road_traffic` and `road_traffic_tunnel` are explicit checks.
+See docs/TRAFFIC_2026_10_29.md and the final dated section for tests/evidence/timings.
+Claude's inland-lake commit is preserved; road engineering/precompute is unchanged.
+
+**Previous phase, 29 October: inland lakes.** The bake's `Lake` biome tag was not
 water (22% of the planet, much of it sloping far above its own rim), and was drawn
 as blue lumpy ground. `planet-baker --derive-lakes` now floods the dense heights
 into a lake sidecar (15,411 lakes, 2.54% of land) without touching the tiles; the
@@ -14661,3 +14671,49 @@ photographed spot (lat -0.69, lon -3.98) is such a slope: no basin at all.
   (traffic*, road_network_render.rs, debug.rs, its main.rs/scenario.rs lines) were not
   touched or committed.
 
+
+
+## 29 October — bounded NPC carts and carriage traffic
+
+User clarified that traffic means NPC vehicles driving sensible journeys on the
+road network, not just vehicle art. Implemented resident road topology and A*
+shortest engineered-distance routes on one cancellable/replaceable worker, with
+supported left-lane trajectories, anticipatory curve/grade braking and real court
+turns/stops. No changes to engineering/precompute, terrain or navigation sign
+routing. Claude completed/committed the independent inland-lake phase during this
+work; that commit is retained, not reverted or folded into the traffic diff.
+
+`traffic.rs`: 32 default/64 maximum agents, 16 itineraries/160k samples, fixed30Hz
+simulation and interpolation; following queues, exclusive junction/court ownership,
+through priority/wait-age promotion and blocked-exit checks. Actual3D endpoints keep
+upper/lower crossings disconnected. Agents yield to the player's land position;
+the driving controller sweeps against their oriented bodies. Spatial remapping
+preserves nearby identities on snapshot changes, no visible frontier U-turns.
+`traffic_render.rs`/`traffic.wgsl`: two cached procedural timber models, covered
+canvas coach/cargo cart, driver, rolling/steered wheels, magic orb, filtered oak and
+actual flickering road lantern lighting inside bores; two instanced draws.
+
+Traffic defaults on with interactive roads; `PLANET_TRAFFIC=0` disables,
+`PLANET_TRAFFIC_COUNT=N` caps population. Historical replays default off, explicit
+`PLANET_TRAFFIC=1` opts them in. New `road_traffic` and `road_traffic_tunnel` follow
+an NPC; use `PLANET_TRAFFIC_WAIT=1` for captures and the village/longest_undersea
+sites respectively. Both assert population and genuine aggregate travel.
+
+Validation:14 focused checks and160-scenario registry pass; full822 pass/78ignored,
+same6 baseline failures. Real32-agent/13-route test travels12,145.9m over60simseconds:
+no body overlaps at any step, final centres on deck. Release builds. Opened all
+four village captures1793303903-72017 and all four bore1793304177-75294; also open
+cart near coast1793303987-73920. Replays pass with32NPCs and~2km collective motion.
+
+Exclusive same-binary High/X11/Immediate1280x647 paired p50 overhead: parking
++0.193ms, undersea entrance+0.077ms, deep+0.270ms (off/on/on/off). These static
+views have few/no close vehicles, not a dense-crowd guarantee. No quality reduction
+or FPS-gain claim. Raw data in test-runs/traffic-2026-10-29/benchmark.json and
+per-run pacing/logs. Detailed scope, commands, evidence and limitations:
+docs/TRAFFIC_2026_10_29.md.
+
+Scope limits: resident journeys only, not persistent whole-planet cargo/economy;
+unbuilt red plans carry no traffic. Models use magic drive, no horses. No crash
+damage/impulses/overtaking/contact-shadow pass. Unsupported routes fail closed.
+Busy interactive queues and long multi-residency driving await human playtesting.
+No renderer left running by this phase.

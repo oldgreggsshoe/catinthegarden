@@ -406,3 +406,57 @@ Done and pushed. The CPU now marks which pieces of ground (terrain chunks) actua
 - The pictures are pixel-for-pixel the same as before.
 - What's left is the ground right around the village, where nearly every chunk has a path on it. Getting below 1.2 ms would mean doing less flattening work there, so I've stopped.
 - Tests: 807 pass, same 6 old failures; the 3 graphics-card path tests pass.
+
+I’ll build a bounded, streamed traffic simulation: wooden carts and carriages choosing village destinations, finding routes on generated roads, keeping left, braking for bends and queues, and yielding at junctions.
+I’ll first inspect the road navigation, deck geometry and vehicle/rendering code. Route searches will run off the render thread, with tests for traffic rules and screenshots/FPS checks for the result.
+
+I’ll match the player’s magic-powered cart rather than add horses in this pass. Traffic will drive only on generated road geometry, using shortest-distance A* routes between village courts or onward road boundaries.
+I’ll keep it bounded near the player, with left-hand lanes, bend-speed limits, following gaps, junction reservations, and proper turns inside parking courts. The new code will stay in traffic modules, with small hooks into the existing road renderer and driving controller.
+Files: add traffic.rs, traffic_render.rs and traffic.wgsl; inspect/use road_network_field and published lighting without altering engineering/precompute inputs; modify road_network_render.rs/main.rs for updates/draws/player blocking and add one scenario plus tests/docs.
+
+I’m seeing new terrain, water and baker edits appearing in this checkout while I’m building traffic. Is another agent working here? Please pause its edits and renderer benchmarks for the traffic integration/tests, or tell me which files it owns.
+Traffic routing/following/court-turn/player-blocking tests currently pass; I’m continuing in the separate traffic modules and preserving the lake edits.
+
+The routing and driving-rule tests are passing, including queues, junction yielding, parking turns, bridge separation and player collision blocking.
+I also found another agent running lake benchmarks here. I’m making traffic default-on in normal road-enabled play, but opt-in for existing replay scenarios, so it won’t silently alter those tests or timings.
+
+---
+
+Lakes are now drawn as water. Pushed as c0c8044.
+
+- Why they looked like dry blue lake beds: the planet's map marked about a fifth of the whole planet as "lake", and much of it wasn't a basin at all, just slopes. The spot in your old screenshot is one of those. The game coloured all of it blue but drew it as ordinary ground.
+- New: the baker has a quick extra step (about 16 seconds) that works out where water would actually collect, using the existing ground heights and leaving them unchanged. It found 15,411 lakes, covering 2.5% of the land, each at most about 160 m deep.
+- The game draws each lake as a flat water surface at its level. The shoreline follows the detailed ground, so you get bays and islands. The water reflects the sky (more at low angles), looks dark when you look straight down, shows the bottom near the shore, has light ripples and catches the sun. The wrongly marked "lake" areas are painted as the land around them.
+- No trees grow in lakes and no villages are placed in them. Walking and flying stop at the water surface you see.
+- Speed: no measurable cost away from lakes; about 0.2 ms when looking across one.
+- New test replay: lake_surface. I've looked at its pictures.
+- Not done yet: you can't swim in lakes (you stand on the water); roads were planned without lakes, so one could run under water somewhere (I didn't see this in the test views); the ripples don't move; the old wrongly marked areas still have no trees.
+- If the planet is ever rebaked, rerun: cargo run --release -p planet-baker -- --derive-lakes assets/outmaps/test-planet
+
+Note: a Codex session was building a traffic system in this same folder at the same time, and its half-finished files sometimes stopped the build. I did my building and testing in a separate copy and only committed my own changes. Codex's traffic work is still in this folder, uncommitted and untouched.
+
+The first replay now shows moving wooden carriages, and the routing and junction tests are passing. Traffic keeps left, queues behind slower vehicles, and turns around in village parking areas.
+
+I’m checking the final models in daylight and tunnels, then measuring the overhead. This is bounded local traffic on generated roads—not yet a planet-wide persistent transport economy.
+
+The real-road endurance test passed: 32 NPCs travelled 12.1 km collectively over a simulated minute, with no vehicle-body overlaps or deck departures. The full app suite has 822 passing tests and the same six existing failures.
+
+Daylight captures look sound. I’m finishing the tunnel-lighting check and traffic-on/off frame-time comparisons before committing.
+
+Added NPC carts and carriages with A* routing, left-hand lanes, bend braking, queues, junction yielding and village parking stops.
+
+- 32 local vehicles by default; not yet a persistent planet-wide economy.
+- Automatically enabled with roads; `PLANET_TRAFFIC=0` disables them.
+- 14 focused checks and real-road endurance pass. Full suite: 822 pass, same six existing failures.
+- Measured overhead: approximately 0.1–0.3 ms in the tested stationary views; dense close-up traffic remains unbenchmarked.
+
+Screenshots: `test-runs/road_traffic/1793303903-72017/screenshots/`.
+
+<oai-mem-citation>
+<citation_entries>
+MEMORY.md:79-83|note=[repository workflow and preserving unrelated edits]
+</citation_entries>
+<rollout_ids>
+01a0e3cd-c8e6-7a00-8147-66c8ebea1f94
+</rollout_ids>
+</oai-mem-citation>

@@ -49,6 +49,8 @@ pub struct ScenarioAssertions {
     /// ground position and moves something else, such as its altitude.
     #[serde(default)]
     pub require_constant_village_siting: bool,
+    pub min_peak_traffic_vehicles: Option<usize>,
+    pub min_traffic_travel_metres: Option<f64>,
     pub ice_sample_uv: Option<[f32; 2]>,
     pub min_ice_sample_luminance: Option<f32>,
     pub max_ice_sample_channel_spread: Option<f32>,
@@ -139,6 +141,8 @@ impl Default for ScenarioAssertions {
             min_peak_rain_intensity: None,
             min_gust_wind_range_meters_per_second: None,
             require_constant_village_siting: false,
+            min_peak_traffic_vehicles: None,
+            min_traffic_travel_metres: None,
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
@@ -466,6 +470,8 @@ scenarios! {
     "peak_survey_weather" => "../scenarios/peak_survey_weather.json",
     "alpine_survey_8_directions" => "../scenarios/alpine_survey_8_directions.json",
     "village_paths" => "../scenarios/village_paths.json",
+    "road_traffic" => "../scenarios/road_traffic.json",
+    "road_traffic_tunnel" => "../scenarios/road_traffic_tunnel.json",
     "village_footpath_gate" => "../scenarios/village_footpath_gate.json",
     "lake_surface" => "../scenarios/lake_surface.json",
     "village_pov" => "../scenarios/village_pov.json",
@@ -1133,6 +1139,9 @@ fn validate_assertions(
             return Err(format!("{name} must be finite and non-negative"));
         }
     }
+    if assertions.min_traffic_travel_metres.is_some_and(|v| !v.is_finite() || v < 0.0) {
+        return Err("minimum NPC traffic travel must be finite and non-negative".into());
+    }
     Ok(())
 }
 
@@ -1243,7 +1252,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 158);
+        assert_eq!(SCENARIO_NAMES.len(), 160);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

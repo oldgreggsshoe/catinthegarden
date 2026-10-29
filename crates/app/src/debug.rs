@@ -133,6 +133,8 @@ pub struct RunArtifacts {
 struct AssertionTracker {
     config: ScenarioAssertions,
     sample_count: usize,
+    peak_traffic: usize,
+    traffic_travelled: f64,
     non_finite_samples: usize,
     peak_lod_level: Option<u8>,
     observed_lod_level_sequence: Vec<u8>,
@@ -194,6 +196,8 @@ impl AssertionTracker {
         Self {
             config,
             sample_count: 0,
+            peak_traffic: 0,
+            traffic_travelled: 0.0,
             non_finite_samples: 0,
             peak_lod_level: None,
             observed_lod_level_sequence: Vec::new(),
@@ -884,6 +888,18 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if let Some(minimum) = self.config.min_peak_traffic_vehicles {
+            results.push(assertion_result(
+                "traffic_is_populated", self.peak_traffic >= minimum,
+                format!("required {minimum}, observed {} NPC vehicles", self.peak_traffic),
+            ));
+        }
+        if let Some(minimum) = self.config.min_traffic_travel_metres {
+            results.push(assertion_result(
+                "traffic_moves", self.traffic_travelled >= minimum,
+                format!("required {minimum:.1}m, observed {:.1}m NPC travel", self.traffic_travelled),
+            ));
+        }
         if self.config.require_constant_village_siting {
             let first = self.first_village_sited_houses;
             results.push(assertion_result(
@@ -1259,6 +1275,12 @@ impl RunArtifacts {
         });
     }
 
+    pub fn record_traffic(&mut self, count: usize, travelled: f64) {
+        self.assertion_tracker.peak_traffic = self.assertion_tracker.peak_traffic.max(count);
+        if travelled.is_finite() {
+            self.assertion_tracker.traffic_travelled = self.assertion_tracker.traffic_travelled.max(travelled);
+        }
+    }
     pub fn record_haze(&mut self, report: crate::haze::HazeReport) {
         self.manifest.haze_probes.push(report);
         if let Err(error) = self.write_manifests() {
@@ -1871,6 +1893,8 @@ mod tests {
             min_peak_rain_intensity: None,
             min_gust_wind_range_meters_per_second: None,
             require_constant_village_siting: false,
+            min_peak_traffic_vehicles: None,
+            min_traffic_travel_metres: None,
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
             max_ice_sample_channel_spread: None,
@@ -1983,6 +2007,23 @@ mod tests {
             .iter()
             .find(|result| result.name == name)
             .expect("assertion result exists")
+    }
+
+    #[test]
+    fn traffic_replay_requires_vehicles_and_actual_travel() {
+        let mut config = ScenarioAssertions::default();
+        config.min_peak_traffic_vehicles = Some(4);
+        config.min_traffic_travel_metres = Some(20.0);
+        let mut tracker = AssertionTracker::new(config);
+        let empty = tracker.results(0);
+        assert!(!result(&empty, "traffic_is_populated").passed);
+        assert!(!result(&empty, "traffic_moves").passed);
+        tracker.peak_traffic = 32;
+        assert!(!result(&tracker.results(0), "traffic_moves").passed);
+        tracker.traffic_travelled = 21.0;
+        let moving = tracker.results(0);
+        assert!(result(&moving, "traffic_is_populated").passed);
+        assert!(result(&moving, "traffic_moves").passed);
     }
 
     #[test]

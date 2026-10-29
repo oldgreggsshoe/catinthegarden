@@ -129,6 +129,19 @@ open water, not on land, while driving or inside a bore.
 env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_DRIVE=1 cargo run --release -p planet-app
 ```
 
+NPC timber carts and covered carriages now use generated roads in normal play.
+They keep left, follow A* shortest-distance routes, slow for bends/grades, queue,
+reserve junctions and stop/turn in village courts. They use the player's magic
+motor concept, not horses. Traffic is streamed locally (32 vehicles by default,
+64 maximum), not simulated persistently across the whole planet.
+`PLANET_TRAFFIC=0` disables it; `PLANET_TRAFFIC_COUNT=16` sets the population.
+Existing scripted replays keep traffic off unless `PLANET_TRAFFIC=1` is explicit.
+For a following-camera replay:
+
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village PLANET_TRAFFIC_WAIT=1 cargo run --release -p planet-app -- --scenario road_traffic
+```
+
 Road and village signs use weathered oak boards with black EB Garamond serif
 lettering, including tunnel-distance boards. The wood texture and font are
 bundled; no installed system font is needed. Asset credits and the generation

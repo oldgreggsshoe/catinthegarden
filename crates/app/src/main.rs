@@ -70,6 +70,8 @@ mod surface_camera;
 mod system_flight;
 mod terrain;
 mod thunder_clips;
+mod traffic;
+mod traffic_render;
 mod tunnel_visibility;
 mod village;
 mod village_paths;
@@ -2085,6 +2087,7 @@ impl State {
                 &mut terrain,
                 network_root.expect("village roads require a baked planet"),
                 road_network_render::initial_position(scenario.is_none()),
+                traffic::enabled_for(scenario.as_ref().map(|s| s.name())),
             )
             .expect("village road network initial region must pass engineering")
         });
@@ -3448,10 +3451,16 @@ impl State {
             // Do not climb vertical walls by snapping the body onto their top.
             let rise = ground.iter().sum::<f64>() * 0.25 - old_ground.iter().sum::<f64>() * 0.25;
             let constrained = self.road_constrain_motion(previous, candidate);
-            let blocked =
-                rise > 0.5 + distance.abs() * 0.8 || constrained.distance(candidate) > 0.01;
+            let traffic_blocked = self.road_network.as_ref().is_some_and(|roads| {
+                roads.traffic_blocks_motion(previous, candidate, heading)
+            });
+            let blocked = traffic_blocked
+                || rise > 0.5 + distance.abs() * 0.8
+                || constrained.distance(candidate) > 0.01;
             let (position, heights) = if blocked {
-                let reason = if rise > 0.5 + distance.abs() * 0.8 {
+                let reason = if traffic_blocked {
+                    "NPC traffic"
+                } else if rise > 0.5 + distance.abs() * 0.8 {
                     "step rise too high"
                 } else {
                     "road/tunnel wall constrain"
@@ -6446,6 +6455,16 @@ impl State {
             );
         }
         if let Some(roads) = &mut self.road_network {
+            roads.update_traffic(
+                &self.queue,
+                delta_camera_motion_seconds,
+                camera_planet_frame_position,
+                camera_planet_frame_direction,
+                matches!(self.camera_mode, CameraMode::Driving | CameraMode::Surface)
+                    .then_some(camera_planet_frame_position),
+            );
+            let (agents, travelled) = roads.traffic_stats();
+            self.artifacts.record_traffic(agents, travelled);
             roads.update_camera(
                 &self.queue,
                 camera_planet_frame_position,

@@ -1,0 +1,55 @@
+{
+  "name": "road_traffic_tunnel",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 12,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "skip_birds": true,
+  "planet_rotation_time_scale": 0.0,
+  "fixed_exposure": true,
+  "screenshot_times_seconds": [
+    2,
+    5,
+    8,
+    11
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        3798565.6107044,
+        1158562.5180681,
+        493813.5381958
+      ],
+      "look_at": [
+        3798559.822108,
+        1158557.3510153,
+        493858.0303848
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.9,
+        0.3,
+        0.2
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4,
+    "min_peak_traffic_vehicles": 4,
+    "min_traffic_travel_metres": 20
+  }
+}

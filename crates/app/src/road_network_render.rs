@@ -103,6 +103,8 @@ pub struct NetworkRenderer {
     active_generation: u64,
     pending_signs: Option<(u64, crate::road_signs::Mesh)>,
     sign_pose: Option<(DVec3, DVec3)>,
+    traffic: crate::traffic::Controller,
+    traffic_renderer: crate::traffic_render::Renderer,
 }
 impl NetworkRenderer {
     pub fn new(
@@ -113,6 +115,7 @@ impl NetworkRenderer {
         terrain: &mut TerrainRenderer,
         root: PathBuf,
         initial: DVec3,
+        traffic_active: bool,
     ) -> Result<Self, String> {
         let (mut worker, snapshot) = Worker::start(root, initial)?;
         let inspection = snapshot.inspection;
@@ -168,6 +171,8 @@ impl NetworkRenderer {
             active_generation: 0,
             pending_signs: None,
             sign_pose: None,
+            traffic: crate::traffic::Controller::new(traffic_active),
+            traffic_renderer: crate::traffic_render::Renderer::new(device, queue, format, camera),
             worker,
             material,
             active,
@@ -177,6 +182,20 @@ impl NetworkRenderer {
             instance,
             inspection,
         };
+        if std::env::var("PLANET_TRAFFIC_WAIT").as_deref() == Ok("1") {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            loop {
+                let (eye, target) = renderer.inspection.unwrap_or((centre, centre + DVec3::Y));
+                renderer.update_traffic(queue, 0.0, eye, (target - eye).normalize_or_zero(), None);
+                if renderer.traffic.ready() {
+                    break;
+                }
+                if std::time::Instant::now() > deadline {
+                    return Err("traffic readiness deadline".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
         // Automated sign views must wait on the data, not assume that a fixed
         // number of rendered frames implies the worker has finished. Normal
         // interactive startup remains asynchronous.
@@ -245,6 +264,8 @@ impl NetworkRenderer {
             }
             "road_network_trial" | "road_network_walk" => Some((eye, target)),
             "road_network_signs" => self.sign_pose.or(Some((eye, target))),
+            "road_traffic" => self.traffic.inspection_pose(false),
+            "road_traffic_tunnel" => self.traffic.inspection_pose(true),
             "road_network_parking" => {
                 let up = eye.normalize();
                 let forward = (target - eye).normalize();
@@ -352,6 +373,26 @@ impl NetworkRenderer {
             );
         }
     }
+    pub fn update_traffic(
+        &mut self,
+        queue: &wgpu::Queue,
+        dt: f64,
+        eye: DVec3,
+        forward: DVec3,
+        player: Option<DVec3>,
+    ) {
+        self.traffic.update(
+            &self.active.snapshot.field, &self.active.snapshot.lighting,
+            dt, eye, forward, player,
+        );
+        self.traffic_renderer.update(queue, &self.traffic, &self.active.snapshot.field, eye, forward);
+    }
+    pub fn traffic_stats(&self) -> (usize, f64) {
+        self.traffic.stats()
+    }
+    pub fn traffic_blocks_motion(&self, from: DVec3, to: DVec3, heading: DVec3) -> bool {
+        self.traffic.blocks_motion(from, to, heading)
+    }
     pub fn update_camera(
         &mut self,
         queue: &wgpu::Queue,
@@ -449,6 +490,7 @@ impl NetworkRenderer {
             if crate::subsystem_enabled("road_signs") {
                 self.signs.draw(pass, camera, &self.instance);
             }
+            self.traffic_renderer.draw(pass, camera, &self.active.lighting);
         }
     }
 }
