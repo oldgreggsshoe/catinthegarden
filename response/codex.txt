@@ -519,3 +519,28 @@ MEMORY.md:83-83|note=[repository workflow and preserving unrelated changes]
 [Claude, 29 October, "resume"] Nothing to resume: the last task (NPC traffic follows time speed, f9b1a04) is committed and pushed, the tree is clean and no renderer or build is running. Waiting for the next task. The old stash@{0} "WIP elevated-lake basin cap" is still there, untouched; the lake sidecar (c0c8044) has since replaced that approach.
 
 [Claude, 30 October] Cart orb moved to the back: it sits centred just behind the cart's rear board at number-plate height (0.45 m) and pushes through two short rigid glowing rods instead of pulling on threads from the front. It presses in to the board when you push or speed up (never touching), eases back when braking, swings a little outward on bends. Glow/charge unchanged. Player cart only; NPC carts never had an orb. Since it's behind the eye, hold RMB and look back to see it. 3 orb tests pass; checked in a rear-view replay; release rebuilt.
+
+Yes—and I’d connect those into **a traveller’s life**, rather than three separate minigames. The world gives you somewhere to go; trade and people give you reasons to go; photography makes the journey itself worthwhile.
+
+### Trade: give places different needs
+- Fishing villages export fish, forest villages timber, upland settlements wool or ore.
+- Ships carry bulk between harbours; carts handle inland deliveries. That gives both ocean and roads a purpose.
+- Offer small local jobs alongside optional long expeditions. Not every delivery should mean crossing half the planet.
+- Money buys cargo capacity, vehicle improvements and personal touches—not permission to keep exploring.
+
+### Social: make places worth returning to
+Start with a few recognisable people: an innkeeper, a carpenter, a travelling merchant. They remember deliveries, introduce you to others and share rumours.
+
+Letters, passengers and favours can be as important as goods. Eventually you know a village because **someone you like lives there**, not because its shop pays 3% more. Markets and inns become natural meeting places; later, shared voyages and exchanging postcards could extend this to multiplayer.
+
+### Wandering and photography: legitimate ways to play
+A photo journal could automatically record location, time and weather. Optional requests—“our lighthouse in a storm”, “the lake at sunrise”—give direction without judging every photograph with a beauty score.
+
+Rumours could lead to an isolated inn, a shipwreck, an unusual valley or a good eclipse viewpoint. **Most wilderness should remain wilderness**, not become a carpet of quest markers. Wandering without accepting any job must still feel valid.
+
+### What I’d build next
+**One small coastal region: two villages, one harbour, five trade goods, a few named locals and a photo journal.**
+
+Prove one enjoyable outing: collect a delivery, hear a rumour, choose a route, stop for a photograph, meet someone and return with a story. Then expand that loop—not just the feature count.
+
+For FPS, distant commerce can be lightweight records updated when needed; only nearby travellers need actual vehicles and movement.
