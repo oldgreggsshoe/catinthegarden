@@ -14843,3 +14843,20 @@ temporary look-backwards camera hack (reverted, not committed), `PLANET_CART_MAG
 the cart with both rods running toward the viewer. It is behind the first-person eye, so
 in play it is only seen by holding RMB and looking back. Release rebuilt from committed
 source. Not seen live.
+
+## 30 October — NPC carts and carriages push with a rear orb too
+
+User: "yeah add them to the npcs". NPC vehicles already had a static violet orb 0.8 m
+ahead of the front with two threads; `traffic_render::mesh` now puts the 0.12 m orb
+centred 0.22 m behind the rear board (y = -1.75) at the board's height (0.8 m, where a
+number plate would sit on this cart), with two short rigid glowing rods (24 mm square,
+x = ±0.07) to the board. Still part of the cached instanced mesh (material tag 3, self-lit),
+so no per-frame or draw-count cost; unlike the player's orb it does not spring or swing.
+Overall vehicle length shrinks (the orb used to stick out 0.92 m ahead, now 0.34 m behind),
+so the existing 4.2-4.4 m following gaps have more room than before. Mesh test now asserts
+every tag-3 vertex is behind the rear board near plate height; 3/3 traffic render tests pass.
+`PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village PLANET_TRAFFIC_WAIT=1`
+`road_traffic/1793390356-181760` passes; capture 2 shows the orb behind a covered carriage
+(without the road flags the replay spawns 0 NPCs and fails, as before). Release rebuilt.
+Player-side note: free-look while driving is left-click once to capture, hold RMB and move;
+Q/E also turn the view.

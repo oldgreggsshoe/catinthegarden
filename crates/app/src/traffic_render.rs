@@ -144,6 +144,9 @@ fn wheel(mesh: &mut Vec<Vertex>, pivot: DVec3, part: u32) {
         1,
     );
 }
+const ORB_RADIUS: f64 = 0.12;
+/// Orb centre behind the rear board (y = -1.75).
+const ORB_GAP: f64 = 0.22;
 fn mesh(carriage: bool) -> Vec<Vertex> {
     let mut mesh = Vec::new();
     let oak = [0.40, 0.27, 0.14];
@@ -269,27 +272,21 @@ fn mesh(carriage: bool) -> Vec<Vertex> {
             5,
         );
     }
-    // The same magic-drive language as the player, not an invisible horse.
-    sphere(
-        &mut mesh,
-        DVec3::new(0.0, 2.55, 1.1),
-        0.12,
-        [0.28, 0.025, 0.65],
-        3,
-    );
-    for x in [-0.5, 0.5] {
-        let start = mesh.len();
-        road::quad(
+    // The same magic-drive language as the player, not an invisible horse: an
+    // orb just behind the rear board, where a car carries its number plate,
+    // pushing the cart through two short rigid rods.
+    let orb = DVec3::new(0.0, -1.75 - ORB_GAP, 0.8);
+    sphere(&mut mesh, orb, ORB_RADIUS, [0.28, 0.025, 0.65], 3);
+    for x in [-0.07, 0.07] {
+        let tie = orb.y + (ORB_RADIUS * ORB_RADIUS - x * x).sqrt() * 0.9;
+        box_part(
             &mut mesh,
-            [
-                DVec3::new(x - 0.008, 1.7, 0.85),
-                DVec3::new(x + 0.008, 1.7, 0.85),
-                DVec3::new(0.008, 2.55, 1.1),
-                DVec3::new(-0.008, 2.55, 1.1),
-            ],
+            DVec3::new(x - 0.012, tie, 0.788),
+            DVec3::new(x + 0.012, -1.75, 0.812),
             [0.12, 0.015, 0.3],
+            0,
+            3,
         );
-        material(&mut mesh[start..], 0, 3);
     }
     mesh
 }
@@ -523,6 +520,14 @@ mod tests {
             }
             for i in 1..=4 {
                 assert!(m.iter().any(|v| v.lighting & 255 == i));
+            }
+            // The magic orb and its push rods are all behind the rear board,
+            // low on the cart, not out ahead of it.
+            let magic: Vec<_> = m.iter().filter(|v| v.lighting >> 8 == 3).collect();
+            assert!(!magic.is_empty());
+            for v in magic {
+                assert!(v.position[1] <= -1.75 + 1e-4 && v.position[1] > -2.2, "{:?}", v.position);
+                assert!((v.position[2] - 0.8).abs() < 0.13, "{:?}", v.position);
             }
         }
     }

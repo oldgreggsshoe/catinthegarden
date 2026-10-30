@@ -544,3 +544,5 @@ Rumours could lead to an isolated inn, a shipwreck, an unusual valley or a good 
 Prove one enjoyable outing: collect a delivery, hear a rumour, choose a route, stop for a photograph, meet someone and return with a story. Then expand that loop—not just the feature count.
 
 For FPS, distant commerce can be lightweight records updated when needed; only nearby travellers need actual vehicles and movement.
+
+[Claude, 30 October] NPC carts and carriages now carry their orb on the back too: just behind the rear board at plate height, pushing through two short rigid rods (it used to float ahead on threads). It's part of the shared vehicle mesh, so it costs nothing extra; it doesn't swing like yours. Traffic replay passes and shows it on a carriage. Looking around while driving: left-click once to capture the mouse, then hold the right button and move the mouse (let go to snap back); Q/E also turn the view.

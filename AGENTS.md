@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- NPC rear orbs,30October: NPC carts/carriages' static magic orb moved from 0.8m ahead (threads) to 0.22m behind the rear board at plate height (0.8m) with two short rigid rods; still in the cached instanced mesh, no cost. Mesh test asserts placement; road_traffic replay passes and shows it. See HANDOFF.
+
 - Cart orb pushes,30October: the magic orb now sits centred 0.27m behind the player cart's rear board at number-plate height (0.45m), braced by two short rigid glowing push rods instead of pulling threads ahead; presses in when pushing/accelerating (never touching), eases back braking, swings outward on bends. Player cart only; behind the first-person eye (RMB look back). 3 orb tests pass; rear-view replay checked with a reverted camera hack. See HANDOFF.
 
 - NPC scene-time speed,29October: traffic now takes scaled scene delta rather than the real-time camera delta, so comma/period and F10 pause affect driving and village wait timers. Retains30Hz physics; input budget0.25->8 game seconds/frame (~240 ticks), discarding excess only at extreme fast-forward rather than accumulating debt; diagnostic logs remain2s wall-clock. Four new clock/cap/pause/wiring tests;18 focused pass;full828 pass/same6 failures. No player controls, routing or graphics changes. See HANDOFF and docs/TRAFFIC_2026_10_29.md.
