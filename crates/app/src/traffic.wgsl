@@ -23,6 +23,7 @@ struct Output {
     @location(1) local:vec3<f32>, @location(2) field_position:vec3<f32>, @location(3) normal_field:vec3<f32>,
     @location(4) @interpolate(flat) colour:vec3<f32>, @location(5) @interpolate(flat) up:vec3<f32>,
     @location(6) @interpolate(flat) settings:vec4<f32>, @location(7) @interpolate(flat) material:u32, @location(8) material_uv:vec2<f32>,
+    @location(9) eye_ray:vec3<f32>,
 }
 fn rotate_wheel(v:vec3<f32>,spin:f32,steer:f32)->vec3<f32> {
     let rolling=vec3<f32>(v.x,cos(spin)*v.y+sin(spin)*v.z,-sin(spin)*v.y+cos(spin)*v.z);
@@ -48,6 +49,7 @@ fn field_vector(v:vec3<f32>)->vec3<f32> {return vec3<f32>(dot(v,frame.across.xyz
     out.material_uv=select(input.position.xy,input.position.yz,abs(input.normal.x)>abs(input.normal.z))*vec2<f32>(0.55,0.3);
     out.colour=input.colour*input.tint.xyz;out.up=input.up_light.xyz;
     out.settings=vec4<f32>(input.forward_tunnel.w,input.up_light.w,input.field_fade.w,length(view));out.material=input.part>>8u;
+    out.eye_ray=world;
     return out;
 }
 @fragment fn fs_main(input:Output)->@location(0) vec4<f32> {
@@ -76,4 +78,16 @@ fn field_vector(v:vec3<f32>)->vec3<f32> {return vec3<f32>(dot(v,frame.across.xyz
         }
     }
     return vec4<f32>(albedo*light,1.0);
+}
+// Engine jar glass: faint and clear face-on, a pale sky-lit rim at grazing
+// angles, tinted by the orb glowing inside. Alpha blended, no depth write.
+@fragment fn fs_glass(input:Output)->@location(0) vec4<f32> {
+    let fade=input.settings.z*(1.0-smoothstep(1700.0,2000.0,input.settings.w));
+    if fade<1.0 {let pixel=vec2<u32>(input.position.xy);let noise=f32((pixel.x*1973u+pixel.y*9277u)&255u)/255.0;if noise>fade {discard;}}
+    let n=normalize(input.normal);let v=normalize(-input.eye_ray);
+    let rim=pow(1.0-abs(dot(n,v)),3.0);
+    let day=max(dot(normalize(camera.sun_direction.xyz),input.up),0.0);
+    let sky=vec3<f32>(0.55,0.62,0.75)*(0.06+0.9*day)*select(1.0,0.12,input.settings.x>0.5);
+    let glow=vec3<f32>(0.35,0.12,0.7)*0.18;
+    return vec4<f32>(sky*rim+glow,0.1+0.55*rim);
 }

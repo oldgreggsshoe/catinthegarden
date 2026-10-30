@@ -105,6 +105,9 @@ pub struct NetworkRenderer {
     sign_pose: Option<(DVec3, DVec3)>,
     traffic: crate::traffic::Controller,
     traffic_renderer: crate::traffic_render::Renderer,
+    /// Tunnel lamp lookup for the player's cart, built for the active
+    /// generation the first time the cart is in a bore.
+    player_lamps: Option<(u64, crate::traffic::Lamps)>,
 }
 impl NetworkRenderer {
     pub fn new(
@@ -173,6 +176,7 @@ impl NetworkRenderer {
             sign_pose: None,
             traffic: crate::traffic::Controller::new(traffic_active),
             traffic_renderer: crate::traffic_render::Renderer::new(device, queue, format, camera),
+            player_lamps: None,
             worker,
             material,
             active,
@@ -186,7 +190,7 @@ impl NetworkRenderer {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
             loop {
                 let (eye, target) = renderer.inspection.unwrap_or((centre, centre + DVec3::Y));
-                renderer.update_traffic(queue, 0.0, eye, (target - eye).normalize_or_zero(), None);
+                renderer.update_traffic(queue, 0.0, eye, (target - eye).normalize_or_zero(), None, None);
                 if renderer.traffic.ready() {
                     break;
                 }
@@ -380,12 +384,37 @@ impl NetworkRenderer {
         eye: DVec3,
         forward: DVec3,
         player: Option<DVec3>,
+        mut cart: Option<crate::traffic_render::PlayerCart>,
     ) {
         self.traffic.update(
             &self.active.snapshot.field, &self.active.snapshot.lighting,
             dt, eye, forward, player,
         );
-        self.traffic_renderer.update(queue, &self.traffic, &self.active.snapshot.field, eye, forward);
+        if let Some(cart) = &mut cart {
+            let field = &self.active.snapshot.field;
+            cart.light = None;
+            if crate::traffic::in_tunnel(field, cart.ground) {
+                let generation = self.active_generation;
+                if self.player_lamps.as_ref().is_none_or(|(g, _)| *g != generation) {
+                    self.player_lamps = Some((
+                        generation,
+                        crate::traffic::Lamps::new(&self.active.snapshot.lighting),
+                    ));
+                }
+                cart.light = self
+                    .player_lamps
+                    .as_ref()
+                    .and_then(|(_, lamps)| crate::traffic::tunnel_light(field, lamps, cart.ground));
+            }
+        }
+        self.traffic_renderer.update(
+            queue,
+            &self.traffic,
+            &self.active.snapshot.field,
+            eye,
+            forward,
+            cart,
+        );
     }
     pub fn traffic_stats(&self) -> (usize, f64) {
         self.traffic.stats()

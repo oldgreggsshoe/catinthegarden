@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Player cart drawn and jar engine,30October: the player now drives a drawn open timber cart (NPC mesh without driver/cargo/tailboard; wheels roll/steer; tunnel-lamp lit) with the view moved to its driving seat (+1.0m forward, +0.55m up; physics unchanged). Magic engine for player and NPCs is now an orb in the lower bulb of a translucent hourglass jar inside an open timber box at the back of the bed (rear rods/threads gone); player orb sloshes inside the bulb. Cart drawn only with roads on. See HANDOFF.
+
 - NPC rear orbs,30October: NPC carts/carriages' static magic orb moved from 0.8m ahead (threads) to 0.22m behind the rear board at plate height (0.8m) with two short rigid rods; still in the cached instanced mesh, no cost. Mesh test asserts placement; road_traffic replay passes and shows it. See HANDOFF.
 
 - Cart orb pushes,30October: the magic orb now sits centred 0.27m behind the player cart's rear board at number-plate height (0.45m), braced by two short rigid glowing push rods instead of pulling threads ahead; presses in when pushing/accelerating (never touching), eases back braking, swings outward on bends. Player cart only; behind the first-person eye (RMB look back). 3 orb tests pass; rear-view replay checked with a reverted camera hack. See HANDOFF.

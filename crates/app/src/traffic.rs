@@ -300,11 +300,11 @@ impl Graph {
     }
 }
 
-struct Lamps {
+pub struct Lamps {
     cells: HashMap<Key, Vec<(DVec3, u32)>>,
 }
 impl Lamps {
-    fn new(data: &[[f32; 4]]) -> Self {
+    pub fn new(data: &[[f32; 4]]) -> Self {
         let mut unique = BTreeMap::<Key, (DVec3, u32)>::new();
         for (i, group) in data.chunks_exact(25).enumerate() {
             for p in group.iter().skip(1).take((group[0][0] as usize).min(24)) {
@@ -464,6 +464,19 @@ fn turn(field: &Field, court: DVec3, start: DVec3, end: DVec3, forward: DVec3) -
         stops: vec![centre + forward * 6.0],
     }
 }
+/// A vehicle at `p` (planet frame) is on a tunnel deck.
+pub fn in_tunnel(field: &Field, p: DVec3) -> bool {
+    let local = field.frame.local(p);
+    field.candidates(local.truncate()).any(|s| {
+        s.tunnel
+            && s.nearest(local.truncate()).1 < 4.0
+            && (s.nearest(local.truncate()).0.z - local.z).abs() < 2.0
+    })
+}
+/// The tunnel lamp group lighting a vehicle at `p`, or None out of doors.
+pub fn tunnel_light(field: &Field, lamps: &Lamps, p: DVec3) -> Option<u32> {
+    in_tunnel(field, p).then(|| lamps.group(field.frame.local(p)))
+}
 fn append(route: &mut Route, draft: Draft, field: &Field, lamps: &Lamps) -> Option<()> {
     let first = route.samples.len();
     for pair in draft.points.windows(2) {
@@ -482,19 +495,14 @@ fn append(route: &mut Route, draft: Draft, field: &Field, lamps: &Lamps) -> Opti
                 .samples
                 .last()
                 .map_or(0.0, |last| last.metres + last.pose.position.distance(p));
-            let local = field.frame.local(p);
-            let tunnel = field.candidates(local.truncate()).any(|s| {
-                s.tunnel
-                    && s.nearest(local.truncate()).1 < 4.0
-                    && (s.nearest(local.truncate()).0.z - local.z).abs() < 2.0
-            });
+            let light = tunnel_light(field, lamps, p);
             route.samples.push(Sample {
                 metres,
                 pose: Pose {
                     position: p,
                     forward: DVec3::ZERO,
-                    tunnel,
-                    light: if tunnel { lamps.group(local) } else { 0 },
+                    tunnel: light.is_some(),
+                    light: light.unwrap_or(0),
                     limit: 10.0,
                 },
             });

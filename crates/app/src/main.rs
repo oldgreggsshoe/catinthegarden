@@ -3389,7 +3389,10 @@ impl State {
             self.flight_look_pitch_radians,
         );
         let to_world = glam::DQuat::from_rotation_y(rotation);
-        let eye = to_world * self.flight_local_position;
+        let seat = self.flight_local_position
+            + forward * driving::SEAT_FORWARD
+            + body_up * driving::SEAT_RISE;
+        let eye = to_world * seat;
         self.camera
             .set_world_pose_with_up(eye, eye + to_world * look, to_world * body_up);
     }
@@ -6451,6 +6454,17 @@ impl State {
                 camera_sea_level_altitude_meters,
             );
         }
+        let player_cart = (self.camera_mode == CameraMode::Driving).then(|| {
+            let (forward, up) = self.driving_body_axes();
+            traffic_render::PlayerCart {
+                ground: self.flight_local_position - up * driving::EYE_HEIGHT,
+                forward,
+                up,
+                steer: self.car.steering_angle(),
+                travelled: self.car.travelled,
+                light: None,
+            }
+        });
         if let Some(roads) = &mut self.road_network {
             roads.update_traffic(
                 &self.queue,
@@ -6459,6 +6473,7 @@ impl State {
                 camera_planet_frame_direction,
                 matches!(self.camera_mode, CameraMode::Driving | CameraMode::Surface)
                     .then_some(camera_planet_frame_position),
+                player_cart,
             );
             let (agents, travelled) = roads.traffic_stats();
             self.artifacts.record_traffic(agents, travelled);

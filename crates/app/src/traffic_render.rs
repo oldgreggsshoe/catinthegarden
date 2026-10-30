@@ -1,4 +1,7 @@
-//! Two cached cart/carriage meshes; one compact instance upload, two draws.
+//! Cached NPC cart/carriage meshes plus the player's own empty cart, each
+//! with the magic engine (an orb in an hourglass jar, in a timber box at the
+//! back of the bed); one compact instance upload, up to three opaque draws and
+//! one translucent glass draw.
 use crate::{
     road::{self, Vertex},
     road_network_field::Field,
@@ -14,6 +17,21 @@ pub fn shader_source() -> String {
         .find("fn project_vertex(")
         .expect("end of road lamp helpers");
     format!("{}\n{}", include_str!("traffic.wgsl"), &road[start..end])
+}
+
+/// The player's cart for this frame, planet frame.
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerCart {
+    /// Ground point under the body centre.
+    pub ground: DVec3,
+    pub forward: DVec3,
+    pub up: DVec3,
+    /// Front wheel angle, radians, positive right.
+    pub steer: f64,
+    /// Signed metres rolled.
+    pub travelled: f64,
+    /// Tunnel lamp group, None out of doors.
+    pub light: Option<u32>,
 }
 
 #[repr(C)]
@@ -144,10 +162,86 @@ fn wheel(mesh: &mut Vec<Vertex>, pivot: DVec3, part: u32) {
         1,
     );
 }
-const ORB_RADIUS: f64 = 0.12;
-/// Orb centre behind the rear board (y = -1.75).
-const ORB_GAP: f64 = 0.22;
-fn mesh(carriage: bool) -> Vec<Vertex> {
+pub const ORB_RADIUS: f64 = 0.12;
+/// The engine box stands at the back of the bed (the bed's rear edge is at
+/// y = -1.75, its top at z = 0.88): base board, four corner posts and a lid,
+/// open between them so the jar shows.
+const BOX_HALF_WIDTH: f64 = 0.3;
+const BOX_REAR: f64 = -1.62;
+const BOX_FRONT: f64 = -1.02;
+const BED_TOP: f64 = 0.88;
+const BOARD: f64 = 0.06;
+/// The jar stands between base board and lid on the box's axis.
+pub const JAR_Y: f64 = (BOX_REAR + BOX_FRONT) * 0.5;
+const JAR_BOTTOM: f64 = BED_TOP + BOARD;
+const JAR_HEIGHT: f64 = 0.72;
+/// The orb rests at the middle of the lower bulb.
+pub const ORB_Z: f64 = JAR_BOTTOM + JAR_HEIGHT * 0.25;
+/// Hourglass profile: radius of the glass at height `z` above the ground,
+/// two round bulbs with a narrow neck between them and at each end.
+pub fn jar_radius(z: f64) -> f64 {
+    let t = ((z - JAR_BOTTOM) / JAR_HEIGHT).clamp(0.0, 1.0);
+    let u = if t >= 1.0 { 1.0 } else { (2.0 * t).fract() };
+    0.04 + 0.15 * (std::f64::consts::PI * u).sin().max(0.0).sqrt()
+}
+/// The jar's glass, drawn translucent for every vehicle (smooth normals).
+fn glass() -> Vec<Vertex> {
+    const SIDES: usize = 20;
+    const STACKS: usize = 36;
+    let point = |i: usize, k: usize| {
+        let z = JAR_BOTTOM + JAR_HEIGHT * k as f64 / STACKS as f64;
+        let a = std::f64::consts::TAU * i as f64 / SIDES as f64;
+        let r = jar_radius(z);
+        // Normal of the surface of revolution from the profile's slope.
+        let dz = 1e-3;
+        let slope = (jar_radius(z + dz) - jar_radius(z - dz)) / (2.0 * dz);
+        let n = DVec3::new(a.cos(), a.sin(), -slope).normalize();
+        (DVec3::new(r * a.cos(), JAR_Y + r * a.sin(), z), n)
+    };
+    let mut mesh = Vec::with_capacity(SIDES * STACKS * 6);
+    for k in 0..STACKS {
+        for i in 0..SIDES {
+            let q = [point(i, k), point(i + 1, k), point(i + 1, k + 1), point(i, k + 1)];
+            for j in [0, 1, 2, 0, 2, 3] {
+                mesh.push(Vertex {
+                    position: q[j].0.as_vec3().to_array(),
+                    normal: q[j].1.as_vec3().to_array(),
+                    colour: [1.0; 3],
+                    lighting: 6 << 8,
+                });
+            }
+        }
+    }
+    mesh
+}
+fn engine_box(mesh: &mut Vec<Vertex>) {
+    let oak = [0.30, 0.19, 0.09];
+    let (w, b) = (BOX_HALF_WIDTH, BOARD);
+    let top = JAR_BOTTOM + JAR_HEIGHT;
+    for (z0, z1) in [(BED_TOP, BED_TOP + b), (top, top + b)] {
+        box_part(mesh, DVec3::new(-w, BOX_REAR, z0), DVec3::new(w, BOX_FRONT, z1), oak, 0, 0);
+    }
+    for x in [-w, w - b] {
+        for y in [BOX_REAR, BOX_FRONT - b] {
+            box_part(mesh, DVec3::new(x, y, BED_TOP + b), DVec3::new(x + b, y + b, top), oak, 0, 0);
+        }
+    }
+    // Iron collars where the jar's necks meet the boards.
+    for (z0, z1) in [(JAR_BOTTOM, JAR_BOTTOM + 0.03), (top - 0.03, top)] {
+        box_part(
+            mesh,
+            DVec3::new(-0.06, JAR_Y - 0.06, z0),
+            DVec3::new(0.06, JAR_Y + 0.06, z1),
+            [0.035, 0.032, 0.028],
+            0,
+            1,
+        );
+    }
+}
+/// An NPC cart or carriage (`npc`), or the player's own: an empty open cart
+/// with no tailboard, driver or fixed orb, so the view from its seat is clear
+/// and the player's sprung orb (cart_orb) shows behind it.
+fn mesh(carriage: bool, npc: bool) -> Vec<Vertex> {
     let mut mesh = Vec::new();
     let oak = [0.40, 0.27, 0.14];
     let iron = [0.035, 0.032, 0.028];
@@ -195,14 +289,17 @@ fn mesh(carriage: bool) -> Vec<Vertex> {
             );
         }
     }
-    box_part(
-        &mut mesh,
-        DVec3::new(-0.76, -1.75, 0.86),
-        DVec3::new(0.76, -1.65, 1.45),
-        oak,
-        0,
-        0,
-    );
+    engine_box(&mut mesh);
+    if npc {
+        box_part(
+            &mut mesh,
+            DVec3::new(-0.76, -1.75, 0.86),
+            DVec3::new(0.76, -1.65, 1.45),
+            oak,
+            0,
+            0,
+        );
+    }
     box_part(
         &mut mesh,
         DVec3::new(-0.7, 0.75, 1.17),
@@ -226,8 +323,9 @@ fn mesh(carriage: bool) -> Vec<Vertex> {
             );
             material(&mut mesh[start..], 0, 2);
         }
-    } else {
-        for (x, y, h) in [(-0.35, -0.8, 0.48), (0.32, -0.9, 0.38), (0.0, 0.05, 0.30)] {
+    } else if npc {
+        // Cargo forward of the engine box.
+        for (x, y, h) in [(-0.35, -0.45, 0.48), (0.32, -0.55, 0.38), (0.0, 0.38, 0.30)] {
             box_part(
                 &mut mesh,
                 DVec3::new(x - 0.29, y - 0.35, 0.88),
@@ -237,6 +335,9 @@ fn mesh(carriage: bool) -> Vec<Vertex> {
                 0,
             );
         }
+    }
+    if !npc {
+        return mesh;
     }
     // Seated driver: coat, hood, boots and hands (no per-frame skeletal work).
     box_part(
@@ -272,33 +373,27 @@ fn mesh(carriage: bool) -> Vec<Vertex> {
             5,
         );
     }
-    // The same magic-drive language as the player, not an invisible horse: an
-    // orb just behind the rear board, where a car carries its number plate,
-    // pushing the cart through two short rigid rods.
-    let orb = DVec3::new(0.0, -1.75 - ORB_GAP, 0.8);
-    sphere(&mut mesh, orb, ORB_RADIUS, [0.28, 0.025, 0.65], 3);
-    for x in [-0.07, 0.07] {
-        let tie = orb.y + (ORB_RADIUS * ORB_RADIUS - x * x).sqrt() * 0.9;
-        box_part(
-            &mut mesh,
-            DVec3::new(x - 0.012, tie, 0.788),
-            DVec3::new(x + 0.012, -1.75, 0.812),
-            [0.12, 0.015, 0.3],
-            0,
-            3,
-        );
-    }
+    // The same magic engine as the player, not an invisible horse.
+    sphere(
+        &mut mesh,
+        DVec3::new(0.0, JAR_Y, ORB_Z),
+        ORB_RADIUS,
+        [0.28, 0.025, 0.65],
+        3,
+    );
     mesh
 }
 
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
+    glass_pipeline: wgpu::RenderPipeline,
     vertices: wgpu::Buffer,
-    meshes: [std::ops::Range<u32>; 2],
+    meshes: [std::ops::Range<u32>; 3],
+    glass: std::ops::Range<u32>,
     instances: wgpu::Buffer,
     frame: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
-    counts: [u32; 2],
+    counts: [u32; 3],
     upload: Vec<Instance>,
 }
 impl Renderer {
@@ -308,10 +403,14 @@ impl Renderer {
         format: wgpu::TextureFormat,
         camera: &wgpu::BindGroupLayout,
     ) -> Self {
-        let mut vertices = mesh(false);
+        let mut vertices = mesh(false, true);
         let boundary = vertices.len() as u32;
-        vertices.extend(mesh(true));
+        vertices.extend(mesh(true, true));
+        let player = vertices.len() as u32;
+        vertices.extend(mesh(false, false));
         let count = vertices.len() as u32;
+        vertices.extend(glass());
+        let glass_end = vertices.len() as u32;
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cached traffic cart and carriage"),
             contents: bytemuck::cast_slice(&vertices),
@@ -319,7 +418,7 @@ impl Renderer {
         });
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("traffic instances"),
-            size: (traffic::MAX_AGENTS * size_of::<Instance>()) as u64,
+            size: ((traffic::MAX_AGENTS + 1) * size_of::<Instance>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -362,8 +461,9 @@ impl Renderer {
         const V: [wgpu::VertexAttribute; 4] =
             wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,9=>Uint32];
         const I: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Float32x4,7=>Float32x4,8=>Float32x4];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("instanced traffic"),
+        let make = |label: &str, entry: &str, blend: wgpu::BlendState, write: bool| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -384,11 +484,11 @@ impl Renderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some(entry),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: Some(blend),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -398,7 +498,7 @@ impl Renderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
+                depth_write_enabled: Some(write),
                 depth_compare: Some(wgpu::CompareFunction::Greater),
                 stencil: Default::default(),
                 bias: Default::default(),
@@ -406,17 +506,24 @@ impl Renderer {
             multisample: Default::default(),
             multiview_mask: None,
             cache: crate::pipeline_cache::get(),
-        });
+        })
+        };
+        let pipeline = make("instanced traffic", "fs_main", wgpu::BlendState::REPLACE, true);
+        // The engine jars: translucent, after the solid vehicles, no depth write.
+        let glass_pipeline =
+            make("instanced traffic glass", "fs_glass", wgpu::BlendState::ALPHA_BLENDING, false);
         let _ = queue;
         Self {
             pipeline,
+            glass_pipeline,
             vertices: buffer,
-            meshes: [0..boundary, boundary..count],
+            meshes: [0..boundary, boundary..player, player..count],
+            glass: count..glass_end,
             instances,
             frame,
             frame_group,
-            counts: [0; 2],
-            upload: Vec::with_capacity(traffic::MAX_AGENTS),
+            counts: [0; 3],
+            upload: Vec::with_capacity(traffic::MAX_AGENTS + 1),
         }
     }
     pub fn update(
@@ -426,12 +533,10 @@ impl Renderer {
         field: &std::sync::Arc<Field>,
         eye: DVec3,
         view: DVec3,
+        player: Option<PlayerCart>,
     ) {
         self.upload.clear();
-        self.counts = [0; 2];
-        let Some(sim) = &traffic.simulation else {
-            return;
-        };
+        self.counts = [0; 3];
         let f = field.frame;
         let vec4 = |p: DVec3, w: f64| [p.x as f32, p.y as f32, p.z as f32, w as f32];
         queue.write_buffer(
@@ -439,9 +544,11 @@ impl Renderer {
             0,
             bytemuck::cast_slice(&[vec4(f.across, 0.0), vec4(f.forward, 0.0), vec4(f.up, 0.0)]),
         );
+        let agents = traffic.simulation.as_ref().map_or(&[][..], |sim| &sim.agents[..]);
+        let alpha = traffic.simulation.as_ref().map_or(0.0, |sim| sim.alpha());
         for kind in 0..2 {
-            for a in sim.agents.iter().filter(|a| a.kind == kind) {
-                let pose = a.pose(sim.alpha());
+            for a in agents.iter().filter(|a| a.kind == kind) {
+                let pose = a.pose(alpha);
                 let relative = pose.position - eye;
                 if relative.length_squared() > 2000.0 * 2000.0 || relative.dot(view) < -5.0 {
                     continue;
@@ -477,6 +584,22 @@ impl Renderer {
                 self.counts[kind as usize] += 1;
             }
         }
+        if let Some(cart) = player {
+            let right = cart.forward.cross(cart.up).normalize();
+            self.upload.push(Instance {
+                origin_spin: vec4(
+                    cart.ground - eye,
+                    (cart.travelled / 0.52).rem_euclid(std::f64::consts::TAU),
+                ),
+                // The shader's steer turns the wheels left for positive angles.
+                right_steer: vec4(right, (-cart.steer).clamp(-0.7, 0.7)),
+                forward_tunnel: vec4(cart.forward, if cart.light.is_some() { 1.0 } else { 0.0 }),
+                up_light: vec4(cart.up, cart.light.unwrap_or(0) as f64),
+                field_fade: vec4(f.local(cart.ground), 1.0),
+                tint: [1.0, 0.85, 0.66, 0.0],
+            });
+            self.counts[2] = 1;
+        }
         if !self.upload.is_empty() {
             queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&self.upload));
         }
@@ -497,12 +620,14 @@ impl Renderer {
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
         let mut first = 0;
-        for i in 0..2 {
+        for i in 0..3 {
             if self.counts[i] > 0 {
                 pass.draw(self.meshes[i].clone(), first..first + self.counts[i]);
                 first += self.counts[i];
             }
         }
+        pass.set_pipeline(&self.glass_pipeline);
+        pass.draw(self.glass.clone(), 0..first);
     }
 }
 #[cfg(test)]
@@ -510,8 +635,8 @@ mod tests {
     use super::*;
     #[test]
     fn traffic_meshes_are_finite_human_scale_and_have_moving_wheels() {
-        for enclosed in [false, true] {
-            let m = mesh(enclosed);
+        for (enclosed, npc) in [(false, true), (true, true), (false, false)] {
+            let m = mesh(enclosed, npc);
             assert_eq!(m.len() % 3, 0);
             for v in &m {
                 assert!(glam::Vec3::from(v.position).is_finite());
@@ -521,15 +646,41 @@ mod tests {
             for i in 1..=4 {
                 assert!(m.iter().any(|v| v.lighting & 255 == i));
             }
-            // The magic orb and its push rods are all behind the rear board,
-            // low on the cart, not out ahead of it.
+            // The NPC orb rests in the jar's lower bulb, at the back of the bed.
             let magic: Vec<_> = m.iter().filter(|v| v.lighting >> 8 == 3).collect();
-            assert!(!magic.is_empty());
-            for v in magic {
-                assert!(v.position[1] <= -1.75 + 1e-4 && v.position[1] > -2.2, "{:?}", v.position);
-                assert!((v.position[2] - 0.8).abs() < 0.13, "{:?}", v.position);
+            for v in &magic {
+                let p = DVec3::from(v.position.map(f64::from));
+                assert!((p - DVec3::new(0.0, JAR_Y, ORB_Z)).length() < ORB_RADIUS + 1e-3, "{p:?}");
+            }
+            // The player's cart has no fixed orb or driver: its own sloshing
+            // orb (cart_orb) draws in the jar and the view is from the seat.
+            assert_eq!(magic.is_empty(), !npc);
+            assert_eq!(m.iter().any(|v| v.lighting >> 8 == 4), npc);
+        }
+    }
+    #[test]
+    fn engine_jar_is_an_hourglass_that_holds_the_sloshing_orb_inside_the_box() {
+        // Two bulbs with a neck between them and at each end.
+        let r = |t: f64| jar_radius(JAR_BOTTOM + JAR_HEIGHT * t);
+        assert!(r(0.25) > 0.18 && r(0.75) > 0.18);
+        assert!(r(0.0) < 0.05 && r(0.5) < 0.05 && r(1.0) < 0.05);
+        // The orb, strayed as far as it may in any direction, stays inside the
+        // glass with a centimetre to spare.
+        let reach = crate::cart_orb::SLOSH;
+        for k in 0..=200 {
+            let z = ORB_Z - ORB_RADIUS - reach + (ORB_RADIUS + reach) * 2.0 * k as f64 / 200.0;
+            let half = (ORB_RADIUS + reach).powi(2) - (z - ORB_Z).powi(2);
+            if half > 0.0 {
+                assert!(half.sqrt() + 0.01 <= jar_radius(z), "z {z}");
             }
         }
+        // Glass inside the box's posts, box on the bed ahead of its rear edge
+        // and clear of the moved cargo.
+        for v in glass() {
+            let p = DVec3::from(v.position.map(f64::from));
+            assert!(p.x.abs() < BOX_HALF_WIDTH - BOARD && p.y > BOX_REAR + BOARD && p.y < BOX_FRONT - BOARD);
+        }
+        assert!(BOX_REAR > -1.65 && BOX_FRONT < -0.9 - 0.1);
     }
     #[test]
     fn driver_and_magic_orb_spheres_are_closed_and_face_outward() {

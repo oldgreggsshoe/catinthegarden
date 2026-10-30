@@ -3,6 +3,11 @@
 pub const EYE_HEIGHT: f64 = 1.4;
 pub const WHEELBASE: f64 = 2.8;
 pub const TRACK: f64 = 1.6;
+/// The view sits at the drawn cart's driving seat, this far ahead of and above
+/// the physics eye (body centre, EYE_HEIGHT up), so it looks over the cart's
+/// boards rather than from inside its bed. Physics and collision are unchanged.
+pub const SEAT_FORWARD: f64 = 1.0;
+pub const SEAT_RISE: f64 = 0.55;
 pub const STEP: f64 = 1.0 / 120.0;
 const GRAVITY: f64 = 9.80665;
 const MAX_LATERAL_ACCELERATION: f64 = 6.5;
@@ -86,6 +91,8 @@ pub struct Car {
     pub magic: bool,
     /// Share of the magic charge spent, 0 full to 1 empty.
     pub spent: f64,
+    /// Signed distance rolled, metres: turns the drawn wheels.
+    pub travelled: f64,
 }
 impl Car {
     /// Magic charge left, 0..=1.
@@ -100,6 +107,11 @@ impl Car {
         (MAX_LATERAL_ACCELERATION * WHEELBASE / self.speed.powi(2).max(1.0))
             .atan()
             .min(0.5)
+    }
+
+    /// Front wheel angle, radians, positive right.
+    pub fn steering_angle(&self) -> f64 {
+        self.steering
     }
 
     /// Actual wheel position relative to the available lock at this speed.
@@ -153,6 +165,7 @@ impl Car {
             MAX_LATERAL_ACCELERATION / self.speed.powi(2).max(1.0),
         );
         let distance = self.speed * STEP;
+        self.travelled += distance;
         (
             distance,
             if self.grounded {

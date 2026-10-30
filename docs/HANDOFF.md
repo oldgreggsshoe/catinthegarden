@@ -14860,3 +14860,56 @@ every tag-3 vertex is behind the rear board near plate height; 3/3 traffic rende
 (without the road flags the replay spawns 0 NPCs and fails, as before). Release rebuilt.
 Player-side note: free-look while driving is left-click once to capture, hold RMB and move;
 Q/E also turn the view.
+
+## 30 October — the player's cart is drawn; the magic engine is an orb in a jar in a box
+
+User: "my own cart isn't rendered yet", then "let's put that magic orb in a jar, kind of
+like an hourglass, in a box that represents the 'engine'. and it will have to sit at the
+back of the cart bed". Supersedes the two earlier 30 October orb sections (orb behind
+the rear board on rods, player and NPC).
+
+**Player cart.** `traffic_render` now has a third cached mesh, `mesh(false, false)`: the
+NPC open cart without driver, cargo, tailboard or fixed orb. `PlayerCart` (ground point
+under the body centre, body forward/up from `driving_body_axes`, `Car::steering_angle`,
+new `Car::travelled` for wheel spin, tunnel lamp group) is built in main while driving and
+passed through `NetworkRenderer::update_traffic` as one extra instance (instance buffer
+MAX_AGENTS + 1). Tunnel lighting: new `traffic::in_tunnel`/`tunnel_light` (shared with
+route sampling) and `traffic::Lamps` made pub; the lamp index is built lazily per road
+generation only when the player's cart is on a tunnel deck. The cart is drawn only while
+the road network exists (it uses the road lighting bind group); without roads only the
+orb shows. Mesh wheelbase/track (2.3/1.88 m) differ from the physics car's 2.8/1.6, but
+the drawn body fits the physics corner box (±1.05 x ±1.7) apart from the 1.8 m rail ends.
+
+**Seat view.** The camera now sits at the drawn driving seat, `driving::SEAT_FORWARD`
+1.0 m ahead and `SEAT_RISE` 0.55 m above the physics eye (body axes), in
+`sync_driving_camera_pose` only. From the old eye (bed centre, 1.4 m) the side boards
+(top 1.45 m) were at eye level. Physics, collision, clearance and the eye used by the orb
+and cart geometry are unchanged. Looking level with 60° vertical FOV the cart is below
+the frame; look down or back to see it.
+
+**Engine.** At the back of the bed (bed rear edge y = -1.75, top 0.88): an open timber
+box (base board, lid, four 6 cm corner posts; x ±0.3, y -1.62..-1.02, top 1.72) with
+iron collars, and between its boards an hourglass glass jar 0.72 m tall (`jar_radius`:
+0.04 m necks at both ends and the waist, 0.19 m bulbs). The glass is a separate cached
+mesh drawn for every instance by a second, alpha-blended, no-depth-write pipeline
+(`fs_glass`: faint face-on, sky-lit rim at grazing angles, violet tint; dim in bores);
+the traffic shader gains an `eye_ray` varying. NPCs carry a static 0.12 m orb in the lower
+bulb; their cargo crates moved 0.35 m forward to clear the box. The player's orb
+(`cart_orb`) is now 0.12 m too (was 0.15), at the same place, and instead of swinging on
+rods it sloshes inside the bulb: lags back on acceleration, runs forward on braking, rolls
+outward on bends, bobs ~1 cm, all clamped to 3.5 cm (`SLOSH`), glow/ember unchanged;
+halo shrunk to the bulb's size; rods and threads removed from geometry and shader.
+
+Tests: new jar test (hourglass shape; orb at maximum slosh stays ≥1 cm inside the glass;
+glass inside the posts; box clear of cargo and the bed's rear edge), mesh test (NPC orb in
+the bulb; player mesh has no orb or driver), orb test (sits in the jar, sloshes back then
+outward, never past SLOSH). Visual, with a temporary look-angle hack (reverted):
+`PLANET_ROAD_EXPERIMENT=1 PLANET_CART_MAGIC=1` `road_network_driving/1793391560-189751`
+(looking back from the seat: bed, side boards, box, jar, glowing orb, collar) and
+`1793391599-189891`; `road_traffic/1793391637-190122` passes (box top glows through a
+carriage's rear opening). All three replays pass. Not driven live.
+Full app suite (isolated worktree, HEAD 3cf4640 + this change only, because Codex's
+uncommitted village edit did not compile in the shared checkout): 829 pass / 78 ignored /
+the same 6 baseline failures (zoom/FOV x4, shallow turquoise, water-aboard counter).
+The shared `target/release` binary was last built with Codex's then-uncommitted village
+work in the tree; rebuild once that is committed.

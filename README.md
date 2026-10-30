@@ -102,13 +102,18 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 cargo run --release -p planet-ap
 
 For the lightweight driving camera, add `PLANET_ROAD_DRIVE=1` to start in the
 car, or press **C** during normal exploration. **W/S** accelerate, brake and
-reverse; **mouse movement/A/D** steer; hold **right mouse** to look around
-(release recentres the view); **Space** brakes; **[ / ]** change the car's
+reverse; **mouse movement/A/D** steer; left-click once to capture the mouse,
+then hold **right mouse** to look around (release recentres the view); **Space** brakes; **[ / ]** change the car's
 maximum speed, halving or doubling it from 1/8x to 2x (108km/h plain or 162km/h
 magic at 1x, up to 324km/h; reverse capped at 29km/h). This is the car's own
 setting, separate from walking and flying speed; the HUD shows LIMIT when it is
 not 1x. Mouse vertical motion and Q/E
 also look independently of steering.
+You sit on the driving seat of an open timber cart (the same cart the NPCs
+drive, without a driver or cargo); its magic engine, a violet orb in an
+hourglass jar inside a box at the back of the bed, is behind you, so look round
+with the right mouse button to see it. The cart is drawn with the road network
+(`PLANET_ROAD_EXPERIMENT=1`); without roads only the orb shows.
 Mouse steering is a bounded virtual wheel that returns to centre once the mouse
 has been still for a quarter of a second; A/D override and reset it. Small corrections become progressively gentler
 from36 to108km/h (about70% less sensitive near centre at108km/h); full lock,

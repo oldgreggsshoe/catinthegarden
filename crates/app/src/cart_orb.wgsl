@@ -1,5 +1,5 @@
-// The cart's orb: a self-lit violet sphere with a soft halo and two short glowing
-// push rods to the back of the cart. Same camera prefix as road_signs.wgsl; vertices
+// The cart's engine orb: a self-lit violet sphere with a soft halo, inside the
+// glass jar in the engine box. Same camera prefix as road_signs.wgsl; vertices
 // arrive camera-relative in the planet frame.
 struct Camera {
     projection_matrix: mat4x4<f32>,
@@ -44,14 +44,8 @@ const CORE = vec3<f32>(0.85, 0.62, 1.0);
     return vec4<f32>(light + sheen, 1.0);
 }
 @fragment fn fs_glow(v: Output) -> @location(0) vec4<f32> {
-    var strength = 0.0;
-    if v.colour.w < 1.5 {
-        // Halo, zero at the square's edge so no outline shows.
-        let r2 = dot(v.normal.xy, v.normal.xy);
-        strength = max(exp(-4.0 * r2) - exp(-4.0), 0.0) * 0.35;
-    } else {
-        // Thread, brightest along its middle.
-        strength = (1.0 - v.normal.x * v.normal.x) * 0.4;
-    }
+    // Halo, zero at the square's edge so no outline shows.
+    let r2 = dot(v.normal.xy, v.normal.xy);
+    let strength = max(exp(-4.0 * r2) - exp(-4.0), 0.0) * 0.35;
     return vec4<f32>(VIOLET * v.colour.x * strength, 0.0);
 }
