@@ -582,3 +582,24 @@ Seven screenshots checked. Tests: 836 pass, same six existing failures. Measured
 These buildings are physical destinations so far—trading, interiors, port-to-road connections and networking remain future work.
 
 Details and screenshot locations: `docs/CIVIC_BUILDINGS_2026_10_30.md`.
+
+**Screenshots:**
+
+- Inn, carpenter, market (captures 001–003):
+  `/home/dad/stuff/test-runs/village_services/1793394446-209355/screenshots/`
+- Harbour overview, standing on pier, lighthouse day/night (001–004):
+  `/home/dad/stuff/test-runs/coastal_services/1793394482-209638/screenshots/`
+
+**View them in the renderer:** run these from `/home/dad/stuff`.
+
+Village buildings:
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village target/release/planet-app --scenario village_services
+```
+
+Harbour and lighthouse:
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=0 PLANET_ROAD_NETWORK=0 target/release/planet-app --scenario coastal_services
+```
+
+These are short guided-camera previews, not free-roam starts. The buildings also appear in normal play; I haven’t added a dedicated interactive harbour spawn yet.
