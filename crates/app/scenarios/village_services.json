@@ -1,0 +1,58 @@
+{
+  "name": "village_services",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 9,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "skip_birds": true,
+  "surface_probe_max_distance_meters": 20000.0,
+  "screenshot_times_seconds": [
+    2,
+    5,
+    8
+  ],
+  "waypoints": [
+    {
+      "time_s": 0.0,
+      "position": [
+        2574815.3324093954,
+        -2553551.7828782247,
+        1699093.6095758027
+      ],
+      "look_at": [
+        2574838.160320289,
+        -2553583.0433062944,
+        1698946.027673901
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0.0,
+      "direction": [
+        0.05155692383642042,
+        0.0,
+        0.9986700574286412
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 65.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 3,
+    "required_public_buildings": [
+      "inn",
+      "workshop",
+      "market"
+    ]
+  },
+  "fixed_exposure": true
+}

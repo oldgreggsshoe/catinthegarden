@@ -150,7 +150,24 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     } else if input.material == 6u {
         albedo = vec3<f32>(0.11,0.105,0.09) * grain;
     }
-    let lit = albedo * (sunlight * sun_lambert + sky_light);
+    if input.material == 9u {
+        albedo = oak.rgb * vec3<f32>(0.85,0.72,0.5);
+        if n.z > 0.9 {
+            let joint = input.local.y / 0.22;
+            let edge = min(fract(joint), 1.0-fract(joint));
+            albedo *= mix(0.65,1.0,smoothstep(0.015,0.015+max(fwidth(joint),0.012),edge));
+        }
+    }
+    if input.material == 8u {
+        let stripe = step(0.5, fract(input.local.x * 0.75));
+        albedo = mix(vec3<f32>(0.63,0.57,0.43), vec3<f32>(0.35,0.12,0.055), stripe) * grain;
+    }
+    var lit = albedo * (sunlight * sun_lambert + sky_light);
+    if input.material == 7u {
+        // A physical beacon, not glowing timber or a daylight light beam.
+        let night = 1.0 - smoothstep(-0.05, 0.08, dot(sun_direction,input.up));
+        lit += vec3<f32>(1.4,0.55,0.16) * night;
+    }
     return vec4<f32>(lit, 1.0);
 }
 

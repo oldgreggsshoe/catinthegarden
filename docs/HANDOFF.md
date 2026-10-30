@@ -10,7 +10,18 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 29 October: NPC traffic follows scene-time speed.** Road traffic
+**Current phase, 30 October: civic timber buildings and coastal outposts.**
+Central existing village plots now hold an inn, carpenter workshop and market;
+sparse real ocean shores gain dry harbour warehouses, walkable piers and nearby
+headland lighthouses, with individually checked waterfront service plots. Cached
+near/far instancing, worker-baked wooden labels and door paths reuse existing
+budgets; road engineering/precompute and Claude's cart work are retained. All
+seven final day/night captures opened, both inspection replays pass; full836
+pass/same6 failures. Matched off/on medians: village +0.20ms, coast +1.35ms (not
+FPS-neutral). No commerce, interiors, port-to-road links or multiplayer yet.
+See docs/CIVIC_BUILDINGS_2026_10_30.md and the final dated section.
+
+**Previous phase, 29 October: NPC traffic follows scene-time speed.** Road traffic
 now uses scaled scene delta, not the player's real-time camera delta. Comma/period
 retime motion, acceleration, braking and village waits; F10 pauses visible poses.
 The old0.25s delta cap already lost time at10x/15FPS. Accepts up to8 game seconds
@@ -14913,3 +14924,62 @@ uncommitted village edit did not compile in the shared checkout): 829 pass / 78 
 the same 6 baseline failures (zoom/FOV x4, shallow turquoise, water-aboard counter).
 The shared `target/release` binary was last built with Codex's then-uncommitted village
 work in the tree; rebuild once that is committed.
+
+
+## 30 October — civic timber buildings and coastal outposts
+
+User asked for the traveller proposal's buildings in appropriate locations and
+whether a huge shared planet could start with a few players in one population
+centre. Added physical destinations; multiplayer remains a documented direction,
+not an implementation or player-count promise.
+
+- `village_places.rs` supplies house/inn/workshop/market/harbour/lighthouse kinds,
+  cached near/far meshes, deterministic central village roles, sparse ocean shore
+  siting, wooden board descriptors and the pier's exact CPU floor. Existing house
+  instance padding stores the kind; GPU layouts remain compatible. New shader
+  tags7/8/9 add nighttime beacon, canvas and timber pier planks only.
+- Village layouts/sites/counts and road fingerprints stay unchanged. Public
+  village plots face the centre. Coastal outposts require dry flat actual raster
+  footprints, a shallow real ocean landing and a suitable inland tower site;
+  optional inn/workshop/market plots each get their own dry-ground check. Coast
+  proposals cache the local25-cell ring; six bounded near-site residency retries
+  prevent the initial stale coarse triangle from hiding a valid port forever.
+- Renderer uses one reusable instance-bucketing pass (at most12 draws), cached
+  meshes and a short pier-contact list. Existing worker/atlas supplies signs,
+  door-to-court paths and civic tree/dirt clearings. Optional clearings fall back
+  safely at the existing atlas budget; no new per-frame routing/text layout.
+- Real coast survey finds ports at PositiveX L10 (367,805), (360,817), (360,812).
+  The first is the coastal inspection fixture: terminal base4.79m, dry inland
+  tower base33.83m. Port piers are walkable (1.75m eye clearance in the capture),
+  but rails/walls/full interiors have no new collision system.
+- New `village_services` (3 captures) and `coastal_services` (4, including night
+  beacon) inspect actual grounded models; required-kind assertions fail on empty
+  or partial scenes. All166 registry entries load. A third fixed-camera scene,
+  `coastal_services_performance`, avoids comparing moving off/on cameras.
+- Opened all7 final captures in village_services/1793394446-209355 and
+  coastal_services/1793394482-209638: corrected inn roof, open workshop, striped
+  market, warehouse/pier/crane and lighthouse. Coast observes all5 civic kinds.
+  Retained ordinary/public access: village778/778 doors,4295 segments,
+  147 boards/gates,3640/4096 atlas tiles; coast5/5 doors,30 segments,5 boards.
+- Check/release pass; full836 pass/same6 baseline failures/79 ignored. Focused
+  tests cover stable roles/finite meshes/inn eaves, sea-vs-lake/cliff placement,
+  pier/T-head/below-floor contacts, capsule compatibility/budget fallback and
+  presence negative controls. Asset-backed coast survey passes. First preview
+  failures (stretched roof/oversized clearing) are fixed and retained in evidence.
+- High X11/Immediate Quadro M1000M, requested1280x800/actual1280x647, fixed views,
+  no roads/traffic: off/on/on/off p50s village74.599/74.834/74.833/74.671ms;
+  coast64.267/65.590/65.575/64.190ms. Added cost~0.20/~1.35ms, not FPS-neutral.
+  Evidence/logs in test-runs/civic-2026-10-30; see dedicated doc for methods.
+
+`PLANET_CIVIC_BUILDINGS=0` restores ordinary plots/no new ports. README has
+inspection commands. Normal villages get services by default; ports are sparse,
+not every beach. These coastal groups are not yet road graph nodes. No shops,
+interiors, trade, NPC social interactions, journal, docking or networking added.
+The coast captures show an unrelated pre-existing sky/ocean shadow wedge.
+
+Multiplayer recommendation: persistent shared world, first handful of players in
+one protected public coastal town; modest nearby plots and frontier expansion as
+needed. Plan authority over cargo/claims/vehicles/shared clock, nearby replication
+and sleeping distant settlements. No capacity/sharding claims or engine switch.
+Claude's committed cart/seat/hourglass engine changes remain intact; rebuild of
+the shared release includes both. See docs/CIVIC_BUILDINGS_2026_10_30.md.

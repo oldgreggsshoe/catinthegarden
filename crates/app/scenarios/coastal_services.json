@@ -1,0 +1,74 @@
+{
+  "name": "coastal_services",
+  "fixed_timestep_seconds": 0.03333333333333333,
+  "duration_seconds": 16,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "skip_birds": true,
+  "surface_probe_max_distance_meters": 20000.0,
+  "screenshot_times_seconds": [
+    2,
+    6,
+    10,
+    14
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3369343.0929964804,
+        1934739.9791815265,
+        951312.9569335099
+      ],
+      "look_at": [
+        3369269.520182492,
+        1934697.7322922875,
+        951323.0702807085
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.8423176634193565,
+        0.48367459579157207,
+        0.2378231260361677
+      ]
+    },
+    {
+      "time_s": 11.9,
+      "direction": [
+        0.8423176634193565,
+        0.48367459579157207,
+        0.2378231260361677
+      ]
+    },
+    {
+      "time_s": 12,
+      "direction": [
+        -0.8423176634193565,
+        -0.48367459579157207,
+        -0.2378231260361677
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 65.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 4,
+    "required_public_buildings": [
+      "harbour",
+      "lighthouse"
+    ]
+  },
+  "fixed_exposure": true
+}

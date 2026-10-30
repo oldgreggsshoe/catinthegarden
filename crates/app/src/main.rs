@@ -2992,6 +2992,7 @@ impl State {
     }
 
     fn road_camera_surface_height(&self, d: glam::DVec3, eye: f64, ground: f64) -> f64 {
+        let ground = self.villages.pier_surface_height(d, eye).map_or(ground, |deck| ground.max(deck));
         if let Some(roads) = &self.road_network {
             roads.plan().camera_surface_height(d, eye, ground)
         } else {
@@ -5629,7 +5630,8 @@ impl State {
                             .as_ref()
                             .and_then(|s| roads.scenario_pose(s.name()))
                     })
-                });
+                })
+                .or_else(|| self.scenario.as_ref().and_then(|s| self.villages.scenario_pose(s.name(), sim_time)));
             let (mut position, look_at) = route_pose.unwrap_or((position, look_at));
             if route_pose.is_some()
                 && self.scenario.as_ref().is_some_and(|s| {
@@ -6453,6 +6455,7 @@ impl State {
                 camera_planet_frame_position,
                 camera_sea_level_altitude_meters,
             );
+            self.artifacts.record_public_buildings(self.villages.public_building_mask());
         }
         let player_cart = (self.camera_mode == CameraMode::Driving).then(|| {
             let (forward, up) = self.driving_body_axes();

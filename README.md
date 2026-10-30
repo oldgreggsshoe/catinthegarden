@@ -159,6 +159,20 @@ The ground under a path is smoothed and ramps to the court floor at its mouth;
 `PLANET_VILLAGE_PATH_SHAPING=0` turns that off and `PLANET_VILLAGE_PATHS=0`
 removes the paths altogether.
 
+Villages now have a central timber inn, an open carpenter workshop and a market
+canopy, with wooden signs and access paths. Sparse coastal outposts add a harbour
+warehouse, walkable timber pier and a lighthouse on a suitable nearby headland;
+waterfront services are added only where their dry ground footprints fit.
+`PLANET_CIVIC_BUILDINGS=0` restores the ordinary houses and disables new ports.
+These are physical destinations, not functioning shops or interiors yet; coastal
+outposts do not yet join the road graph. See `docs/CIVIC_BUILDINGS_2026_10_30.md`.
+For building inspection replays (not an interactive spawn):
+
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village cargo run --release -p planet-app -- --scenario village_services
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=0 PLANET_ROAD_NETWORK=0 cargo run --release -p planet-app -- --scenario coastal_services
+```
+
 Interior overhead boards are spaced 500m along the engineered bore, with a
 separate remaining-exit distance on each face (normally rounded to500m).
 Distances cross region/residency boundaries; portal headers remain. Automated

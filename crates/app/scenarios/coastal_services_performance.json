@@ -1,0 +1,51 @@
+{
+  "name": "coastal_services_performance",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 8,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "skip_birds": true,
+  "surface_probe_max_distance_meters": 20000.0,
+  "screenshot_times_seconds": [
+    8
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        3369260.80540435,
+        1934796.5105204785,
+        951405.3311284847
+      ],
+      "look_at": [
+        3369270.757662675,
+        1934698.4428766025,
+        951317.2424412522
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.8423176634193565,
+        0.48367459579157207,
+        0.2378231260361677
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0.0,
+      "vertical_fov_degrees": 65.0
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1
+  },
+  "fixed_exposure": true
+}

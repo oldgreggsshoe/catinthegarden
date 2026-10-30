@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Civic timber buildings,30October: stable central village plots become inns/workshops/markets; sparse dry ocean outposts add harbour warehouses/walkable piers and headland lighthouses, labels and door paths. Cached near/far instancing and existing worker/mask budgets; road/precompute/cart work unchanged. Both inspection replays/all7 opened captures pass; full836 pass/same6 failures. Matched village+0.20ms/coast+1.35ms, not FPS-neutral. Physical destinations only: no shops/interiors, port-road links or multiplayer. See docs/CIVIC_BUILDINGS_2026_10_30.md and HANDOFF.
+
 - Player cart drawn and jar engine,30October: the player now drives a drawn open timber cart (NPC mesh without driver/cargo/tailboard; wheels roll/steer; tunnel-lamp lit) with the view moved to its driving seat (+1.0m forward, +0.55m up; physics unchanged). Magic engine for player and NPCs is now an orb in the lower bulb of a translucent hourglass jar inside an open timber box at the back of the bed (rear rods/threads gone); player orb sloshes inside the bulb. Cart drawn only with roads on. See HANDOFF.
 
 - NPC rear orbs,30October: NPC carts/carriages' static magic orb moved from 0.8m ahead (threads) to 0.22m behind the rear board at plate height (0.8m) with two short rigid rods; still in the cached instanced mesh, no cost. Mesh test asserts placement; road_traffic replay passes and shows it. See HANDOFF.

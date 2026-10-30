@@ -70,6 +70,15 @@ impl Footprint {
     }
 }
 
+fn civic_clearing(h: Footprint) -> [Trail; 2] {
+    // Overlapping normal-width lanes clear a broad forecourt without changing
+    // the atlas's established maximum capsule width or bank-distance range.
+    [-1.1, 1.1].map(|side| {
+        let p = h.centre + h.forward.perp() * side;
+        Trail { a: p - h.forward * 2.5, b: p + h.forward * 2.5, width: 2.8 }
+    })
+}
+
 /// Existing footfall is cheaper, but never enough to justify a large detour.
 /// The eight-neighbour search cannot cut diagonally through building corners.
 #[cfg(test)]
@@ -618,6 +627,26 @@ mod tests {
     use super::*;
     const BAKED_SHAPE_TOLERANCE: f64 = 0.1;
     #[test]
+    fn optional_forecourts_cannot_evict_access_paths_on_a_full_budget() {
+        let f = Frame::new(DVec3::X, 4_000_000.0).unwrap();
+        let mut routes = vec![Trail { a:DVec2::ZERO,b:DVec2::Y*10.0,width:1.0 }];
+        let mut mouths = vec![None];
+        let extras = vec![routes[0]; MAX_SEGMENTS];
+        let data = pack_public_paths(&f, &mut routes, &mut mouths, &extras).unwrap();
+        assert_eq!(routes.len(),1);
+        assert_eq!(mouths.len(),1);
+        assert_eq!(data[0][3],1.0);
+    }
+
+    #[test]
+    fn civic_forecourts_fit_the_existing_path_atlas() {
+        let f = Frame::new(DVec3::X, 4_000_000.0).unwrap();
+        let trails = civic_clearing(Footprint { centre: DVec2::ZERO, forward: DVec2::Y });
+        assert!(pack(&f, &trails).is_ok());
+        assert!(trails.iter().all(|t| t.width <= 3.0));
+    }
+
+    #[test]
     fn desire_lines_reach_parking_share_lanes_and_avoid_houses() {
         let houses = [
             Footprint {
@@ -908,6 +937,28 @@ fn court_entry(court: DVec2, height: impl Fn(DVec2) -> Option<f64>) -> DVec2 {
 
 /// Plan in a stable per-village frame, then index in one nearby field frame.
 /// Drawn height and camera motion do not change the horizontal desire lines.
+fn pack_public_paths(
+    frame: &Frame,
+    trails: &mut Vec<Trail>,
+    mouths: &mut Vec<Option<(DVec2,f64)>>,
+    clearings: &[Trail],
+) -> Result<Vec<[f32;4]>,String> {
+    let base = trails.len();
+    trails.extend_from_slice(clearings);
+    mouths.extend(std::iter::repeat_n(None,clearings.len()));
+    match pack_with_mouths(frame,trails,mouths) {
+        Err(error) if !clearings.is_empty() && error.contains("budget") => {
+            // Optional broad forecourts must not evict real door-to-court
+            // access or labels in a dense settlement. Keep the old GPU budget.
+            tracing::warn!(target:"planet::villages", %error, "forecourt coverage omitted to retain access paths");
+            trails.truncate(base);
+            mouths.truncate(base);
+            pack_with_mouths(frame,trails,mouths)
+        }
+        result => result,
+    }
+}
+
 pub fn build(
     tiles: &std::collections::HashMap<planet_coretypes::TileKey, crate::outmap::TileData>,
     dense_level: u8,
@@ -928,7 +979,9 @@ pub fn build(
     }
     let mut trails = Vec::new();
     let mut mouths = Vec::new();
-    let mut gates = Vec::new();
+    let mut clearings = Vec::new();
+    let mut gates: Vec<_> = instances.iter().zip(worlds)
+        .filter_map(|(h, &p)| crate::village::places::board(h,p)).collect();
     let mut connected = 0;
     let mut doors = 0;
     for indices in groups.values() {
@@ -940,6 +993,7 @@ pub fn build(
         let hs: Vec<_> = indices.iter().map(|&i| instances[i]).collect();
         let ws: Vec<_> = indices.iter().map(|&i| worlds[i]).collect();
         let houses = footprints(&hs, &ws, &local);
+        let harbour = hs.iter().position(|h| crate::village::places::Kind::of(h) == crate::village::places::Kind::Harbour);
         let court_entry_of = courts
             .iter()
             .find(|(village, _)| village.distance(site) * frame.radius < 0.5);
@@ -954,6 +1008,9 @@ pub fn build(
                 )
             })
         });
+        if court.is_none() {
+            if let Some(i) = harbour { goal = houses[i].door(); }
+        }
         // Mark where the path leaves the court: a gateway over the mouth,
         // standing on the court floor and facing back across it. The same
         // point and floor height anchor the path's ramp onto the court.
@@ -1013,11 +1070,21 @@ pub fn build(
             b: project(t.b),
             width: t.width,
         }));
+        for (h, footprint) in hs.iter().zip(&houses) {
+            if crate::village::places::Kind::of(h) != crate::village::places::Kind::House {
+                // Compact the public forecourt and clear trees beneath the
+                // new buildings using the existing terrain-owned dirt mask.
+                for clearing in civic_clearing(*footprint) {
+                    clearings.push(Trail { a: project(clearing.a), b: project(clearing.b), width: clearing.width });
+                }
+            }
+        }
+
     }
     if cancelled() {
         return Err("village paths superseded".into());
     }
-    let data = pack_with_mouths(&frame, &trails, &mouths)?;
+    let data = pack_public_paths(&frame, &mut trails, &mut mouths, &clearings)?;
     // A failed sign bake keeps the paths; it only loses the gateways.
     let gate_mesh = crate::road_signs::bake(&gates, frame).unwrap_or_else(|error| {
         tracing::warn!(target:"planet::villages", %error, "footpath gateways rejected");

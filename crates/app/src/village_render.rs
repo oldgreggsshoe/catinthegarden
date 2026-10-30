@@ -1,4 +1,4 @@
-//! GPU side of the villages: one static house mesh, and an instance buffer
+//! GPU side of the villages: cached near/far building meshes and an instance buffer
 //! rebuilt when the camera has moved far enough for the visible set to change.
 //!
 //! Split from `village` the way `ship_render` is split from `ship`, so the
@@ -224,7 +224,12 @@ pub struct VillageRenderer {
     vertex_count: u32,
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
-    detailed_count: u32,
+    building_meshes: Vec<[std::ops::Range<u32>; 2]>,
+    building_draws: Vec<(std::ops::Range<u32>, std::ops::Range<u32>)>,
+    building_upload: Vec<HouseInstance>,
+    building_buckets: [Vec<HouseInstance>; 12],
+    piers: Vec<(HouseInstance, DVec3)>,
+    public_building_mask: u32,
     /// Where the camera stood when the visible set was last rebuilt. Villages
     /// are static, so the list only changes when the camera does.
     last_build_position: Option<DVec3>,
@@ -241,6 +246,9 @@ pub struct VillageRenderer {
     /// Where those houses stand, in the planet frame.
     house_world_positions: Vec<DVec3>,
     house_sites: Vec<DVec3>,
+    coast_cache: village::places::CoastCache,
+    coast_retries: u8,
+    coast_retry_at: std::time::Instant,
     path_road_revision: u64,
     ground_cursor: usize,
     path_worker: crate::village_paths::Worker,
@@ -265,7 +273,8 @@ impl VillageRenderer {
         hdr_format: wgpu::TextureFormat,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        let mesh = village::build_house_mesh();
+        let meshes = village::places::meshes();
+        let mesh = meshes.vertices;
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("village house vertices"),
             size: (mesh.len() * size_of::<HouseVertex>()) as u64,
@@ -510,12 +519,20 @@ impl VillageRenderer {
             vertex_count: mesh.len() as u32,
             instance_buffer,
             instance_count: 0,
-            detailed_count: 0,
+            building_meshes: meshes.ranges,
+            building_draws: Vec::new(),
+            building_upload: Vec::new(),
+            building_buckets: std::array::from_fn(|_| Vec::new()),
+            piers: Vec::new(),
+            public_building_mask: 0,
             last_build_position: None,
             nearest_house_world: None,
             instances: Vec::new(),
             house_world_positions: Vec::new(),
             house_sites: Vec::new(),
+            coast_cache: village::places::CoastCache::new(),
+            coast_retries: 6,
+            coast_retry_at: std::time::Instant::now(),
             path_road_revision: u64::MAX,
             ground_cursor: 0,
             path_worker: crate::village_paths::Worker::new(),
@@ -575,13 +592,29 @@ impl VillageRenderer {
             self.nearest_house_world = None;
             self.instances.clear();
             self.house_world_positions.clear();
+            self.piers.clear();
+            self.public_building_mask = 0;
             self.sited_houses = 0;
             self.max_ground_disagreement_meters = 0.0;
             return;
         }
-        let moved_far_enough = self
-            .last_build_position
+        let camera_moved = self.last_build_position
             .is_none_or(|last| last.distance(camera_world_position) > rebuild_distance_meters());
+        // Dense coast siting can precede the first usable raster triangles.
+        // Retry that strict contact check a bounded number of times rather
+        // than permanently caching an empty harbour until the camera moves.
+        let direction = camera_world_position.normalize();
+        let (has_coast, has_tower) = self.coast_cache.values().flatten()
+            .filter(|s| s.terminal.distance_squared(direction) < (8000.0 / crate::planet::planet_radius_meters()).powi(2))
+            .fold((false,false), |(_,tower),s| (true,tower || s.tower.is_some()));
+        let coast_pending = has_coast
+            && (self.public_building_mask & (1 << village::places::Kind::Harbour as u8) == 0
+                || (has_tower && self.public_building_mask & (1 << village::places::Kind::Lighthouse as u8) == 0));
+        let retry = !camera_moved && coast_pending && self.coast_retries > 0
+            && self.coast_retry_at.elapsed() >= std::time::Duration::from_secs(1);
+        let moved_far_enough = camera_moved || retry;
+        if camera_moved { self.coast_retries = 6; }
+        else if retry { self.coast_retries -= 1; }
         // Invalidate a pending result before taking it when a new court set
         // arrived. Publishing that older result must not hide the road revision.
         if !moved_far_enough && self.path_road_revision != terrain.road_revision() {
@@ -666,8 +699,13 @@ impl VillageRenderer {
             camera_altitude_meters,
             camera_world_position,
         );
-        let instances = build.instances;
+        let mut instances = build.instances;
         self.house_sites = build.house_sites;
+        for (instance, site) in village::places::coastal_instances(terrain, camera_world_position, &mut self.coast_cache) {
+            if instances.len() >= max_draw_instances() { break; }
+            instances.push(instance);
+            self.house_sites.push(site);
+        }
         self.instance_count = instances.len() as u32;
         self.sited_houses = build.sited_houses;
         self.max_ground_disagreement_meters = build.max_ground_disagreement_meters;
@@ -690,8 +728,42 @@ impl VillageRenderer {
         });
         self.instances = instances;
         self.last_build_position = Some(camera_world_position);
+        self.coast_retry_at = std::time::Instant::now();
         self.upload_instances(queue);
         self.rebuild_paths(terrain, camera_world_position);
+    }
+
+    pub fn public_building_mask(&self) -> u32 { self.public_building_mask }
+
+    /// Inspection scenarios follow the actual grounded building, not an
+    /// estimated continuous terrain height that may miss its raster triangle.
+    pub fn scenario_pose(&self, name: &str, time: f64) -> Option<(DVec3, DVec3)> {
+        use village::places::Kind;
+        let kind = match name {
+            "village_services" => if time < 3.0 { Kind::Inn } else if time < 6.0 { Kind::Workshop } else { Kind::Market },
+            "coastal_services" => if time < 8.0 { Kind::Harbour } else { Kind::Lighthouse },
+            _ => return None,
+        };
+        let (h, &world) = self.instances.iter().zip(&self.house_world_positions)
+            .filter(|(h,_)| Kind::of(h) == kind)
+            .min_by(|(a,_),(b,_)| glam::Vec3::from(a.camera_relative_position).length_squared().total_cmp(&glam::Vec3::from(b.camera_relative_position).length_squared()))?;
+        let up = world.normalize();
+        let f = DVec3::from(h.forward.map(f64::from));
+        let right = f.cross(up).normalize();
+        if kind == Kind::Harbour && time < 4.0 {
+            return Some((world + f * 100.0 + right * 90.0 + up * 60.0, world + f * 24.0));
+        }
+        if kind == Kind::Harbour {
+            return Some((world + f * 20.0 + up * 1.9, world + f * 60.0 + up));
+        }
+        let (distance, side, height, aim) = if kind == Kind::Lighthouse { (35.0,30.0,12.0,9.0) } else { (18.0,13.0,7.0,2.7) };
+        Some((world - f * distance + right * side + up * height, world + up * aim))
+    }
+
+    pub fn pier_surface_height(&self, direction: DVec3, eye: f64) -> Option<f64> {
+        self.piers.iter()
+            .filter_map(|(h,p)| village::places::pier_height(h,*p,direction,eye))
+            .max_by(f64::total_cmp)
     }
 
     fn rebuild_paths(&mut self, terrain: &mut TerrainRenderer, camera: DVec3) {
@@ -809,14 +881,28 @@ impl VillageRenderer {
     }
 
     fn upload_instances(&mut self, queue: &wgpu::Queue) {
-        let detailed = |h: &&HouseInstance| {
-            glam::Vec3::from(h.camera_relative_position).length_squared() < 450.0 * 450.0
-        };
-        let mut ordered: Vec<_> = self.instances.iter().filter(detailed).copied().collect();
-        self.detailed_count = ordered.len() as u32;
-        ordered.extend(self.instances.iter().filter(|h| !detailed(h)).copied());
-        if !ordered.is_empty() {
-            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&ordered));
+        self.building_draws.clear();
+        self.building_upload.clear();
+        self.piers.clear();
+        self.public_building_mask = 0;
+        for bucket in &mut self.building_buckets { bucket.clear(); }
+        for (h, &world) in self.instances.iter().zip(&self.house_world_positions) {
+            let kind = village::places::Kind::of(h);
+            self.public_building_mask |= 1 << kind as u8;
+            let detail = glam::Vec3::from(h.camera_relative_position).length_squared() < 450.0 * 450.0;
+            self.building_buckets[kind as usize * 2 + usize::from(detail)].push(*h);
+            if kind == village::places::Kind::Harbour { self.piers.push((*h, world)); }
+        }
+        for kind in village::places::Kind::ALL {
+            for detail in 0..2 {
+                let start = self.building_upload.len() as u32;
+                self.building_upload.extend_from_slice(&self.building_buckets[kind as usize * 2 + detail]);
+                let end = self.building_upload.len() as u32;
+                if end > start { self.building_draws.push((self.building_meshes[kind as usize][detail].clone(), start..end)); }
+            }
+        }
+        if !self.building_upload.is_empty() {
+            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&self.building_upload));
         }
     }
 
@@ -859,10 +945,9 @@ impl VillageRenderer {
         render_pass.set_bind_group(1, &self.timber_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-        render_pass.draw(0..self.vertex_count, 0..self.detailed_count);
-        // The first fourteen triangles are the original house shell. Keep
-        // distant buildings textured without submitting subpixel joinery.
-        render_pass.draw(0..42, self.detailed_count..self.instance_count);
+        for (vertices, instances) in &self.building_draws {
+            render_pass.draw(vertices.clone(), instances.clone());
+        }
         if self.gate_frame.is_some() {
             self.gates
                 .draw(render_pass, camera_bind_group, &self.gate_instance);

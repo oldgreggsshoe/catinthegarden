@@ -546,3 +546,39 @@ Prove one enjoyable outing: collect a delivery, hear a rumour, choose a route, s
 For FPS, distant commerce can be lightweight records updated when needed; only nearby travellers need actual vehicles and movement.
 
 [Claude, 30 October] NPC carts and carriages now carry their orb on the back too: just behind the rear board at plate height, pushing through two short rigid rods (it used to float ahead on threads). It's part of the shared vehicle mesh, so it costs nothing extra; it doesn't swing like yours. Traffic replay passes and shows it on a carriage. Looking around while driving: left-click once to capture the mouse, then hold the right button and move the mouse (let go to snap back); Q/E also turn the view.
+
+I’ll inspect village placement and footpath generation, then add inns, carpenter workshops and markets to suitable settlements, plus harbours and lighthouses where the coastline supports them. I’ll check access and performance as part of that.
+
+On multiplayer: yes, concentrating early players around a shared town makes sense. I’d build toward a persistent shared world, but start with a small player population—not MMO-scale infrastructure. I’ll keep networking out of this building pass.
+
+The village renderer already has instancing, distance LOD and a worker for paths and signs. I’ll reuse those, with timber buildings and readable shop signs, rather than add a costly new rendering path.
+
+The edits will stay in the village modules, a new placement/mesh helper, scenarios and docs. I’ll preserve the cart and traffic changes currently in progress. Harbour siting needs a separate check: existing villages deliberately avoid low beaches, so I won’t simply place a port beside any village.
+
+[Claude, 30 October] Your cart is now drawn (the NPC open cart, no driver/cargo; wheels roll and steer; tunnel-lamp lit) and your view sits on its driving seat. The magic engine, for you and the NPCs, is now an orb in the lower bulb of a translucent hourglass jar inside an open timber box at the back of the cart bed; yours glows with the motor and sloshes a little in the bulb. Orb now 12 cm to fit. Cart only drawn with roads on. 829 tests pass, same 6 old failures; checked in replays, not live.
+
+The inn, workshop and market meshes are in place, using stable village plots and the existing path/sign worker. The coastal survey has also found real sites with dry shore access, shallow sea frontage and suitable ground for lighthouses.
+
+I’m checking the rendered results now. The coastal eligibility rules are deliberately stricter than village placement, to avoid ports on cliffs, beside lakes or on dry land.
+
+The previews now show all five building types, with wooden signs and paths. At the port, the inn, workshop and market form a small waterfront outpost, with a lighthouse inland and a walkable pier.
+
+I caught and fixed two issues in the first captures: an inn roof stretched incorrectly, and ports could be rejected before their terrain triangles finished loading. I’m running the final checks and timing comparisons now. Trading, interiors, port-to-road connections and multiplayer remain separate work.
+
+All five building types are in and checked in screenshots. The paired timings show about +0.2 ms in the village view and +1.35 ms at the new port.
+
+I agree with your multiplayer idea: start players together in one lively public town, then let settlement expand into the wilderness. I’d build toward a persistent shared world, but prove that small-group experience before promising MMO-scale capacity. Networking isn’t part of this building pass.
+
+Added and enabled by default:
+- Timber inns, carpenter workshops and markets at central village plots.
+- Harbour warehouses and walkable piers on suitable dry coastlines.
+- Lighthouses on nearby headlands, with nighttime beacons.
+- Wooden labels and connecting footpaths.
+
+Seven screenshots checked. Tests: 836 pass, same six existing failures. Measured added cost: ~0.2 ms in the village view, ~1.35 ms at the port. Release rebuilt; committed and pushed.
+
+**Multiplayer: yes to a persistent shared world, but start small.** Put early players together in one public coastal town, protect shared roads/harbours, and allow nearby land claims as settlement grows. Plan [server authority](https://dev.epicgames.com/documentation/unreal-engine/networking-overview-for-unreal-engine) early, but prove enjoyable small-group play before promising MMO capacity.
+
+These buildings are physical destinations so far—trading, interiors, port-to-road connections and networking remain future work.
+
+Details and screenshot locations: `docs/CIVIC_BUILDINGS_2026_10_30.md`.

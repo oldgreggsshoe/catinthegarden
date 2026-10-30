@@ -134,6 +134,7 @@ struct AssertionTracker {
     config: ScenarioAssertions,
     sample_count: usize,
     peak_traffic: usize,
+    public_buildings: u32,
     traffic_travelled: f64,
     non_finite_samples: usize,
     peak_lod_level: Option<u8>,
@@ -197,6 +198,7 @@ impl AssertionTracker {
             config,
             sample_count: 0,
             peak_traffic: 0,
+            public_buildings: 0,
             traffic_travelled: 0.0,
             non_finite_samples: 0,
             peak_lod_level: None,
@@ -888,6 +890,12 @@ impl AssertionTracker {
                 ),
             ));
         }
+        if !self.config.required_public_buildings.is_empty() {
+            let names = ["house","inn","workshop","market","harbour","lighthouse"];
+            let missing: Vec<_> = self.config.required_public_buildings.iter()
+                .filter(|name| names.iter().position(|n| n == &name.as_str()).is_none_or(|i| self.public_buildings & (1 << i) == 0)).collect();
+            results.push(assertion_result("public_buildings_present", missing.is_empty(), format!("missing {:?}; observed mask {:#x}", missing, self.public_buildings)));
+        }
         if let Some(minimum) = self.config.min_peak_traffic_vehicles {
             results.push(assertion_result(
                 "traffic_is_populated", self.peak_traffic >= minimum,
@@ -1274,6 +1282,8 @@ impl RunArtifacts {
             gust_wind_meters_per_second: 0.0,
         });
     }
+
+    pub fn record_public_buildings(&mut self, mask: u32) { self.assertion_tracker.public_buildings |= mask; }
 
     pub fn record_traffic(&mut self, count: usize, travelled: f64) {
         self.assertion_tracker.peak_traffic = self.assertion_tracker.peak_traffic.max(count);
@@ -1893,6 +1903,7 @@ mod tests {
             min_peak_rain_intensity: None,
             min_gust_wind_range_meters_per_second: None,
             require_constant_village_siting: false,
+            required_public_buildings: Vec::new(),
             min_peak_traffic_vehicles: None,
             min_traffic_travel_metres: None,
             ice_sample_uv: None,
@@ -2007,6 +2018,18 @@ mod tests {
             .iter()
             .find(|result| result.name == name)
             .expect("assertion result exists")
+    }
+
+    #[test]
+    fn required_public_buildings_reject_empty_and_partial_scenes() {
+        let mut config = ScenarioAssertions::default();
+        config.required_public_buildings = vec!["inn".into(), "harbour".into()];
+        let mut tracker = AssertionTracker::new(config);
+        assert!(!result(&tracker.results(0), "public_buildings_present").passed);
+        tracker.public_buildings = 1 << 1;
+        assert!(!result(&tracker.results(0), "public_buildings_present").passed);
+        tracker.public_buildings |= 1 << 4;
+        assert!(result(&tracker.results(0), "public_buildings_present").passed);
     }
 
     #[test]

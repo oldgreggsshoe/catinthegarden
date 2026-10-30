@@ -22,6 +22,9 @@
 //! planet position quantises to about half a metre, which on a six-metre house
 //! is the difference between a wall and a staircase.
 
+#[path = "village_places.rs"]
+pub(crate) mod places;
+
 use glam::DVec3;
 
 use planet_coretypes::{BiomeId, TileKey, face_uv_to_direction, tile_key_for_direction};
@@ -149,7 +152,8 @@ pub struct HouseVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     /// Material: 0 painted siding, 1 shingles, 2 trim, 3 door, 4 glass,
-    /// 5 exposed timber, 6 stone footing. Kept in the existing vertex slot.
+    /// 5 exposed timber, 6 stone footing, 7 beacon glazing, 8 canvas,
+    /// 9 pier planks. Kept in the existing vertex slot.
     pub roof: f32,
     pub _padding: f32,
 }
@@ -171,6 +175,7 @@ pub struct HouseInstance {
     pub forward: [f32; 3],
     pub _pad2: f32,
     pub colour: [f32; 3],
+    /// Building kind (zero remains an ordinary house); GPU layout unchanged.
     pub _pad3: f32,
 }
 
@@ -887,6 +892,7 @@ pub fn collect_house_instances(
                 };
 
                 let layout = village_house_layout(site_seed);
+                let roles = places::village_roles(&layout);
                 for (index, &(offset_east, offset_north, facing)) in layout.iter().enumerate() {
                     if instances.len() >= VILLAGE_MAX_DRAW_INSTANCES {
                         return build;
@@ -964,8 +970,11 @@ pub fn collect_house_instances(
                         continue;
                     }
                     let house_north = house_east.cross(house_up);
-                    let forward =
-                        (house_east * facing.cos() + house_north * facing.sin()).normalize();
+                    let forward = if roles[index as usize] != places::Kind::House && offset.length_squared() > 1.0 {
+                        (offset - house_up * offset.dot(house_up)).normalize()
+                    } else {
+                        (house_east * facing.cos() + house_north * facing.sin()).normalize()
+                    };
                     build.house_sites.push(site_direction);
                     instances.push(HouseInstance {
                         camera_relative_position: to_camera.as_vec3().to_array(),
@@ -975,7 +984,7 @@ pub fn collect_house_instances(
                         forward: forward.as_vec3().to_array(),
                         _pad2: 0.0,
                         colour: house_colour(site_seed, index),
-                        _pad3: 0.0,
+                        _pad3: roles[index as usize] as u8 as f32,
                     });
                 }
             }
