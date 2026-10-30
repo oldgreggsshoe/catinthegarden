@@ -1,50 +1,55 @@
-//! The cart's puller: a 15 cm orb hanging in the air ahead of the car, tied
-//! back to the front of the cart by two glowing threads, as a horse is by its
-//! traces. It is the magic motor made visible; the substance that drives it is
-//! not worked out yet. Rebuilt on the CPU each frame (about a thousand
-//! vertices, camera-relative), drawn as one solid and one additive batch.
+//! The cart's pusher: a 15 cm orb held just behind the cart's tail, about
+//! where a car carries its number plate, shoving it along through two short
+//! rigid glowing rods to the rear board. It is the magic motor made visible;
+//! the substance that drives it is not worked out yet. Rebuilt on the CPU each
+//! frame (about a thousand vertices, camera-relative), drawn as one solid and
+//! one additive batch.
 use crate::driving;
 use glam::DVec3;
 
 pub const RADIUS: f64 = 0.15;
-/// Orb centre ahead of the cart's front edge, and above the ground.
-const LEAD: f64 = 1.5;
-const HEIGHT: f64 = 0.95;
-/// Where the threads tie on: the front corners of the cart, this high.
-const HITCH_HEIGHT: f64 = 0.7;
-const FRONT: f64 = driving::WHEELBASE * 0.5 + 0.3;
+/// Orb centre behind the cart's rear edge, and above the ground (number-plate
+/// height). Pushing presses it in toward the board, never into it.
+const GAP: f64 = 0.27;
+const CLOSEST_GAP: f64 = RADIUS + 0.03;
+const HEIGHT: f64 = 0.45;
+/// The rear board, as far behind the body centre as the front edge is ahead.
+const REAR: f64 = driving::WHEELBASE * 0.5 + 0.3;
+/// Where the push rods meet the board: either side of the plate.
+const ROD_SPREAD: f64 = 0.2;
 /// Spring holding the orb to its place (1/s²), a little under critical
-/// damping so it swings out on a bend and settles with one small overshoot.
-const STIFFNESS: f64 = 30.0;
+/// damping so it shifts on a bend and settles with one small overshoot. Stiffer
+/// than a towed orb: it is braced against the cart, not dangling on threads.
+const STIFFNESS: f64 = 60.0;
 const DAMPING_RATIO: f64 = 0.7;
 /// Glow with the motor off or the charge spent: a dim violet lamp, not a dark
 /// ball (0.04 read as a black disc in daylight, as if the orb were broken).
 const EMBER_GLOW: f64 = 0.15;
 const SEGMENTS: usize = 16;
 const RINGS: usize = 10;
-const THREAD_SEGMENTS: usize = 12;
-const THREAD_WIDTH: f64 = 0.012;
+const ROD_WIDTH: f64 = 0.014;
 const MAX_VERTICES: usize = 4096;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     position: [f32; 3],
-    /// Orb: surface normal. Halo: quad coordinate in x, y. Thread: across in x.
+    /// Orb: surface normal. Halo: quad coordinate in x, y. Rod: across in x.
     normal: [f32; 3],
-    /// x glow, w kind (0 orb, 1 halo, 2 thread).
+    /// x glow, w kind (0 orb, 1 halo, 2 rod).
     colour: [f32; 4],
 }
 
-/// Where the orb hangs relative to the cart (ahead, right, up), sprung so it
-/// swings out on bends, strains ahead when pulling and bobs while it waits.
+/// Where the orb sits relative to the cart (ahead, right, up; x is negative,
+/// behind), sprung so it shifts outward on bends, presses in to the board when
+/// pushing, eases back under braking and bobs a little while it waits.
 #[derive(Clone, Copy, Debug)]
 pub struct Orb {
     offset: DVec3,
     velocity: DVec3,
     time: f64,
     last_speed: f64,
-    /// 0 slack .. 1 hauling (eased throttle while the motor runs).
+    /// 0 idle .. 1 pushing (eased throttle while the motor runs).
     pull: f64,
     /// Emissive strength, eased: dim ember when the motor is off.
     glow: f64,
@@ -52,7 +57,7 @@ pub struct Orb {
 impl Default for Orb {
     fn default() -> Self {
         Self {
-            offset: DVec3::new(FRONT + LEAD, 0.0, HEIGHT),
+            offset: DVec3::new(-(REAR + GAP), 0.0, HEIGHT),
             velocity: DVec3::ZERO,
             time: 0.0,
             last_speed: 0.0,
@@ -85,12 +90,16 @@ impl Orb {
         let glow = if running { (0.25 + 0.75 * charge) * (1.0 + 0.5 * self.pull) } else { EMBER_GLOW };
         ease(&mut self.glow, glow, 3.0);
         let tau = std::f64::consts::TAU;
+        // Pushing and speeding up press it in to the board; braking lets it
+        // fall back. On a bend it swings to the outside, as a tail does.
+        let gap = (GAP - 0.06 * self.pull - (acceleration * 0.01).clamp(-0.06, 0.04))
+            .max(CLOSEST_GAP);
         let target = DVec3::new(
-            FRONT + LEAD + 0.25 * self.pull + (acceleration * 0.02).clamp(-0.2, 0.2),
-            steering.clamp(-1.0, 1.0) * 0.6,
+            -(REAR + gap),
+            -steering.clamp(-1.0, 1.0) * 0.12,
             HEIGHT
-                + 0.05 * (self.time * tau * 0.55).sin()
-                + 0.02 * (self.time * tau * 1.3).sin(),
+                + 0.015 * (self.time * tau * 0.55).sin()
+                + 0.008 * (self.time * tau * 1.3).sin(),
         );
         let damping = 2.0 * DAMPING_RATIO * STIFFNESS.sqrt();
         let steps = (seconds * 240.0).ceil().max(1.0);
@@ -98,11 +107,15 @@ impl Orb {
         for _ in 0..steps as usize {
             self.velocity += (STIFFNESS * (target - self.offset) - damping * self.velocity) * step;
             self.offset += self.velocity * step;
+            if self.offset.x > -(REAR + CLOSEST_GAP) {
+                self.offset.x = -(REAR + CLOSEST_GAP);
+                self.velocity.x = self.velocity.x.min(0.0);
+            }
         }
         self.time += seconds;
     }
 
-    /// Solid orb, then the additive halo and threads, relative to `camera`.
+    /// Solid orb, then the additive halo and push rods, relative to `camera`.
     /// `eye` is the car's eye point and `forward`/`up` its body axes.
     pub fn geometry(
         &self,
@@ -142,7 +155,7 @@ impl Orb {
                 }
             }
         }
-        let mut additive = Vec::with_capacity(6 + 2 * THREAD_SEGMENTS * 6);
+        let mut additive = Vec::with_capacity(6 + 2 * 6);
         // Halo: a camera-facing square around the orb, faded in the shader.
         let view = (centre - camera).normalize_or_zero();
         let across = view.cross(up).try_normalize().unwrap_or(right);
@@ -154,23 +167,15 @@ impl Orb {
         for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
             additive.push(corner(x, y));
         }
-        // Threads back to the cart, slack and sagging until it hauls.
-        let sag = 0.12 * (1.0 - self.pull) + 0.01;
+        // Push rods: straight and rigid from the orb to the rear board.
         for side in [-1.0, 1.0] {
-            let hitch = ground + forward * FRONT + right * (side * driving::TRACK * 0.5) + up * HITCH_HEIGHT;
-            let tie = centre + (hitch - centre).normalize_or_zero() * (RADIUS * 0.9);
-            let point = |t: f64| tie.lerp(hitch, t) - up * (sag * 4.0 * t * (1.0 - t));
-            for i in 0..THREAD_SEGMENTS {
-                let (a, b) = (
-                    point(i as f64 / THREAD_SEGMENTS as f64),
-                    point((i + 1) as f64 / THREAD_SEGMENTS as f64),
-                );
-                let width = (b - a).cross(a - camera).normalize_or_zero() * (THREAD_WIDTH * 0.5);
-                let quad = [(a - width, -1.0), (a + width, 1.0), (b + width, 1.0), (b - width, -1.0)];
-                for k in [0, 1, 2, 0, 2, 3] {
-                    let (p, x) = quad[k];
-                    additive.push(v(p, [x, 0.0, 0.0], 2.0));
-                }
+            let board = ground - forward * REAR + right * (side * ROD_SPREAD) + up * HEIGHT;
+            let tie = centre + (board - centre).normalize_or_zero() * (RADIUS * 0.9);
+            let width = (board - tie).cross(tie - camera).normalize_or_zero() * (ROD_WIDTH * 0.5);
+            let quad = [(tie - width, -1.0), (tie + width, 1.0), (board + width, 1.0), (board - width, -1.0)];
+            for k in [0, 1, 2, 0, 2, 3] {
+                let (p, x) = quad[k];
+                additive.push(v(p, [x, 0.0, 0.0], 2.0));
             }
         }
         (solid, additive)
@@ -286,21 +291,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn orb_hangs_ahead_swings_into_bends_and_fits_the_buffer() {
+    fn orb_sits_behind_at_plate_height_swings_out_on_bends_and_fits_the_buffer() {
         let mut orb = Orb::default();
         for _ in 0..240 {
             orb.advance(1.0 / 60.0, 0.0, 1.0, 10.0, true, 1.0);
         }
-        // Right-hand bend: the orb leads out to the right, still ahead and aloft.
-        assert!(orb.offset.y > 0.4 && orb.offset.x > FRONT + 1.0, "{:?}", orb.offset);
-        assert!((orb.offset.z - HEIGHT).abs() < 0.1);
+        // Right-hand bend: the tail swings out to the left, still just behind.
+        assert!(orb.offset.y < -0.08, "{:?}", orb.offset);
+        assert!(orb.offset.x < -(REAR + RADIUS) && orb.offset.x > -(REAR + 0.4), "{:?}", orb.offset);
+        assert!((orb.offset.z - HEIGHT).abs() < 0.05);
         let (eye, forward, up) = (DVec3::new(0.0, 0.0, 4.0e6 + 1.4), DVec3::X, DVec3::Z);
         let (solid, additive) = orb.geometry(eye, forward, up, eye);
         assert!(solid.len() + additive.len() <= MAX_VERTICES);
-        // Every orb vertex is 15 cm from a centre ahead of and below the eye.
+        // Every orb vertex is 15 cm from a centre behind the cart, about 0.45 m
+        // above the ground (the eye is 1.4 m up).
         let centre = solid.iter().fold(glam::Vec3::ZERO, |s, v| s + glam::Vec3::from(v.position))
             / solid.len() as f32;
-        assert!(centre.x > 2.5 && centre.z < 0.0 && centre.y < 0.0, "{centre:?}");
+        assert!(centre.x < -1.8 && (centre.z + 0.95).abs() < 0.05, "{centre:?}");
         for v in &solid {
             let r = (glam::Vec3::from(v.position) - centre).length();
             assert!((r - RADIUS as f32).abs() < 0.01, "{r}");
@@ -314,6 +321,9 @@ mod tests {
             orb.advance(1.0 / 60.0, 1.0, 0.0, 5.0, true, 1.0);
         }
         assert!(orb.glow > 1.2 && orb.pull > 0.9);
+        // Pushing presses it in to the board without touching it.
+        assert!(orb.offset.x > -(REAR + GAP) + 0.03, "{:?}", orb.offset);
+        assert!(orb.offset.x <= -(REAR + CLOSEST_GAP) + 1e-9);
         for _ in 0..300 {
             orb.advance(1.0 / 60.0, 1.0, 0.0, 5.0, false, 1.0);
         }

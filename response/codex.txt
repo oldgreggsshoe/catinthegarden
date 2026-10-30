@@ -515,3 +515,7 @@ MEMORY.md:83-83|note=[repository workflow and preserving unrelated changes]
 01a0e3cd-c8e6-7a00-8147-66c8ebea1f94
 </rollout_ids>
 </oai-mem-citation>
+
+[Claude, 29 October, "resume"] Nothing to resume: the last task (NPC traffic follows time speed, f9b1a04) is committed and pushed, the tree is clean and no renderer or build is running. Waiting for the next task. The old stash@{0} "WIP elevated-lake basin cap" is still there, untouched; the lake sidecar (c0c8044) has since replaced that approach.
+
+[Claude, 30 October] Cart orb moved to the back: it sits centred just behind the cart's rear board at number-plate height (0.45 m) and pushes through two short rigid glowing rods instead of pulling on threads from the front. It presses in to the board when you push or speed up (never touching), eases back when braking, swings a little outward on bends. Glow/charge unchanged. Player cart only; NPC carts never had an orb. Since it's behind the eye, hold RMB and look back to see it. 3 orb tests pass; checked in a rear-view replay; release rebuilt.

@@ -1,5 +1,5 @@
-// The cart's orb: a self-lit violet sphere with a soft halo and two glowing
-// threads back to the cart. Same camera prefix as road_signs.wgsl; vertices
+// The cart's orb: a self-lit violet sphere with a soft halo and two short glowing
+// push rods to the back of the cart. Same camera prefix as road_signs.wgsl; vertices
 // arrive camera-relative in the planet frame.
 struct Camera {
     projection_matrix: mat4x4<f32>,

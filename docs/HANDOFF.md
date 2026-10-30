@@ -14821,3 +14821,25 @@ Matched1x visual verification: road_traffic before1793310547-137396 and after
 pairs are pixel-identical; matched cart view opened. High640x360/X11/Immediate,
 village site, PLANET_TRAFFIC_WAIT=1. No FPS-gain claim or extreme-rung live sign-off.
 All renderer test processes exited; source/runnable release match this phase.
+
+## 30 October — cart orb pushes from the back
+
+User asked for the magic orb "on the back of the cart/carriage, around where a reg
+plate would be on a car. It pushes, rather than pulls." Player cart only (NPC carts and
+carriages never had an orb). `cart_orb.rs`: the orb centre now sits 0.27 m behind the
+rear board (the rear edge is taken as WHEELBASE/2 + 0.3 behind the body centre, mirroring
+the old front edge; there is no drawn player body) at 0.45 m above the ground, centred.
+The two sagging threads to the front corners are replaced by two short rigid glowing push
+rods to the rear board, 0.2 m either side of the plate position. The spring is stiffer
+(60/s², ratio 0.7) because it is braced against the cart. Pushing (eased throttle) and
+accelerating press it in toward the board (gap never below radius + 3 cm, also clamped
+after integration); braking lets it ease back; on a bend it swings 0.12 m to the outside;
+the bob is reduced to 1.5/0.8 cm. Glow, ember, charge and controls unchanged.
+
+Tests: the placement test now checks behind/plate height/outside swing; the glow test also
+checks pushing presses it in without touching; 3/3 orb tests pass. Visual: with a
+temporary look-backwards camera hack (reverted, not committed), `PLANET_CART_MAGIC=1`
+`road_network_driving/1793370222-127815` passes and captures 2/4 show the orb low behind
+the cart with both rods running toward the viewer. It is behind the first-person eye, so
+in play it is only seen by holding RMB and looking back. Release rebuilt from committed
+source. Not seen live.

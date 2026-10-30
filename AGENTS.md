@@ -14,6 +14,8 @@ Planet renderer, Rust + wgpu + egui. Read this before doing anything. It's the w
 ## What exists now
 *(update this section at the end of every session — one line per phase completed)*
 
+- Cart orb pushes,30October: the magic orb now sits centred 0.27m behind the player cart's rear board at number-plate height (0.45m), braced by two short rigid glowing push rods instead of pulling threads ahead; presses in when pushing/accelerating (never touching), eases back braking, swings outward on bends. Player cart only; behind the first-person eye (RMB look back). 3 orb tests pass; rear-view replay checked with a reverted camera hack. See HANDOFF.
+
 - NPC scene-time speed,29October: traffic now takes scaled scene delta rather than the real-time camera delta, so comma/period and F10 pause affect driving and village wait timers. Retains30Hz physics; input budget0.25->8 game seconds/frame (~240 ticks), discarding excess only at extreme fast-forward rather than accumulating debt; diagnostic logs remain2s wall-clock. Four new clock/cap/pause/wiring tests;18 focused pass;full828 pass/same6 failures. No player controls, routing or graphics changes. See HANDOFF and docs/TRAFFIC_2026_10_29.md.
 
 - Forest continuity/lake motion/night beach check,29October: moved forest generation after current-frame cell/count uploads (the old order blanked every tree on invalidation); two24-frame flight replays now keep trees48/48, stationary PNGs identical, density unchanged. Existing lake ripples now use the running water clock with gravity-wave frequencies; held water ROI goes from0 to213,160 changed pixels. Tested dry beach is black without moon, moonlit with it, so sand lighting retained. 824 pass/same6 failures; see docs/FOREST_WATER_FIXES_2026_10_29.md and HANDOFF.
