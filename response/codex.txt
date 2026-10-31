@@ -603,3 +603,41 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=0 PLANET_ROAD_NETWORK=0 target/rel
 ```
 
 These are short guided-camera previews, not free-roam starts. The buildings also appear in normal play; I haven’t added a dedicated interactive harbour spawn yet.
+
+I’ve opened the latest screenshot. You’re right: the foreground looks like smooth green clay, with broad shaded lumps but almost no grass, soil or small-scale surface detail. The dirt paths are similarly blurred.
+
+I’ll reproduce that camera view, trace where ground detail is being filtered out, then make the smallest material change that restores detail without adding expensive geometry. I’ll check matched screenshots and frame times before calling it fixed.
+
+The shader already samples close-up ground textures, but then reduces their contribution to just 8%. Paths also replace most of that textured colour with smooth brown.
+
+I’m checking three possibilities:
+1. **Detail is being suppressed after sampling** — restoring its close-range contribution should reveal it without more texture lookups.
+2. **Mip filtering is blurring it away** — stronger detail would still look smooth if this is the cause.
+3. **Broad terrain shading is overwhelming the texture** — visible grain alone wouldn’t fix the rounded, clay-like relief.
+
+I’ll add a replay from your captured position, then test these against that same view. The likely edits are limited to the terrain shader, path colouring and their tests.
+
+The first test confirmed that simply increasing contrast isn’t enough—it mostly darkens the same smooth shapes. The grass texture itself puts most of its variation into broad patches.
+
+I’m testing a finer close-range grass/soil layer while keeping the distant materials unchanged. This will still use the existing texture lookups, not extra terrain or grass geometry.
+
+Claude has just started a release build in this checkout. Could you pause his builds/edits while I finish the terrain-detail captures and timing tests? I’m using saved binaries so his build won’t replace my test executable, but concurrent work can distort timings.
+
+The finer layers now visibly add grain to the grass and compacted paths in the reproduced view. I’ve also checked four small camera movements; the texture stays attached to the ground.
+
+The large faceted mounds are still visible—that’s a separate geometry/shading problem, not something I want to disguise with stronger noise. This change addresses the missing surface texture. Full tests and the final performance check are next.
+
+The final paired runs are finished: 58.56 ms before versus 58.63 ms after—effectively unchanged within the run-to-run variation. The image check also rejects the earlier contrast-only attempt and passes the finer texture version.
+
+No need to pause anything now. I also confirmed that Claude’s build is in a separate checkout, not editing this one; I used a build-free gap for the final timings.
+
+You were right: the close-up texture was being suppressed, and its source was mostly broad blobs.
+
+I’ve restored finer grass/soil grain and kept the paths textured, without extra geometry or texture lookups. Matched frame time is essentially unchanged: **58.56 → 58.63 ms**.
+
+New screenshot:
+`/home/dad/stuff/test-runs/ground_detail_village/1793447685-19812/screenshots/capture-001.png`
+
+The large faceted mounds remain a separate issue—this fixes the missing surface grain, not the underlying terrain shape.
+
+Tests: 838 pass, same six existing failures. Release rebuilt; committed and pushed.

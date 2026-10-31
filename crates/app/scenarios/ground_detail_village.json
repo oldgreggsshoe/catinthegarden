@@ -1,0 +1,50 @@
+{
+  "name": "ground_detail_village",
+  "fixed_timestep_seconds": 0.016666666666666666,
+  "duration_seconds": 8,
+  "solid_color_screen": false,
+  "hide_overlay": true,
+  "seam_gap_check": false,
+  "planet_relative_up": true,
+  "planet_rotation_time_scale": 0.0,
+  "skip_birds": true,
+  "screenshot_times_seconds": [
+    8
+  ],
+  "waypoints": [
+    {
+      "time_s": 0,
+      "position": [
+        2574846.4460130306,
+        -2553643.3985782233,
+        1698817.0397347186
+      ],
+      "look_at": [
+        2574906.229690063,
+        -2553563.2420742763,
+        1698817.959971384
+      ]
+    }
+  ],
+  "sun_waypoints": [
+    {
+      "time_s": 0,
+      "direction": [
+        0.4374748500511372,
+        0.397776994021848,
+        0.8064671218342864
+      ]
+    }
+  ],
+  "vertical_fov_waypoints": [
+    {
+      "time_s": 0,
+      "vertical_fov_degrees": 60
+    }
+  ],
+  "assertions": {
+    "require_finite_metrics": true,
+    "expected_screenshots": 1
+  },
+  "fixed_exposure": true
+}

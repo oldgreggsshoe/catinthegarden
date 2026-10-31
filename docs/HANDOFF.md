@@ -10,7 +10,17 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 30 October: civic timber buildings and coastal outposts.**
+**Current phase, 31 October: close ground material grain.** Reproduced the user's
+smooth green foreground with a camera reconstructed from logged surface probes.
+The 8% final tint and broad-heavy colour texture erased most underfoot detail;
+raising gain alone was insufficient. Two fine grass/soil layers now reuse the
+existing close fetches, with restored near contrast and path grain. Four landscape
+layers/distant budget and geometry/LOD/lighting remain unchanged; +0.67MiB texture
+memory, no extra draws/lookups/noise per fragment. Held/slow-strafe captures opened;
+full838 pass/same6 failures. Final ABBA medians58.562->58.6345ms (within noise).
+Broad faceted mounds remain, not hidden or called fixed. See docs/GROUND_DETAIL_2026_10_31.md and the final dated section.
+
+**Previous phase, 30 October: civic timber buildings and coastal outposts.**
 Central existing village plots now hold an inn, carpenter workshop and market;
 sparse real ocean shores gain dry harbour warehouses, walkable piers and nearby
 headland lighthouses, with individually checked waterfront service plots. Cached
@@ -14983,3 +14993,53 @@ needed. Plan authority over cargo/claims/vehicles/shared clock, nearby replicati
 and sleeping distant settlements. No capacity/sharding claims or engine switch.
 Claude's committed cart/seat/hourglass engine changes remain intact; rebuild of
 the shared release includes both. See docs/CIVIC_BUILDINGS_2026_10_30.md.
+
+
+## 31 October — close ground grain, not a geometry/LOD change
+
+User: latest screenshot has no ground detail, only vague green shapes. Opened
+manual/1793446215-7196/capture-001: smooth clay-like grass and paths. Reconstructed
+the local eye from58 recorded hit positions/distances (altitude4610.862760713m,
+1.7m clearance), fitted the view, and reproduced the symptom in a held replay.
+The1280x647 window differs slightly in framing from the original fullscreen720p.
+
+Three hypotheses: post-sample suppression, filtering, overwhelming broad relief.
+The shader sampled a6m close tile but attenuated tint to8%; vegetation put64% of
+RGB into broad noise,28% medium,8% grain and none into fine noise. Paths painted
+smooth brown over most of it. Raising tint alone mainly darkened blobs (3px
+foreground contrast1.423->1.446), so that was not accepted. Fine-only layers4/5
+now use decimetre/centimetre grain through the same existing triplanar fetches;
+contrast rose to2.119 and is visibly present. No forced mip0, more geometry or
+per-fragment procedural noise. Original layers0..3/means remain unchanged; full
+mips/8x anisotropy retained. Texture memory +~0.67MiB, generated once at startup.
+Near tint0.65 fades150–900m to the original0.08; paths retain clamped luminance
+grain from existing samples and fade it out with the same close-tile weight.
+
+New ground_detail_village is held, ground_detail_walk strafes45cm through4
+captures. First accepted fine-layer frame1793447052-10668 and all4 motion frames
+1793447169-11070 opened. Sky/inn-wall ROIs unchanged. Broad mounds/faceting remain;
+this is procedural material grain, not photogrammetry, grass blades or a fix for
+the separate geometry/shading issue. The short strafe is not full LOD-flight
+acceptance. No road/village placement, terrain heights, normals or lighting edit.
+
+Two regressions: explicit near/far contrast/path budget (red before fix), and
+close grass/soil texture frequency energy >2x the landscape counterpart. Existing
+broad-layer means and shader/mip/tileability checks retained. Full838 pass/same6
+known failures/79ignored; all168 scenarios load. Logs and immutable binaries are
+in test-runs/ground-detail-2026-10-31. Dedicated doc has commands/evidence/timings.
+Initial orbit pair gave3/4 identical captures with one early localized patch
+differing; concurrent Claude compilation invalidated its timings, and the shell
+was interrupted after the renderer finished. Do not use that as all-frame parity.
+Final held-pose performance results are recorded separately in the dedicated doc.
+
+Final controlled validation: held-pose before1793447640-19572 / after1793447685-19812
+(opened), plus repeats1793447777-20305 /1793447734-20076. Before repeats identical;
+after repeats identical. New scripts/check-ground-detail.py requires1.35x fine
+contrast and identical sky/inn-wall controls: final1.489x passes; gain-only trial
+fails specifically on the contrast condition. Not a photorealism acceptance test.
+Low, M1000M, X11/Immediate1280x647, roads on/traffic off; waited out all builds,
+then ABBA p50s58.630/58.703/58.566/58.494ms, means58.562->58.6345 (+0.0725ms,
+within run variation). All4 manifests pass. Later Claude build was verified in
+separate catingard-people checkout, began11:57:49 after the last control11:57:01;
+no overlap with this final pair. Check/release pass, same2 warnings. No need to
+pause the other checkout now. See dedicated doc for raw p95/p99/method/limits.

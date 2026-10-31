@@ -3321,6 +3321,7 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
     terrain_albedo = mix(base_biome_color, terrain_albedo, 0.34);
     // The close-range detail texture, domain-warped and triplanar like the
     // materials above it.
+    let fine_weight = terrain_material_fine_weight(length(input.camera_relative_view_position));
     var detail_tint = vec3<f32>(1.0);
     if !ABLATE_FRAGMENT_TINT {
         detail_tint = terrain_material_tint(
@@ -3335,14 +3336,17 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         input.terrain_detail_meters_and_fog_amount.x,
         input.detail_anchor_direction,
         input.detail_local_meters,
-        terrain_material_fine_weight(
-            length(input.camera_relative_view_position),
-        ),
+        fine_weight,
     );
     }
-    // Let the material maps add subtle grain without turning their fine detail
-    // into high-contrast streaks from a close camera.
-    detail_tint = mix(vec3<f32>(1.0), detail_tint, 0.08);
+    // Existing filtered samples provide the underfoot texture. A constant 8%
+    // here erased it even a metre from the eye; fade the visible contrast with
+    // the same close-tile weight so flight/orbit retain their original look.
+    detail_tint = mix(vec3<f32>(1.0), detail_tint, mix(
+        TERRAIN_MATERIAL_TINT_FAR_STRENGTH,
+        TERRAIN_MATERIAL_TINT_NEAR_STRENGTH,
+        fine_weight,
+    ));
     var textured_terrain_albedo = terrain_albedo * detail_tint;
     if BODY_HAS_ATMOSPHERE && outmap {
         let vegetation_share = clamp(
@@ -3374,7 +3378,10 @@ fn terrain_fragment_color(input: VertexOutput) -> vec4<f32> {
         input.outmap_and_macro_height.y + input.terrain_detail_meters_and_fog_amount.x
             - input.surface_height_and_fog_color.x);
     let village_path = village_path_fragment(view_to_planet(input.camera_relative_view_position), input.surface_height_and_fog_color.x);
-    textured_terrain_albedo = village_path_albedo_from(textured_terrain_albedo, village_path);
+    textured_terrain_albedo = village_path_albedo_from(
+        textured_terrain_albedo, village_path,
+        mix(1.0, dot(detail_tint, vec3<f32>(0.2126, 0.7152, 0.0722)), fine_weight),
+    );
     // Rain darkens exposed ground; accumulated snow replaces the material only
     // where the coupled surface field says it has persisted. Ocean and lake
     // branches returned above, and non-ice land remains matte.

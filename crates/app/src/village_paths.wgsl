@@ -132,16 +132,19 @@ fn village_path_fragment(planet_offset: vec3<f32>, height: f32) -> vec3<f32> {
     return vec3<f32>(village_path_local_coverage(p, pixel_width), p);
 }
 fn village_path_albedo(albedo: vec3<f32>, planet_offset: vec3<f32>, height: f32) -> vec3<f32> {
-    return village_path_albedo_from(albedo, village_path_fragment(planet_offset, height));
+    return village_path_albedo_from(albedo, village_path_fragment(planet_offset, height), 1.0);
 }
-fn village_path_albedo_from(albedo: vec3<f32>, path: vec3<f32>) -> vec3<f32> {
+fn village_path_albedo_from(albedo: vec3<f32>, path: vec3<f32>, ground_grain: f32) -> vec3<f32> {
     let wear = path.x;
     let p = path.yz;
     if wear <= 0.0 { return albedo; }
     // Muted compacted soil, with low-contrast broad mottling; the terrain's
     // existing detail, normals, rain/snow and illumination remain in charge.
     let mottling = 0.94 + 0.06 * sin(p.x * 1.7 + sin(p.y * 0.8)) * sin(p.y * 2.1);
-    let earth = vec3<f32>(0.19, 0.135, 0.082) * mottling;
+    // Reuse the terrain's already mip-filtered grain instead of painting over
+    // it with flat brown. The flat/categorical debug path supplies unity.
+    let grain = clamp(ground_grain, 0.6, 1.4);
+    let earth = vec3<f32>(0.19, 0.135, 0.082) * mottling * grain;
     return mix(albedo, mix(albedo * vec3<f32>(0.88, 0.72, 0.55), earth, 0.8), wear * 0.9);
 }
 fn village_path_clears_tree(direction: vec3<f32>) -> bool {

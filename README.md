@@ -159,6 +159,11 @@ The ground under a path is smoothed and ramps to the court floor at its mouth;
 `PLANET_VILLAGE_PATH_SHAPING=0` turns that off and `PLANET_VILLAGE_PATHS=0`
 removes the paths altogether.
 
+Close grass and soil now use finer material grain instead of a nearly flat
+landscape tint; worn paths retain that grain too. Distant materials and terrain
+geometry are unchanged. `ground_detail_village` and `ground_detail_walk` replay
+the reported ground-level view; see `docs/GROUND_DETAIL_2026_10_31.md`.
+
 Villages now have a central timber inn, an open carpenter workshop and a market
 canopy, with wooden signs and access paths. Sparse coastal outposts add a harbour
 warehouse, walkable timber pier and a lighthouse on a suitable nearby headland;

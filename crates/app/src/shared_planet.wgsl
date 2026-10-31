@@ -269,6 +269,11 @@ const TERRAIN_MATERIAL_DETAIL_WARP_TILES: f32 = 0.85;
 // How far the close-range grain may push the albedo either side of the colour
 // the biome and the 2km tile already agreed on.
 const TERRAIN_MATERIAL_DETAIL_STRENGTH: f32 = 0.55;
+// The close tile is already warped and mip/anisotropy filtered. Keep its grain
+// visible underfoot instead of spending those fetches on a nearly flat tint;
+// retain the established distant contrast as the close tile fades away.
+const TERRAIN_MATERIAL_TINT_NEAR_STRENGTH: f32 = 0.65;
+const TERRAIN_MATERIAL_TINT_FAR_STRENGTH: f32 = 0.08;
 // How much of the layer-blend height comes from the close-range tile rather
 // than the 2km one. This is what varies the material boundaries themselves at
 // metre scale instead of only shading a single material.
@@ -4569,10 +4574,12 @@ fn triplanar_material_sample(
     if fine_weight <= 0.0 {
         return coarse;
     }
-    let fine = triplanar_material_sample_at_position(layer, fine_position, weights);
-    // Modulate rather than replace. Both samples come from the same layer, so
-    // their brightness ratio has a mean of one whatever that layer's palette
-    // is, and the close-range tile can add grain without dragging the hue --
+    // Landscape colour remains in layers 0..3. The close grass/soil pair
+    // carries actual fine grain instead of another scale of broad blobs.
+    let fine_layer = select(layer, layer + 4, layer < 2);
+    let fine = triplanar_material_sample_at_position(fine_layer, fine_position, weights);
+    // Modulate rather than replace. Both samples share the material's palette,
+    // so the close-range tile can add grain without replacing the biome hue --
     // and without its repeat showing up as repeating colour.
     let luminance = vec3<f32>(0.2126, 0.7152, 0.0722);
     let ratio = clamp(

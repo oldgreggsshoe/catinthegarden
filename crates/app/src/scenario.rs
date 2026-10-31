@@ -475,6 +475,8 @@ scenarios! {
     "alpine_survey_8_directions" => "../scenarios/alpine_survey_8_directions.json",
     "village_paths" => "../scenarios/village_paths.json",
     "village_services" => "../scenarios/village_services.json",
+    "ground_detail_village" => "../scenarios/ground_detail_village.json",
+    "ground_detail_walk" => "../scenarios/ground_detail_walk.json",
     "coastal_services" => "../scenarios/coastal_services.json",
     "coastal_services_performance" => "../scenarios/coastal_services_performance.json",
     "road_traffic" => "../scenarios/road_traffic.json",
@@ -1264,7 +1266,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 166);
+        assert_eq!(SCENARIO_NAMES.len(), 168);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

@@ -247,7 +247,8 @@ const MAX_ANIMATED_LOD_TOPOLOGY_CHANGES: usize = 64;
 /// without pretending to add missing baked height data to ancestor tiles.
 /// A full mip chain keeps the triplanar samples stable as the camera climbs.
 const TERRAIN_MATERIAL_TEXTURE_SIZE: u32 = 256;
-const TERRAIN_MATERIAL_LAYER_COUNT: u32 = 4;
+// Four landscape layers plus close-only vegetation/earth grain. Same lookups.
+const TERRAIN_MATERIAL_LAYER_COUNT: u32 = 6;
 /// A 129-sample outmap tile contains 128 logical quads while the shared chunk
 /// grid contains 32. Two extra quadtree levels split one source tile into a
 /// 4x4 set of chunks and therefore consume every available height sample.
@@ -4867,6 +4868,8 @@ fn terrain_material_layer_texels(layer: u32, texture_size: usize) -> Vec<u8> {
 
 fn terrain_material_texel(layer: u32, x: usize, y: usize, texture_size: usize) -> [u8; 4] {
     debug_assert!(layer < TERRAIN_MATERIAL_LAYER_COUNT);
+    let close = layer >= 4;
+    let layer = if close { layer - 4 } else { layer };
     let seed = 0x51f1_5e5d_u32.wrapping_add(layer.wrapping_mul(0x9e37_79b9));
     let broad = tileable_value_noise_seeded(x, y, 64, texture_size, seed);
     let medium = tileable_value_noise_seeded(x, y, 16, texture_size, seed ^ 0xa511_e9b3);
@@ -4909,6 +4912,15 @@ fn terrain_material_texel(layer: u32, x: usize, y: usize, texture_size: usize) -
             (broad * 0.56 + medium * 0.30 + grain * 0.14).clamp(0.0, 1.0),
             (0.38 + broad * 0.34 + medium * 0.20 + fine * 0.08).clamp(0.0, 1.0),
         ),
+    };
+    // The landscape layers deliberately put most colour into broad patches.
+    // Repeating those at 6m made the close sample another smooth green wash.
+    // Give only the two close layers decimetre clumps and centimetre litter;
+    // all four broad textures (and their measured means) remain bit-identical.
+    let color_amount = if close {
+        broad * 0.10 + medium * 0.15 + fine * 0.55 + grain * 0.20
+    } else {
+        color_amount
     };
     let color = [
         low[0] + (high[0] - low[0]) * color_amount,
@@ -6350,6 +6362,35 @@ mod tests {
     }
 
     #[test]
+    fn close_ground_keeps_visible_filtered_texture_contrast() {
+        let shader = planet_shader_source();
+        let strength = |name: &str| -> f32 {
+            shader
+                .split(&format!("const {name}: f32 = "))
+                .nth(1)
+                .and_then(|s| s.split(';').next())
+                .and_then(|s| s.trim().parse().ok())
+                .expect("ground detail has an explicit near/far contrast budget")
+        };
+        let near = strength("TERRAIN_MATERIAL_TINT_NEAR_STRENGTH");
+        let far = strength("TERRAIN_MATERIAL_TINT_FAR_STRENGTH");
+        assert!(
+            (0.4..=1.0).contains(&near),
+            "the old 8% tint erased underfoot texture"
+        );
+        assert_eq!(far, 0.08, "distant material contrast must stay unchanged");
+        let fragment = shader.split("fn terrain_fragment_color(").nth(1).unwrap();
+        assert!(fragment.contains("TERRAIN_MATERIAL_TINT_NEAR_STRENGTH,\n        fine_weight"));
+        assert!(fragment.contains("let fine_weight = terrain_material_fine_weight("));
+        assert!(
+            shader.contains("vec3<f32>(0.19, 0.135, 0.082) * mottling * grain"),
+            "compacted path soil must retain the already filtered ground grain"
+        );
+        assert!(fragment.contains("0.0722)), fine_weight)"),
+            "path grain must fade out with the close tile too");
+    }
+
+    #[test]
     fn planet_shader_validates_with_filtered_runtime_detail_noise() {
         let shader = planet_shader_source();
         let module = wgpu::naga::front::wgsl::parse_str(&shader)
@@ -6372,7 +6413,7 @@ mod tests {
             .expect("detail function is present");
         assert!(detail.contains("smoothstep(filter_meters"));
         assert!(shader.contains("terrain_albedo = mix(base_biome_color, terrain_albedo, 0.34);"));
-        assert!(shader.contains("detail_tint = mix(vec3<f32>(1.0), detail_tint, 0.08);"));
+        assert!(shader.contains("TERRAIN_MATERIAL_TINT_NEAR_STRENGTH,\n        fine_weight"));
     }
 
     #[test]
@@ -7048,6 +7089,30 @@ mod tests {
             minimum <= 1.0,
             "normal probe floor {minimum}m cannot resolve metre-scale ground detail"
         );
+    }
+
+    #[test]
+    fn close_grass_and_soil_carry_finer_grain_than_landscape_layers() {
+        let size = TERRAIN_MATERIAL_TEXTURE_SIZE as usize;
+        let energy = |layer| {
+            let p = terrain_material_layer_texels(layer, size);
+            let mut sum = 0.0_f64;
+            for y in 0..size {
+                for x in 0..size {
+                    let a = (x + y * size) * 4 + 1;
+                    let b = ((x + 1) % size + y * size) * 4 + 1;
+                    sum += (f64::from(p[a]) - f64::from(p[b])).powi(2);
+                }
+            }
+            sum / (size * size) as f64
+        };
+        assert!(TERRAIN_MATERIAL_LAYER_COUNT >= 6);
+        for layer in 0..2 {
+            assert!(energy(layer + 4) > energy(layer) * 2.0,
+                "the close layer needs real high-frequency content, not just a contrast gain");
+        }
+        let shader = planet_shader_source();
+        assert!(shader.contains("select(layer, layer + 4, layer < 2)"));
     }
 
     #[test]
