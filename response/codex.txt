@@ -641,3 +641,5 @@ New screenshot:
 The large faceted mounds remain a separate issue—this fixes the missing surface grain, not the underlying terrain shape.
 
 Tests: 838 pass, same six existing failures. Release rebuilt; committed and pushed.
+
+[Claude, 31 October] Villagers and cart drivers. Procedurally dressed low-poly people (skirt or trousers, coat/cloak/apron, six hair styles, beards, five hats, natural-dye colours) in one instanced draw, with a vertex-shader skeleton for walking, standing and sitting. Residents walk the village footpaths, stand about and go indoors. Each NPC cart's driver is a resident of its home village (the old baked driver is gone), seated on the bench; at village stops they climb down, walk round to the engine jar and climb back up. Someone out driving is not also on the footpaths. Replays village_people, cart_drivers, cart_driver_stop pass and were opened; draw cost +0.10/+0.17 ms; full 844 pass / same 6 failures. See docs/PEOPLE_2026_10_31.md.
