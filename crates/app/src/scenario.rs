@@ -52,6 +52,9 @@ pub struct ScenarioAssertions {
     #[serde(default)]
     pub required_public_buildings: Vec<String>,
     pub min_peak_traffic_vehicles: Option<usize>,
+    /// Villagers seen at once on the footpaths, and cart drivers drawn.
+    pub min_peak_walkers: Option<usize>,
+    pub min_peak_drivers: Option<usize>,
     pub min_traffic_travel_metres: Option<f64>,
     pub ice_sample_uv: Option<[f32; 2]>,
     pub min_ice_sample_luminance: Option<f32>,
@@ -145,6 +148,8 @@ impl Default for ScenarioAssertions {
             require_constant_village_siting: false,
             required_public_buildings: Vec::new(),
             min_peak_traffic_vehicles: None,
+            min_peak_walkers: None,
+            min_peak_drivers: None,
             min_traffic_travel_metres: None,
             ice_sample_uv: None,
             min_ice_sample_luminance: None,
@@ -481,6 +486,9 @@ scenarios! {
     "coastal_services_performance" => "../scenarios/coastal_services_performance.json",
     "road_traffic" => "../scenarios/road_traffic.json",
     "road_traffic_tunnel" => "../scenarios/road_traffic_tunnel.json",
+    "cart_drivers" => "../scenarios/cart_drivers.json",
+    "cart_driver_stop" => "../scenarios/cart_driver_stop.json",
+    "village_people" => "../scenarios/village_people.json",
     "village_footpath_gate" => "../scenarios/village_footpath_gate.json",
     "lake_surface" => "../scenarios/lake_surface.json",
     "lake_motion" => "../scenarios/lake_motion.json",
@@ -1266,7 +1274,7 @@ mod tests {
     /// nor listed but broken. This is what makes the suggestion trustworthy.
     #[test]
     fn every_listed_scenario_loads() {
-        assert_eq!(SCENARIO_NAMES.len(), 168);
+        assert_eq!(SCENARIO_NAMES.len(), 171);
         for name in SCENARIO_NAMES {
             ScenarioRunner::load(name)
                 .unwrap_or_else(|error| panic!("{name} is listed but invalid: {error}"));

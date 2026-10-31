@@ -968,8 +968,9 @@ pub fn build(
     sites: &[DVec3],
     camera: DVec3,
     cancelled: &impl Fn() -> bool,
-) -> Result<(Frame, Vec<[f32; 4]>, crate::road_signs::Mesh), String> {
+) -> Result<Built, String> {
     let frame = Frame::new(camera.normalize(), crate::planet::planet_radius_meters())?;
+    let mut walkways = Vec::new();
     let mut groups = BTreeMap::<[u64; 3], Vec<usize>>::new();
     for (i, site) in sites.iter().enumerate() {
         groups
@@ -1064,6 +1065,20 @@ pub fn build(
                 .local(local.world(p.extend(0.0)).normalize() * frame.radius)
                 .truncate()
         };
+        // The same lanes as a walk graph for the villagers who wore them.
+        let name = court_entry_of.map_or_else(
+            || crate::road_navigation::village_name(site),
+            |(village, _)| crate::road_navigation::village_name(*village),
+        );
+        let segments: Vec<_> = routed.iter().map(|t| (t.a, t.b)).collect();
+        let door_points: Vec<_> = houses.iter().map(|h| h.centre - h.forward * 4.15).collect();
+        walkways.push(crate::crowd::Walkway::from_trails(
+            name,
+            &segments,
+            &door_points,
+            court.map(|_| goal),
+            |p| local.world(p.extend(0.0)).normalize(),
+        ));
         mouths.extend(std::iter::repeat_n(mouth, routed.len()));
         trails.extend(routed.into_iter().map(|t| Trail {
             a: project(t.a),
@@ -1091,8 +1106,10 @@ pub fn build(
         crate::road_signs::Mesh::empty()
     });
     tracing::info!(target:"planet::villages", villages=groups.len(), segments=trails.len(), connected_doors=connected, doors=doors, gateways=gates.len(), "village desire lines built");
-    Ok((frame, data, gate_mesh))
+    Ok((frame, data, gate_mesh, walkways))
 }
+/// Packed path atlas, gateway signs and the villagers' walk graphs.
+pub type Built = (Frame, Vec<[f32; 4]>, crate::road_signs::Mesh, Vec<crate::crowd::Walkway>);
 
 struct Request {
     generation: u64,
@@ -1104,7 +1121,7 @@ struct Request {
     sites: Vec<DVec3>,
     camera: DVec3,
 }
-type ResultData = Result<(Frame, Vec<[f32; 4]>, crate::road_signs::Mesh), String>;
+type ResultData = Result<Built, String>;
 #[derive(Default)]
 struct Pending {
     request: Option<Request>,

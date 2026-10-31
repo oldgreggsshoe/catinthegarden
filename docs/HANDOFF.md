@@ -10,7 +10,18 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 31 October: close ground material grain.** Reproduced the user's
+**Current phase, 31 October: villagers and cart drivers.** Procedurally dressed
+low-poly people (garments, hair, beards, hats, natural dyes) in one instanced
+draw, posed in the vertex shader for walking/standing/sitting. Village residents
+walk the worn footpaths (walk graph from the path worker), stand about and go
+indoors; each cart's driver is a resident of its home village, seated on the
+bench, and at a village stop climbs down, walks round to the engine jar and
+back. Residents out driving are not on the footpaths. New replays
+`village_people`, `cart_drivers`, `cart_driver_stop` pass and were opened;
+matched draw cost +0.10/+0.17 ms; full 844 pass/same 6 failures. See
+docs/PEOPLE_2026_10_31.md and the final dated section.
+
+**Previous phase, 31 October: close ground material grain.** Reproduced the user's
 smooth green foreground with a camera reconstructed from logged surface probes.
 The 8% final tint and broad-heavy colour texture erased most underfoot detail;
 raising gain alone was insufficient. Two fine grass/soil layers now reuse the
@@ -15043,3 +15054,46 @@ within run variation). All4 manifests pass. Later Claude build was verified in
 separate catingard-people checkout, began11:57:49 after the last control11:57:01;
 no overlap with this final pair. Check/release pass, same2 warnings. No need to
 pause the other checkout now. See dedicated doc for raw p95/p99/method/limits.
+
+## 31 October — villagers on the footpaths, residents driving the carts
+
+User asked for person models with different clothes and hair, a walking
+animation, and the same people in the carts when driving.
+
+- `people.rs`/`people.wgsl`: superset body (17,424 near / 3,546 far vertices),
+  per-vertex tags (bone, colour slot, garment group, allowed choices); instance
+  selection bits collapse unworn parts. 11 rigid bones posed from walk phase,
+  walk weight, sit weight and head turn. `Person::from_key`, `resident_key(village,
+  index)`, 24 residents per village. Renderer: lit run (drivers, road lamp lists
+  via `RoadNetworkRenderer::lighting`) and outdoor run (empty lamp group), each
+  near/far; blended contact shadow for people on foot; 512 cap, 450 m.
+- `village_paths::build` now also returns `crowd::Walkway`s (same trails, door
+  points, court mouth; named from the court's village vector so names match
+  traffic). `crowd.rs` simulates walkers for the 8 nearest villages: stand,
+  choose home/court/door/anywhere, Dijkstra, walk at their pace, keep left 0.35 m,
+  follow at 40% speed behind same-direction walkers, turn at 5 rad/s, go indoors
+  at doors. Heights from `village_raster_height_at` within 450 m (ground
+  distance — the first version measured from sea level and drew nobody).
+  `VillageRenderer::update_people(dt, terrain, eye, away, out)` on scene time.
+- `traffic.rs`: `Route::home`, `Agent::driver` (unused resident of the home
+  village, else a traveller), `Agent::stop()` (elapsed/total dwell),
+  `Controller::driver_pose` for the new replays. `traffic_render`: baked driver
+  removed; `driver()` places the person, `choreography()` is the pure stop
+  timeline (seat → across at seat height → down → round the back → engine →
+  back → up; stays seated if the stop is < ~8 s).
+- main.rs gathers drivers and walkers each frame, records peaks
+  (`min_peak_walkers`, `min_peak_drivers` assertions), draws after villages.
+  `PLANET_VILLAGERS=0`, `PLANET_DISABLE=people`.
+- Evidence (opened): village_people/1793450594-30608, cart_drivers/1793448636-23059,
+  cart_driver_stop/1793448697-23194, road_traffic_tunnel/1793450329-28371
+  (driver lit by bore lanterns; that replay needs the longest_undersea site).
+- Timing (High, X11/Immediate, 1280x800, roads on, off = PLANET_DISABLE=people
+  so cameras match; p50 off/on/on/off): village_people 77.022/77.237/77.274/77.279,
+  cart_drivers 91.353/91.574/91.515/91.390 → +0.10/+0.17 ms, not FPS-neutral.
+- Tests: 6 new (people 3, crowd 2, traffic_render choreography); registry 169;
+  full 844 pass / same 6 failures / 79 ignored (after rebasing onto the ground-grain commit).
+- The monitor/DPMS was off and the session locked mid-session; a scenario stalled
+  with frames not presenting until `xset dpms force on`.
+- Not done: children, conversations/gestures, walkers in courts or on piers,
+  collision with the player, a body for the player, reins (no horses).
+

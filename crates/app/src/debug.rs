@@ -134,6 +134,8 @@ struct AssertionTracker {
     config: ScenarioAssertions,
     sample_count: usize,
     peak_traffic: usize,
+    peak_drivers: usize,
+    peak_walkers: usize,
     public_buildings: u32,
     traffic_travelled: f64,
     non_finite_samples: usize,
@@ -198,6 +200,8 @@ impl AssertionTracker {
             config,
             sample_count: 0,
             peak_traffic: 0,
+            peak_drivers: 0,
+            peak_walkers: 0,
             public_buildings: 0,
             traffic_travelled: 0.0,
             non_finite_samples: 0,
@@ -896,6 +900,18 @@ impl AssertionTracker {
                 .filter(|name| names.iter().position(|n| n == &name.as_str()).is_none_or(|i| self.public_buildings & (1 << i) == 0)).collect();
             results.push(assertion_result("public_buildings_present", missing.is_empty(), format!("missing {:?}; observed mask {:#x}", missing, self.public_buildings)));
         }
+        if let Some(minimum) = self.config.min_peak_walkers {
+            results.push(assertion_result(
+                "villagers_walk_the_paths", self.peak_walkers >= minimum,
+                format!("required {minimum}, observed {} villagers in view", self.peak_walkers),
+            ));
+        }
+        if let Some(minimum) = self.config.min_peak_drivers {
+            results.push(assertion_result(
+                "carts_have_drivers", self.peak_drivers >= minimum,
+                format!("required {minimum}, observed {} drivers in view", self.peak_drivers),
+            ));
+        }
         if let Some(minimum) = self.config.min_peak_traffic_vehicles {
             results.push(assertion_result(
                 "traffic_is_populated", self.peak_traffic >= minimum,
@@ -1285,6 +1301,11 @@ impl RunArtifacts {
 
     pub fn record_public_buildings(&mut self, mask: u32) { self.assertion_tracker.public_buildings |= mask; }
 
+    pub fn record_people(&mut self, drivers: usize, walkers: usize) {
+        let t = &mut self.assertion_tracker;
+        t.peak_drivers = t.peak_drivers.max(drivers);
+        t.peak_walkers = t.peak_walkers.max(walkers);
+    }
     pub fn record_traffic(&mut self, count: usize, travelled: f64) {
         self.assertion_tracker.peak_traffic = self.assertion_tracker.peak_traffic.max(count);
         if travelled.is_finite() {
@@ -1905,6 +1926,8 @@ mod tests {
             require_constant_village_siting: false,
             required_public_buildings: Vec::new(),
             min_peak_traffic_vehicles: None,
+            min_peak_walkers: None,
+            min_peak_drivers: None,
             min_traffic_travel_metres: None,
             ice_sample_uv: None,
             min_ice_sample_luminance: None,

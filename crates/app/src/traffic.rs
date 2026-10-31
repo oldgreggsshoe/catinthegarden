@@ -39,7 +39,7 @@ pub fn enabled_for(scenario: Option<&str>) -> bool {
             Ok("1" | "on") => true,
             _ => {
                 scenario.is_none()
-                    || matches!(scenario, Some("road_traffic" | "road_traffic_tunnel"))
+                    || matches!(scenario, Some("road_traffic" | "road_traffic_tunnel" | "cart_drivers" | "cart_driver_stop"))
             }
         }
 }
@@ -80,6 +80,8 @@ pub struct Route {
     closed: bool,
     source: String,
     destination: String,
+    /// The village whose residents drive this route, if it touches one.
+    home: Option<String>,
 }
 impl Route {
     pub fn at(&self, metres: f64) -> Pose {
@@ -590,6 +592,10 @@ fn itinerary(
         closed: source.court.is_some() && destination.court.is_some(),
         source: source.name.clone(),
         destination: destination.name.clone(),
+        home: source
+            .court
+            .map(|_| source.name.clone())
+            .or_else(|| destination.court.map(|_| destination.name.clone())),
     };
     let last_forward = *forward.points.last()?;
     let first_back = reverse.points[0];
@@ -829,8 +835,22 @@ pub struct Agent {
     pub fade: f64,
     pub travelled: f64,
     pub stranded: bool,
+    /// Who drives: a resident of the route's home village (people::Person key).
+    pub driver: u64,
+    dwell_total: f64,
 }
 impl Agent {
+    /// Seconds into and total length of the current village stop, if stopped.
+    pub fn stop(&self, alpha: f64) -> Option<(f64, f64)> {
+        (self.dwell > 0.0 && self.dwell_total > 0.0).then(|| {
+            let elapsed = self.dwell_total - self.dwell + alpha * STEP;
+            (elapsed.min(self.dwell_total), self.dwell_total)
+        })
+    }
+    /// Whether the driver is a village resident (else a passing traveller).
+    pub fn home(&self) -> Option<&str> {
+        self.route.home.as_deref()
+    }
     pub fn pose(&self, alpha: f64) -> Pose {
         self.route
             .at(self.previous + (self.distance - self.previous) * alpha)
@@ -935,10 +955,24 @@ impl Simulation {
             {
                 continue;
             }
+            // A resident of the home village not already driving another cart.
+            let driver = match route.home.as_deref() {
+                Some(home) => (0..crate::people::RESIDENTS)
+                    .map(|k| {
+                        crate::people::resident_key(
+                            home,
+                            ((hash(seed ^ 0xd21e) + k as u64) % crate::people::RESIDENTS as u64) as u32,
+                        )
+                    })
+                    .find(|key| !self.agents.iter().any(|a| a.driver == *key))
+                    .unwrap_or(hash(seed ^ 0x7ae1)),
+                None => hash(seed ^ 0x7ae1),
+            };
+            let route = route.clone();
             self.agents.push(Agent {
                 id: seed,
                 kind: (seed % 2) as u32,
-                route: route.clone(),
+                route,
                 distance: s,
                 previous: s,
                 speed: 0.0,
@@ -949,6 +983,8 @@ impl Simulation {
                 fade: 0.0,
                 travelled: 0.0,
                 stranded: false,
+                driver,
+                dwell_total: 0.0,
             });
         }
         if self.agents.len() >= self.target_population.min(4) {
@@ -1101,6 +1137,7 @@ impl Simulation {
                     a.distance = s;
                     a.speed = 0.0;
                     a.dwell = 8.0 + unit(a.id ^ id as u64) * 12.0;
+                    a.dwell_total = a.dwell;
                     a.served = id;
                     self.trips += 1;
                     tracing::debug!(target:"planet::traffic",id=a.id,source=%a.route.source,destination=%a.route.destination,"traffic arrived at village court");
@@ -1255,6 +1292,8 @@ pub struct Controller {
     pub simulation: Option<Simulation>,
     log_time: std::time::Instant,
     request_eye: DVec3,
+    /// The cart an inspection camera is following, once chosen.
+    followed: std::cell::Cell<Option<u64>>,
 }
 impl Controller {
     pub fn new(active: bool) -> Self {
@@ -1264,7 +1303,52 @@ impl Controller {
             simulation: None,
             log_time: std::time::Instant::now(),
             request_eye: DVec3::ZERO,
+            followed: Default::default(),
         }
+    }
+    /// A close camera on a cart's driver: alongside ahead of a moving cart,
+    /// or (`stop`) the cart nearest a village stop, from its back corner,
+    /// where the driver climbs down and comes round to the engine jar.
+    pub fn driver_pose(&self, stop: bool) -> Option<(DVec3, DVec3)> {
+        let sim = self.simulation.as_ref()?;
+        let chosen = self.followed.get().and_then(|id| sim.agents.iter().find(|a| a.id == id));
+        let a = match chosen {
+            Some(a) => a,
+            None => {
+                let a = if stop {
+                    sim.agents
+                        .iter()
+                        .filter(|a| !a.stranded)
+                        .min_by(|x, y| {
+                            let next = |a: &Agent| {
+                                if a.dwell > 0.0 {
+                                    return -1.0;
+                                }
+                                a.route.next_stop(a.distance, a.served).map_or(f64::INFINITY, |(_, s)| s - a.distance)
+                            };
+                            next(x).total_cmp(&next(y))
+                        })?
+                } else {
+                    sim.agents.iter().find(|a| !a.stranded && a.route.closed)?
+                };
+                self.followed.set(Some(a.id));
+                a
+            }
+        };
+        let p = a.pose(sim.alpha());
+        let up = p.position.normalize();
+        let right = p.forward.cross(up).normalize();
+        Some(if stop {
+            (
+                p.position - p.forward * 5.5 - right * 4.6 + up * 2.1,
+                p.position - p.forward * 0.9 - right * 0.7 + up * 1.0,
+            )
+        } else {
+            (
+                p.position + p.forward * 6.5 - right * 3.4 + up * 2.3,
+                p.position + p.forward * 0.9 + up * 1.65,
+            )
+        })
     }
     pub fn update(
         &mut self,
@@ -1407,6 +1491,8 @@ mod tests {
             fade: 1.0,
             travelled: 0.0,
             stranded: false,
+            driver: id,
+            dwell_total: 0.0,
         }
     }
     #[test]
@@ -1638,6 +1724,7 @@ mod tests {
             closed: false,
             source: "START".into(),
             destination: "DESTINATION".into(),
+            home: None,
         })
     }
     #[test]

@@ -178,6 +178,24 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village
 env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=0 PLANET_ROAD_NETWORK=0 cargo run --release -p planet-app -- --scenario coastal_services
 ```
 
+Villages have **residents**: procedurally dressed people (skirts or trousers,
+coats, cloaks, aprons, six hair styles, beards, five kinds of hat, natural-dye
+colours) who walk the worn footpaths between doors and the court, stand about,
+and go indoors for a while. Cart and carriage drivers are drawn from the same
+residents: a cart's driver lives in its home village, sits on the bench, and at
+a village stop climbs down, walks round to look at the engine jar and climbs
+back up. Someone out driving is not also on the footpaths. Everyone is one
+instanced draw posed in the vertex shader (walk, stand, sit).
+`PLANET_VILLAGERS=0` empties the footpaths; `PLANET_DISABLE=people` hides
+everyone (drivers included). Inspection replays (follow a walker; ride beside a
+driver; watch a stop):
+
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village cargo run --release -p planet-app -- --scenario village_people
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village PLANET_TRAFFIC_WAIT=1 cargo run --release -p planet-app -- --scenario cart_drivers
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village PLANET_TRAFFIC_WAIT=1 cargo run --release -p planet-app -- --scenario cart_driver_stop
+```
+
 Interior overhead boards are spaced 500m along the engineered bore, with a
 separate remaining-exit distance on each face (normally rounded to500m).
 Distances cross region/residency boundaries; portal headers remain. Automated

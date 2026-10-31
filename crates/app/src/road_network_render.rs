@@ -270,6 +270,8 @@ impl NetworkRenderer {
             "road_network_signs" => self.sign_pose.or(Some((eye, target))),
             "road_traffic" => self.traffic.inspection_pose(false),
             "road_traffic_tunnel" => self.traffic.inspection_pose(true),
+            "cart_drivers" => self.traffic.driver_pose(false),
+            "cart_driver_stop" => self.traffic.driver_pose(true),
             "road_network_parking" => {
                 let up = eye.normalize();
                 let forward = (target - eye).normalize();
@@ -415,6 +417,36 @@ impl NetworkRenderer {
             forward,
             cart,
         );
+    }
+    /// Drivers of the visible traffic, on their benches or out at a stop.
+    pub fn drivers(&self, eye: DVec3, view: DVec3, out: &mut Vec<crate::people::Placement>) {
+        let Some(sim) = self.traffic.simulation.as_ref() else {
+            return;
+        };
+        let field = &self.active.snapshot.field;
+        let matching = self.traffic.matches_field(field);
+        let alpha = sim.alpha();
+        for a in &sim.agents {
+            let p = a.pose(alpha).position - eye;
+            if p.length_squared() < 500.0 * 500.0 && p.dot(view) > -8.0 {
+                out.push(crate::traffic_render::driver(a, alpha, field, matching));
+            }
+        }
+    }
+    /// Residents currently out driving (they are not also on the footpaths).
+    pub fn driving_residents(&self) -> std::collections::HashSet<u64> {
+        self.traffic
+            .simulation
+            .as_ref()
+            .map(|sim| sim.agents.iter().filter(|a| a.home().is_some()).map(|a| a.driver).collect())
+            .unwrap_or_default()
+    }
+    /// Tunnel lamp lists (for anything else lit in the bores) and their frame.
+    pub fn lighting(&self) -> &wgpu::BindGroup {
+        &self.active.lighting
+    }
+    pub fn field_frame(&self) -> &crate::road_network_field::Frame {
+        &self.active.snapshot.field.frame
     }
     pub fn traffic_stats(&self) -> (usize, f64) {
         self.traffic.stats()

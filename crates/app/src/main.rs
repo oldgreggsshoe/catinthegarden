@@ -54,6 +54,8 @@ mod road_render;
 mod road_route;
 mod road_signs;
 mod cart_orb;
+mod crowd;
+mod people;
 mod road_tunnel;
 mod road_vertical;
 mod scenario;
@@ -1701,6 +1703,10 @@ struct State {
     /// The orb that pulls the cart (the magic motor, seen).
     cart_orb: cart_orb::Orb,
     cart_orb_renderer: cart_orb::Renderer,
+    /// Villagers on foot and the drivers of the carts, one instanced draw.
+    people_renderer: people::Renderer,
+    people_lit: Vec<people::Placement>,
+    people_outdoor: Vec<people::Placement>,
     /// Walking pose at the start of the last physics step, so the camera can be
     /// drawn between it and the current pose by the unspent part of a step.
     surface_previous_position: glam::DVec3,
@@ -2097,6 +2103,12 @@ impl State {
             hdr::HdrRenderer::SCENE_FORMAT,
             &camera_bind_group_layout,
         );
+        let people_renderer = people::Renderer::new(
+            &device,
+            &queue,
+            hdr::HdrRenderer::SCENE_FORMAT,
+            &camera_bind_group_layout,
+        );
         let forest = forest::ForestRenderer::new(
             &device,
             hdr::HdrRenderer::SCENE_FORMAT,
@@ -2352,6 +2364,9 @@ impl State {
             car: driving::Car::default(),
             cart_orb: cart_orb::Orb::default(),
             cart_orb_renderer,
+            people_renderer,
+            people_lit: Vec::new(),
+            people_outdoor: Vec::new(),
             surface_previous_position: glam::DVec3::ZERO,
             driving_brake: false,
             driving_mouse: driving::MouseSteering::default(),
@@ -6488,6 +6503,32 @@ impl State {
                 [self.size.width, self.size.height],
             );
         }
+        // Drivers come from the traffic, walkers from the village footpaths;
+        // the same residents, never both at once.
+        self.people_lit.clear();
+        self.people_outdoor.clear();
+        let view_direction = self.camera.planet_frame_direction_dvec3(planet_rotation_radians);
+        let mut away = std::collections::HashSet::new();
+        if let Some(roads) = &self.road_network {
+            roads.drivers(camera_planet_frame_position, view_direction, &mut self.people_lit);
+            away = roads.driving_residents();
+        }
+        self.villages.update_people(
+            delta_scene_time,
+            &self.terrain,
+            camera_planet_frame_position,
+            away,
+            &mut self.people_outdoor,
+        );
+        self.people_renderer.update(
+            &self.queue,
+            camera_planet_frame_position,
+            view_direction,
+            &self.people_lit,
+            &self.people_outdoor,
+            self.road_network.as_ref().map(|r| r.field_frame()),
+        );
+        self.artifacts.record_people(self.people_lit.len(), self.people_outdoor.len());
         if self.camera_mode == CameraMode::Driving {
             let (forward, up) = self.driving_body_axes();
             let (solid, additive) = self.cart_orb.geometry(
@@ -6936,6 +6977,14 @@ impl State {
                     &mut render_pass,
                     &self.camera_bind_group,
                     camera_sea_level_altitude_meters,
+                );
+            }
+            if subsystem_enabled("people") {
+                self.people_renderer.draw(
+                    &mut render_pass,
+                    &self.camera_bind_group,
+                    self.road_network.as_ref().map(|r| r.lighting()),
+                    !tunnel_enclosed && subsystem_enabled("villages"),
                 );
             }
             if subsystem_enabled("roads")

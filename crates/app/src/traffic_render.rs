@@ -163,6 +163,9 @@ fn wheel(mesh: &mut Vec<Vertex>, pivot: DVec3, part: u32) {
     );
 }
 pub const ORB_RADIUS: f64 = 0.12;
+/// The driver's bench: top surface height and its middle along the cart.
+pub const SEAT_TOP: f64 = 1.32;
+pub const SEAT_Y: f64 = 0.9;
 /// The engine box stands at the back of the bed (the bed's rear edge is at
 /// y = -1.75, its top at z = 0.88): base board, four corner posts and a lid,
 /// open between them so the jar shows.
@@ -239,8 +242,9 @@ fn engine_box(mesh: &mut Vec<Vertex>) {
     }
 }
 /// An NPC cart or carriage (`npc`), or the player's own: an empty open cart
-/// with no tailboard, driver or fixed orb, so the view from its seat is clear
-/// and the player's sprung orb (cart_orb) shows behind it.
+/// with no tailboard or fixed orb, so the view from its seat is clear and the
+/// player's sprung orb (cart_orb) shows behind it. Drivers are villagers
+/// (people.rs), drawn on the seat by their own instanced pipeline.
 fn mesh(carriage: bool, npc: bool) -> Vec<Vertex> {
     let mut mesh = Vec::new();
     let oak = [0.40, 0.27, 0.14];
@@ -339,40 +343,6 @@ fn mesh(carriage: bool, npc: bool) -> Vec<Vertex> {
     if !npc {
         return mesh;
     }
-    // Seated driver: coat, hood, boots and hands (no per-frame skeletal work).
-    box_part(
-        &mut mesh,
-        DVec3::new(-0.22, 0.82, 1.28),
-        DVec3::new(0.22, 1.12, 1.86),
-        [0.065, 0.095, 0.06],
-        0,
-        5,
-    );
-    sphere(
-        &mut mesh,
-        DVec3::new(0.0, 1.02, 2.02),
-        0.16,
-        [0.30, 0.17, 0.09],
-        4,
-    );
-    for x in [-0.16, 0.16] {
-        box_part(
-            &mut mesh,
-            DVec3::new(x - 0.06, 1.05, 1.0),
-            DVec3::new(x + 0.06, 1.46, 1.25),
-            [0.055, 0.04, 0.025],
-            0,
-            1,
-        );
-        box_part(
-            &mut mesh,
-            DVec3::new(x - 0.045, 1.08, 1.58),
-            DVec3::new(x + 0.045, 1.47, 1.7),
-            [0.075, 0.10, 0.055],
-            0,
-            5,
-        );
-    }
     // The same magic engine as the player, not an invisible horse.
     sphere(
         &mut mesh,
@@ -382,6 +352,136 @@ fn mesh(carriage: bool, npc: bool) -> Vec<Vertex> {
         3,
     );
     mesh
+}
+
+/// Right and up axes of a vehicle body at `position` heading `forward`.
+pub fn body_axes(position: DVec3, forward: DVec3) -> (DVec3, DVec3) {
+    let right = forward.cross(position.normalize()).normalize();
+    (right, right.cross(forward).normalize())
+}
+
+/// Where the driver is at a village stop, in the cart's frame (x right,
+/// y forward, z up from the ground under the body centre): climbs down the
+/// near side, walks round to look over the engine jar, walks back, climbs up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Choreography {
+    pub position: DVec3,
+    /// Facing, in the cart's frame (unit, horizontal).
+    pub facing: DVec3,
+    pub walk: f64,
+    pub sit: f64,
+    /// Metres walked so far this stop (drives the stride).
+    pub walked: f64,
+}
+const STEP_DOWN: DVec3 = DVec3::new(-1.35, 0.95, 0.0);
+const ROUND_BACK: DVec3 = DVec3::new(-1.35, -2.05, 0.0);
+const AT_ENGINE: DVec3 = DVec3::new(-0.5, -2.4, 0.0);
+const CLIMB_SECONDS: f64 = 1.1;
+/// Off the bench at fraction `u`: across at seat height first (clear of the
+/// side rail and wheel), then down. Returns the feet and how far down.
+fn climb(seat: DVec3, u: f64) -> (DVec3, f64) {
+    let smooth = |u: f64| {
+        let u = u.clamp(0.0, 1.0);
+        u * u * (3.0 - 2.0 * u)
+    };
+    let across = smooth(u / 0.6);
+    let drop = smooth((u - 0.4) / 0.6);
+    let flat = seat.truncate().lerp(STEP_DOWN.truncate(), across);
+    (flat.extend(seat.z * (1.0 - drop)), drop)
+}
+/// Feet of a seated driver of this height, hips on the bench.
+pub fn seat_feet(height: f64) -> DVec3 {
+    DVec3::new(0.0, SEAT_Y, SEAT_TOP + 0.06 * height - crate::people::HIP_HEIGHT * height)
+}
+pub fn choreography(person: &crate::people::Person, stop: Option<(f64, f64)>) -> Choreography {
+    let height = f64::from(person.height);
+    let seated = Choreography {
+        position: seat_feet(height),
+        facing: DVec3::Y,
+        walk: 0.0,
+        sit: 1.0,
+        walked: 0.0,
+    };
+    let Some((t, total)) = stop else {
+        return seated;
+    };
+    let pace = f64::from(person.pace);
+    let length = STEP_DOWN.distance(ROUND_BACK) + ROUND_BACK.distance(AT_ENGINE);
+    let walking = length / pace;
+    if total < 2.0 * CLIMB_SECONDS + 2.0 * walking + 1.0 {
+        return seated;
+    }
+    let smooth = |u: f64| {
+        let u = u.clamp(0.0, 1.0);
+        u * u * (3.0 - 2.0 * u)
+    };
+    let along = |s: f64| {
+        let first = STEP_DOWN.distance(ROUND_BACK);
+        if s < first {
+            (STEP_DOWN.lerp(ROUND_BACK, s / first), (ROUND_BACK - STEP_DOWN).normalize())
+        } else {
+            let u = ((s - first) / (length - first)).min(1.0);
+            (ROUND_BACK.lerp(AT_ENGINE, u), (AT_ENGINE - ROUND_BACK).normalize())
+        }
+    };
+    let ramp = |s: f64| (s / 0.5).min((length - s) / 0.5).clamp(0.0, 1.0);
+    let back = total - CLIMB_SECONDS - walking;
+    if t < CLIMB_SECONDS {
+        // Down off the bench, turning out and round to face the back.
+        let u = t / CLIMB_SECONDS;
+        let angle = std::f64::consts::PI * smooth(u);
+        let (position, drop) = climb(seated.position, u);
+        Choreography {
+            position,
+            facing: DVec3::new(-angle.sin(), angle.cos(), 0.0),
+            walk: 0.0,
+            sit: 1.0 - drop,
+            walked: 0.0,
+        }
+    } else if t < CLIMB_SECONDS + walking {
+        let s = (t - CLIMB_SECONDS) * pace;
+        let (position, facing) = along(s);
+        Choreography { position, facing, walk: ramp(s), sit: 0.0, walked: s }
+    } else if t < back {
+        // Looking over the orb in its jar.
+        Choreography { position: AT_ENGINE, facing: DVec3::Y, walk: 0.0, sit: 0.0, walked: length }
+    } else if t < total - CLIMB_SECONDS {
+        let s = length - (t - back) * pace;
+        let (position, facing) = along(s.max(0.0));
+        Choreography { position, facing: -facing, walk: ramp(s), sit: 0.0, walked: 2.0 * length - s }
+    } else {
+        let (position, drop) = climb(seated.position, (total - t) / CLIMB_SECONDS);
+        Choreography { position, facing: DVec3::Y, walk: 0.0, sit: 1.0 - drop, walked: 2.0 * length }
+    }
+}
+/// The agent's driver this frame: on the bench, or out stretching their legs
+/// at a village stop. Lit by the bore's lamps in a tunnel.
+pub fn driver(a: &traffic::Agent, alpha: f64, field: &Field, matching: bool) -> crate::people::Placement {
+    let person = crate::people::Person::from_key(a.driver);
+    let pose = a.pose(alpha);
+    let (right, up) = body_axes(pose.position, pose.forward);
+    let c = choreography(&person, a.stop(alpha));
+    let feet = pose.position + right * c.position.x + pose.forward * c.position.y + up * c.position.z;
+    let forward = (right * c.facing.x + pose.forward * c.facing.y).normalize();
+    let clock = a.travelled * 0.04 + (a.id % 97) as f64;
+    let phase = if c.walk > 0.0 {
+        crate::people::stride_phase(&person, c.walked)
+    } else {
+        clock + a.stop(alpha).map_or(0.0, |s| s.0)
+    };
+    let look = if c.sit > 0.5 { 0.45 * (clock * 0.7).sin() * (clock * 0.23).cos() } else { 0.25 * (clock * 1.3).sin() };
+    crate::people::Placement {
+        person,
+        feet,
+        forward,
+        up,
+        phase: phase as f32,
+        walk: c.walk as f32,
+        sit: c.sit as f32,
+        look: look as f32,
+        fade: a.fade as f32,
+        light: (pose.tunnel && matching && !a.stranded).then(|| (field.frame.local(feet), pose.light)),
+    }
 }
 
 pub struct Renderer {
@@ -553,8 +653,7 @@ impl Renderer {
                 if relative.length_squared() > 2000.0 * 2000.0 || relative.dot(view) < -5.0 {
                     continue;
                 }
-                let right = pose.forward.cross(pose.position.normalize()).normalize();
-                let up = right.cross(pose.forward).normalize();
+                let (right, up) = body_axes(pose.position, pose.forward);
                 let ahead = a.future_pose(3.0);
                 let yaw = pose
                     .forward
@@ -652,10 +751,14 @@ mod tests {
                 let p = DVec3::from(v.position.map(f64::from));
                 assert!((p - DVec3::new(0.0, JAR_Y, ORB_Z)).length() < ORB_RADIUS + 1e-3, "{p:?}");
             }
-            // The player's cart has no fixed orb or driver: its own sloshing
-            // orb (cart_orb) draws in the jar and the view is from the seat.
+            // The player's cart has no fixed orb: its own sloshing orb
+            // (cart_orb) draws in the jar and the view is from the seat.
+            // Nobody is baked into any cart: drivers are villager instances.
             assert_eq!(magic.is_empty(), !npc);
-            assert_eq!(m.iter().any(|v| v.lighting >> 8 == 4), npc);
+            assert!(!m.iter().any(|v| matches!(v.lighting >> 8, 4 | 5)));
+            // The seat a driver sits on is there, clear of the canopy.
+            assert!(m.iter().any(|v| (v.position[2] - SEAT_TOP as f32).abs() < 1e-4
+                && (v.position[1] as f64) > SEAT_Y - 0.2 && (v.position[1] as f64) < SEAT_Y + 0.2));
         }
     }
     #[test]
@@ -681,6 +784,38 @@ mod tests {
             assert!(p.x.abs() < BOX_HALF_WIDTH - BOARD && p.y > BOX_REAR + BOARD && p.y < BOX_FRONT - BOARD);
         }
         assert!(BOX_REAR > -1.65 && BOX_FRONT < -0.9 - 0.1);
+    }
+    #[test]
+    fn drivers_climb_down_walk_round_to_the_engine_and_back_without_jumps() {
+        let person = crate::people::Person::from_key(7);
+        assert_eq!(choreography(&person, None).sit, 1.0);
+        // Too short a stop: they stay on the bench.
+        assert_eq!(choreography(&person, Some((2.0, 5.0))).sit, 1.0);
+        let total = 16.0;
+        let mut last = choreography(&person, Some((0.0, total)));
+        assert_eq!(last.position, seat_feet(f64::from(person.height)));
+        let mut reached = false;
+        for i in 1..=1600 {
+            let t = total * i as f64 / 1600.0;
+            let c = choreography(&person, Some((t, total)));
+            assert!(c.position.distance(last.position) < 0.06, "t {t}");
+            assert!((c.facing.length() - 1.0).abs() < 1e-9);
+            assert!(c.walked >= last.walked - 1e-9);
+            // Out of the cart's body, wheels included, whenever standing.
+            if c.sit == 0.0 {
+                assert!(c.position.x.abs() > 1.1 || c.position.y < -1.9, "{:?}", c.position);
+                assert!(c.position.z.abs() < 1e-9);
+            }
+            reached |= c.position.distance(AT_ENGINE) < 1e-6;
+            last = c;
+        }
+        assert!(reached);
+        assert!(last.position.distance(seat_feet(f64::from(person.height))) < 1e-9 && last.sit == 1.0);
+        // Seated hips rest on the bench for any height.
+        for h in [1.55, 1.9] {
+            let hip = seat_feet(h).z + crate::people::HIP_HEIGHT * h;
+            assert!(hip > SEAT_TOP && hip < SEAT_TOP + 0.15);
+        }
     }
     #[test]
     fn driver_and_magic_orb_spheres_are_closed_and_face_outward() {
