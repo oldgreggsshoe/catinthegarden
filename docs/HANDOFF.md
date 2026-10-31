@@ -10,7 +10,18 @@ road network. Preserve unrelated local ocean/renderer edits.
 **Branch base:** the current ocean line; preserve all unrelated local renderer, terrain, baker,
 documentation, and response-file changes when staging work.
 
-**Current phase, 31 October: villagers and cart drivers.** Procedurally dressed
+**Current phase, 31 October: households, children and parking.** Every
+resident of the 6 nearest villages lives in a dwelling; about half the homes
+have children (smaller, quicker, larger heads). Each adult owns one cart (kind
+and tint from their key). Courts have rings of bays: carts park (0.75 at home,
+0.4 visiting), drivers climb down and walk home or visit the inn, owners walk
+back and drive off; courts start half full. Traffic and crowd exchange parked
+carts/away drivers and managed/boarded drivers each frame. New replays
+`court_life`, `village_children`; full 846 pass/same 6 failures; ~+0.9 ms
+with the crowd on (court_life off/on/on/off). See
+docs/VILLAGE_LIFE_2026_10_31.md and the final dated section.
+
+**Previous phase, 31 October: villagers and cart drivers.** Procedurally dressed
 low-poly people (garments, hair, beards, hats, natural dyes) in one instanced
 draw, posed in the vertex shader for walking/standing/sitting. Village residents
 walk the worn footpaths (walk graph from the path worker), stand about and go
@@ -15096,4 +15107,44 @@ animation, and the same people in the carts when driving.
   with frames not presenting until `xset dpms force on`.
 - Not done: children, conversations/gestures, walkers in courts or on piers,
   collision with the player, a body for the player, reins (no horses).
+
+## 31 October — households, children, parking bays, coming and going
+
+User asked for children, parked carts, people driving away and others arriving
+and parking, and each villager with their own house and cart.
+
+- `crowd.rs` rewritten around households: all 24 adults + children per village
+  (6 nearest), homes from dwelling doors (`Walkway::homes`), plans of `Step`s
+  that may leave the footpath graph for the court floor (to/from a cart door).
+  `Crowd::sync(parked, away)` hides away/elsewhere residents, places drivers
+  just off a cart, recalls drivers whose carts are due, spawns/removes visitors;
+  `managed()`/`take_boarded()` go back to traffic. A `climbing_on` guard stops
+  a boarded driver reappearing if the traffic has not stepped.
+- `people.rs`: `child_from_key`, `child_key`, `children_in`, `CHILD_BIT`
+  (shader head x1.28).
+- `traffic.rs`: `Court`/`Bay` (ring at 14 m, 5.4 m apart, ±120°, deck-checked),
+  `Route::stop_courts`, agent `Mode` (Driving/Parking/Parked/Leaving) with
+  Bézier manoeuvres, `Seat`, `ParkedCart`, `DOOR_SIDE`, `CLIMB_SECONDS`,
+  `MAX_PARKED` 96 / `MAX_VEHICLES` 160, `seed_courts`, `departure`, park odds,
+  stays (`PLANET_PARKING_STAY_SCALE`, `PLANET_PARKING=0`), counters,
+  `Simulation::life`, `Controller::{life,set_crowd,parking_counts,court_pose}`.
+  Adopt keeps parked carts by court key + bay index. Agent `home` replaces the
+  route's home for drivers (seeded carts live at their court's village).
+- `traffic_render::driver` returns Option (nobody drawn while out) and draws
+  climbing on/off. Cart kind/tint from the owner's key.
+- `TerrainRenderer::villager_ground_at`: mesh query, else vertex-stage height
+  at the point. The real-eye mesh query often returned None, leaving stale
+  heights (people sunk). Checked against the player-style query: equal within
+  1 mm under 100 m.
+- main.rs: life → crowd → set_crowd each frame; `record_parking`, children in
+  `record_people`; assertions `min_peak_children`, `min_peak_parked`,
+  `min_parking_arrivals`, `min_parking_departures`. Villager inspection cameras
+  are kept 1.7 m above the drawn ground.
+- Evidence (opened): court_life/1793454562-45828, village_children/1793454257-44957,
+  village_people/1793454222-44861, cart_driver_stop/1793454700-47379.
+- Tests: 3 new + child cases; registry 173; full 846 pass / same 6 failures.
+- Timing (High, X11/Immediate, 1280x800, court_life, off = PLANET_VILLAGERS=0):
+  p50 101.172/102.068/101.977/101.105 ms off/on/on/off, ~+0.9 ms.
+- Not done: parking at harbours, collisions between people/carts, families
+  walking together.
 

@@ -1071,7 +1071,16 @@ pub fn build(
             |(village, _)| crate::road_navigation::village_name(*village),
         );
         let segments: Vec<_> = routed.iter().map(|t| (t.a, t.b)).collect();
-        let door_points: Vec<_> = houses.iter().map(|h| h.centre - h.forward * 4.15).collect();
+        let door_points: Vec<_> = houses
+            .iter()
+            .zip(&hs)
+            .map(|(f, h)| {
+                (
+                    f.centre - f.forward * 4.15,
+                    crate::village::places::Kind::of(h) == crate::village::places::Kind::House,
+                )
+            })
+            .collect();
         walkways.push(crate::crowd::Walkway::from_trails(
             name,
             &segments,

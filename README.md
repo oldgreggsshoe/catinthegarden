@@ -196,6 +196,23 @@ env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village
 env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village PLANET_TRAFFIC_WAIT=1 cargo run --release -p planet-app -- --scenario cart_driver_stop
 ```
 
+Villagers live in **households**: each adult has a home (one of the village's
+dwellings, not the inn or market) and their own cart, always the same kind and
+colour. About half the homes have children, who are smaller, quicker and play
+about the lanes. Parking courts have a ring of **bays**; at startup a court holds
+some of its villagers' carts. When a cart is due to leave, its owner walks down
+to it, climbs on and drives off; carts coming back park in a free bay and the
+driver walks home. Carts from other villages park too, and their drivers visit
+the inn, market or a friend's door before walking back. Away from the camera,
+carts set off on their own timers. `PLANET_PARKING=0` turns parking off (the
+old brief stops); `PLANET_PARKING_STAY_SCALE=0.08` shortens stays for a quick
+look. Replays: watch a court (`court_life`), follow a child (`village_children`):
+
+```sh
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village PLANET_TRAFFIC_WAIT=1 PLANET_PARKING_STAY_SCALE=0.08 cargo run --release -p planet-app -- --scenario court_life
+env -u WAYLAND_DISPLAY PLANET_ROAD_EXPERIMENT=1 PLANET_ROAD_NETWORK_SITE=village cargo run --release -p planet-app -- --scenario village_children
+```
+
 Interior overhead boards are spaced 500m along the engineered bore, with a
 separate remaining-exit distance on each face (normally rounded to500m).
 Distances cross region/residency boundaries; portal headers remain. Automated

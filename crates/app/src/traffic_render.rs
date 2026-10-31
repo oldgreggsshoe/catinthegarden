@@ -373,10 +373,10 @@ pub struct Choreography {
     /// Metres walked so far this stop (drives the stride).
     pub walked: f64,
 }
-const STEP_DOWN: DVec3 = DVec3::new(-1.35, 0.95, 0.0);
+const STEP_DOWN: DVec3 = traffic::DOOR_SIDE;
 const ROUND_BACK: DVec3 = DVec3::new(-1.35, -2.05, 0.0);
 const AT_ENGINE: DVec3 = DVec3::new(-0.5, -2.4, 0.0);
-const CLIMB_SECONDS: f64 = 1.1;
+const CLIMB_SECONDS: f64 = traffic::CLIMB_SECONDS;
 /// Off the bench at fraction `u`: across at seat height first (clear of the
 /// side rail and wheel), then down. Returns the feet and how far down.
 fn climb(seat: DVec3, u: f64) -> (DVec3, f64) {
@@ -456,11 +456,28 @@ pub fn choreography(person: &crate::people::Person, stop: Option<(f64, f64)>) ->
 }
 /// The agent's driver this frame: on the bench, or out stretching their legs
 /// at a village stop. Lit by the bore's lamps in a tunnel.
-pub fn driver(a: &traffic::Agent, alpha: f64, field: &Field, matching: bool) -> crate::people::Placement {
+/// Nobody is drawn on a parked cart whose driver is out (the village crowd
+/// walks them about); climbing on or off a parked cart is drawn here.
+pub fn driver(a: &traffic::Agent, alpha: f64, field: &Field, matching: bool) -> Option<crate::people::Placement> {
     let person = crate::people::Person::from_key(a.driver);
     let pose = a.pose(alpha);
     let (right, up) = body_axes(pose.position, pose.forward);
-    let c = choreography(&person, a.stop(alpha));
+    let c = match a.seat() {
+        traffic::Seat::Out => return None,
+        traffic::Seat::Seated => choreography(&person, a.stop(alpha)),
+        traffic::Seat::Climbing { u, down } => {
+            let (position, drop) = climb(seat_feet(f64::from(person.height)), u);
+            // Down: turning out to the near side. Up: facing forward.
+            let angle = if down { std::f64::consts::FRAC_PI_2 * u.clamp(0.0, 1.0) } else { 0.0 };
+            Choreography {
+                position,
+                facing: DVec3::new(-angle.sin(), angle.cos(), 0.0),
+                walk: 0.0,
+                sit: 1.0 - drop,
+                walked: 0.0,
+            }
+        }
+    };
     let feet = pose.position + right * c.position.x + pose.forward * c.position.y + up * c.position.z;
     let forward = (right * c.facing.x + pose.forward * c.facing.y).normalize();
     let clock = a.travelled * 0.04 + (a.id % 97) as f64;
@@ -470,7 +487,7 @@ pub fn driver(a: &traffic::Agent, alpha: f64, field: &Field, matching: bool) -> 
         clock + a.stop(alpha).map_or(0.0, |s| s.0)
     };
     let look = if c.sit > 0.5 { 0.45 * (clock * 0.7).sin() * (clock * 0.23).cos() } else { 0.25 * (clock * 1.3).sin() };
-    crate::people::Placement {
+    Some(crate::people::Placement {
         person,
         feet,
         forward,
@@ -481,7 +498,7 @@ pub fn driver(a: &traffic::Agent, alpha: f64, field: &Field, matching: bool) -> 
         look: look as f32,
         fade: a.fade as f32,
         light: (pose.tunnel && matching && !a.stranded).then(|| (field.frame.local(feet), pose.light)),
-    }
+    })
 }
 
 pub struct Renderer {
@@ -518,7 +535,7 @@ impl Renderer {
         });
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("traffic instances"),
-            size: ((traffic::MAX_AGENTS + 1) * size_of::<Instance>()) as u64,
+            size: ((traffic::MAX_VEHICLES + 1) * size_of::<Instance>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -623,7 +640,7 @@ impl Renderer {
             frame,
             frame_group,
             counts: [0; 3],
-            upload: Vec::with_capacity(traffic::MAX_AGENTS + 1),
+            upload: Vec::with_capacity(traffic::MAX_VEHICLES + 1),
         }
     }
     pub fn update(
@@ -667,7 +684,7 @@ impl Renderer {
                 } else {
                     0
                 };
-                let tint = if a.id % 4 == 0 {
+                let tint = if a.driver % 4 == 0 {
                     [0.65, 0.42, 0.28, 0.0]
                 } else {
                     [1.0, 0.85, 0.66, 0.0]

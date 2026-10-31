@@ -24,6 +24,23 @@ fn mix64(mut n: u64) -> u64 {
     n ^ (n >> 31)
 }
 
+/// Set in `Person::selection` for children (the shader enlarges the head).
+pub const CHILD_BIT: u32 = 1 << 24;
+
+/// Stable identity of child `index` of the household in home `home` of the
+/// named village.
+pub fn child_key(village: &str, home: u32, index: u32) -> u64 {
+    resident_key(village, 1000 + home * 8 + index) ^ 0xc41d
+}
+/// How many children live in home `home` (0, 1 or 2; about one in two homes).
+pub fn children_in(village: &str, home: u32) -> u32 {
+    match mix64(resident_key(village, 5000 + home)) % 20 {
+        0..=8 => 0,
+        9..=15 => 1,
+        _ => 2,
+    }
+}
+
 /// Stable identity of resident `index` of the named village.
 pub fn resident_key(village: &str, index: u32) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
@@ -145,6 +162,17 @@ const LEATHER: [[f32; 3]; 4] = [
 
 impl Person {
     pub fn from_key(key: u64) -> Self {
+        Self::make(key, false)
+    }
+    /// A child: smaller, slimmer, quicker, with a relatively larger head (the
+    /// shader's child bit), no beard, apron or long coat.
+    pub fn child_from_key(key: u64) -> Self {
+        Self::make(key, true)
+    }
+    pub fn is_child(&self) -> bool {
+        self.selection & CHILD_BIT != 0
+    }
+    fn make(key: u64, child: bool) -> Self {
         let state = std::cell::Cell::new(mix64(key ^ 0x9e3779b97f4a7c15));
         let next = || {
             state.set(mix64(state.get().wrapping_add(0x9e3779b97f4a7c15)));
@@ -170,9 +198,24 @@ impl Person {
             [0, 0, 1, 1, 2, 3, 5][pick(7)]
         };
         sel[group::SLEEVES as usize] = u32::from(pick(3) == 0 && sel[group::COAT as usize] != 1);
-        let selection = (1..8).fold(0, |s, g| s | sel[g] << (3 * (g - 1)));
-        let height = if feminine { 1.56 + 0.18 * next() } else { 1.66 + 0.22 * next() };
-        let girth = 0.9 + 0.28 * next() + if old { 0.05 } else { 0.0 };
+        let old = old && !child;
+        if child {
+            sel[group::COAT as usize] = if pick(10) == 0 { 2 } else { 0 };
+            sel[group::APRON as usize] = 0;
+            sel[group::BEARD as usize] = 0;
+            sel[group::HAT as usize] = [0, 0, 0, 0, 1, 2, 4][pick(7)];
+            sel[group::HAIR as usize] = if feminine { [2, 3, 4, 4, 5][pick(5)] } else { [0, 1, 1, 5][pick(4)] };
+            sel[group::SLEEVES as usize] = u32::from(pick(2) == 0);
+        }
+        let selection = (1..8).fold(0, |s, g| s | sel[g] << (3 * (g - 1))) | if child { CHILD_BIT } else { 0 };
+        let height = if child {
+            0.95 + 0.5 * next()
+        } else if feminine {
+            1.56 + 0.18 * next()
+        } else {
+            1.66 + 0.22 * next()
+        };
+        let girth = if child { 0.84 + 0.14 * next() } else { 0.9 + 0.28 * next() + if old { 0.05 } else { 0.0 } };
         let hair = if old { HAIR[7 + pick(2)] } else { HAIR[pick(7)] };
         let top = CLOTH[pick(CLOTH.len())];
         let mut bottom = CLOTH[pick(CLOTH.len())];
@@ -200,7 +243,7 @@ impl Person {
                 pack(shoes),
             ],
             selection,
-            pace: (if old { 0.95 } else { 1.15 } + 0.35 * next()) as f32,
+            pace: if child { 1.25 + 0.65 * next() } else { (if old { 0.95 } else { 1.15 }) + 0.35 * next() } as f32,
         }
     }
     #[cfg(test)]
@@ -903,6 +946,16 @@ mod tests {
             assert!(apron == 0 || apron == 1 + p.choice(group::LOWER));
             assert!(!(p.choice(group::COAT) == 1 && p.choice(group::SLEEVES) == 1));
         }
+        let children: Vec<_> = (0..200).map(|i| Person::child_from_key(child_key("OAKVALE", i, 0))).collect();
+        for c in &children {
+            assert!(c.is_child() && (0.9..1.5).contains(&c.height) && c.pace > 1.2);
+            assert_eq!(c.choice(group::BEARD), 0);
+            assert_eq!(c.choice(group::APRON), 0);
+            assert_ne!(c.choice(group::COAT), 1);
+        }
+        assert!(!crowd.iter().any(|p| p.is_child()));
+        let homes: Vec<_> = (0..400).map(|h| children_in("OAKVALE", h)).collect();
+        assert!(homes.contains(&0) && homes.contains(&1) && homes.contains(&2));
         // Different villages, different people.
         assert_ne!(resident_key("OAKVALE", 3), resident_key("ASHFORD", 3));
         assert_ne!(resident_key("OAKVALE", 3), resident_key("OAKVALE", 4));

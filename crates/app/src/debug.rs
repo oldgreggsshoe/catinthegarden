@@ -136,6 +136,10 @@ struct AssertionTracker {
     peak_traffic: usize,
     peak_drivers: usize,
     peak_walkers: usize,
+    peak_children: usize,
+    peak_parked: usize,
+    parking_arrivals: u64,
+    parking_departures: u64,
     public_buildings: u32,
     traffic_travelled: f64,
     non_finite_samples: usize,
@@ -202,6 +206,10 @@ impl AssertionTracker {
             peak_traffic: 0,
             peak_drivers: 0,
             peak_walkers: 0,
+            peak_children: 0,
+            peak_parked: 0,
+            parking_arrivals: 0,
+            parking_departures: 0,
             public_buildings: 0,
             traffic_travelled: 0.0,
             non_finite_samples: 0,
@@ -906,6 +914,20 @@ impl AssertionTracker {
                 format!("required {minimum}, observed {} villagers in view", self.peak_walkers),
             ));
         }
+        for (name, minimum, observed, what) in [
+            ("children_play_in_the_village", self.config.min_peak_children, self.peak_children as u64, "children in view"),
+            ("carts_stand_in_the_court", self.config.min_peak_parked, self.peak_parked as u64, "carts parked with drivers out"),
+            ("carts_come_in_and_park", self.config.min_parking_arrivals, self.parking_arrivals, "carts parked in a bay"),
+            ("carts_pull_out_and_leave", self.config.min_parking_departures, self.parking_departures, "carts left a bay"),
+        ] {
+            if let Some(minimum) = minimum {
+                results.push(assertion_result(
+                    name,
+                    observed >= minimum as u64,
+                    format!("required {minimum}, observed {observed} {what}"),
+                ));
+            }
+        }
         if let Some(minimum) = self.config.min_peak_drivers {
             results.push(assertion_result(
                 "carts_have_drivers", self.peak_drivers >= minimum,
@@ -1301,10 +1323,17 @@ impl RunArtifacts {
 
     pub fn record_public_buildings(&mut self, mask: u32) { self.assertion_tracker.public_buildings |= mask; }
 
-    pub fn record_people(&mut self, drivers: usize, walkers: usize) {
+    pub fn record_people(&mut self, drivers: usize, walkers: usize, children: usize) {
         let t = &mut self.assertion_tracker;
         t.peak_drivers = t.peak_drivers.max(drivers);
         t.peak_walkers = t.peak_walkers.max(walkers);
+        t.peak_children = t.peak_children.max(children);
+    }
+    pub fn record_parking(&mut self, parked: usize, arrivals: u64, departures: u64) {
+        let t = &mut self.assertion_tracker;
+        t.peak_parked = t.peak_parked.max(parked);
+        t.parking_arrivals = t.parking_arrivals.max(arrivals);
+        t.parking_departures = t.parking_departures.max(departures);
     }
     pub fn record_traffic(&mut self, count: usize, travelled: f64) {
         self.assertion_tracker.peak_traffic = self.assertion_tracker.peak_traffic.max(count);
@@ -1928,6 +1957,10 @@ mod tests {
             min_peak_traffic_vehicles: None,
             min_peak_walkers: None,
             min_peak_drivers: None,
+            min_peak_children: None,
+            min_peak_parked: None,
+            min_parking_arrivals: None,
+            min_parking_departures: None,
             min_traffic_travel_metres: None,
             ice_sample_uv: None,
             min_ice_sample_luminance: None,

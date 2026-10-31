@@ -252,9 +252,8 @@ pub struct VillageRenderer {
     path_road_revision: u64,
     ground_cursor: usize,
     path_worker: crate::village_paths::Worker,
-    /// Residents on the footpaths, and who is away driving a cart.
+    /// Households on the footpaths.
     crowd: crate::crowd::Crowd,
-    away: std::collections::HashSet<u64>,
     /// Timber gateways where footpaths leave their courts, baked with the
     /// paths in the same frame and drawn by the road-sign pipeline.
     gates: crate::road_signs::Renderer,
@@ -540,7 +539,6 @@ impl VillageRenderer {
             ground_cursor: 0,
             path_worker: crate::village_paths::Worker::new(),
             crowd: crate::crowd::Crowd::default(),
-            away: Default::default(),
             gates: crate::road_signs::Renderer::new(
                 device,
                 queue,
@@ -629,7 +627,7 @@ impl VillageRenderer {
         if let Some(result) = self.path_worker.take() {
             match result {
                 Ok((frame, data, gates, walkways)) => {
-                    self.crowd.set_walkways(walkways, camera_world_position, &self.away);
+                    self.crowd.set_walkways(walkways, camera_world_position);
                     terrain.set_village_paths(frame, &data);
                     self.gates.upload(device, queue, gates);
                     self.gate_frame = Some(frame);
@@ -743,40 +741,43 @@ impl VillageRenderer {
     pub fn public_building_mask(&self) -> u32 { self.public_building_mask }
 
     /// Moves the villagers on by `dt` scene seconds and appends those near the
-    /// camera, standing on the drawn ground. `away` are residents currently
-    /// driving carts; they rejoin the footpaths at the next path rebuild.
+    /// camera, standing on the drawn ground. `parked` are carts standing in
+    /// courts with their drivers out; `away` are drivers on the road or on
+    /// their benches. Returns the drivers this crowd is walking about and
+    /// those who have just reached their carts, for the traffic.
     pub fn update_people(
         &mut self,
         dt: f64,
         terrain: &TerrainRenderer,
         camera_world_position: DVec3,
-        away: std::collections::HashSet<u64>,
+        parked: &[crate::traffic::ParkedCart],
+        away: &std::collections::HashSet<u64>,
         out: &mut Vec<crate::people::Placement>,
-    ) {
-        self.away = away;
+    ) -> (std::collections::HashSet<u64>, Vec<u64>) {
         if !self.enabled || std::env::var("PLANET_VILLAGERS").as_deref() == Ok("0") {
-            return;
+            return Default::default();
         }
+        self.crowd.sync(parked, away);
         self.crowd.update(
             dt,
             camera_world_position,
             |direction| {
                 terrain
-                    .village_raster_height_at(direction, camera_world_position)
+                    .villager_ground_at(direction, camera_world_position)
                     .map(|h| h.max(0.0))
             },
             out,
         );
+        (self.crowd.managed(), self.crowd.take_boarded())
     }
-
 
     /// Inspection scenarios follow the actual grounded building, not an
     /// estimated continuous terrain height that may miss its raster triangle.
     pub fn scenario_pose(&mut self, name: &str, time: f64) -> Option<(DVec3, DVec3)> {
         use village::places::Kind;
-        if name == "village_people" {
+        if name == "village_people" || name == "village_children" {
             let eye = self.last_build_position?;
-            return self.crowd.inspection_pose(eye);
+            return self.crowd.inspection_pose(eye, name == "village_children");
         }
         let kind = match name {
             "village_services" => if time < 3.0 { Kind::Inn } else if time < 6.0 { Kind::Workshop } else { Kind::Market },

@@ -2737,6 +2737,66 @@ impl TerrainRenderer {
 
     /// Actual drawn triangles, filtered for the real eye rather than a pretend
     /// camera directly over a remote building. No change to village siting.
+    /// Ground for someone standing at `direction`, as drawn for the eye at
+    /// `camera_position`: the drawn triangle where the mesh query finds one,
+    /// else the same height the vertex stage computes (macro, distance-filtered
+    /// detail, footpath shaping, lakes, cuts) evaluated at the point itself.
+    pub fn villager_ground_at(&self, direction: DVec3, camera_position: DVec3) -> Option<f64> {
+        if let Some(height) = self.village_raster_height_at(direction, camera_position) {
+            return Some(height);
+        }
+        let camera_altitude_meters = camera_position.length() - planet_radius_meters();
+        let (face, face_uv) = cube_face_uv(direction)?;
+        let dense_level = match &self.source {
+            TerrainDataSource::Placeholder => 0,
+            TerrainDataSource::Outmap(outmap) => outmap.manifest().dense_level,
+        };
+        let mut node = None;
+        self.surface_node_index.for_each_at_direction(direction, |index| {
+            let candidate = self.surface_detail_nodes[index];
+            if node.is_none_or(|n: SurfaceDetailNode| candidate.node.level > n.node.level) {
+                node = Some(candidate);
+            }
+        });
+        let surface = node.or_else(|| {
+            self.surface_detail_nodes
+                .iter()
+                .copied()
+                .filter(|s| node_contains_face_uv(s.node, face, face_uv))
+                .max_by_key(|s| s.node.level)
+        })?;
+        let key = surface.source_key?;
+        let tile = self.tile_cache.get(&key)?;
+        let uv = source_tile_uv(key, face, face_uv)?;
+        let baked = f64::from(sample_height_cpu(&tile.heights_meters, uv));
+        let macro_height = if baked > 0.0 {
+            scaled_outmap_macro_height_meters(baked, camera_altitude_meters)
+        } else {
+            0.0
+        };
+        let camera_distance =
+            raster_vertex_detail_distance(camera_position, direction, planet_radius_meters(), macro_height);
+        let breakdown = self.surface_detail_height_breakdown(
+            surface,
+            direction,
+            face,
+            face_uv,
+            camera_altitude_meters,
+            camera_distance,
+            dense_level,
+        )?;
+        let height = self.village_path_shaped_height(
+            direction,
+            breakdown.height_meters,
+            baked,
+            camera_altitude_meters,
+            continuous_baked_sample_spacing_meters(face_uv, key.level, dense_level),
+            breakdown.detail_filter_meters,
+        );
+        let height = self.lake_surface_height(direction, height, camera_altitude_meters);
+        Some(self.cut_surface_height(direction, height))
+    }
+
     pub fn village_raster_height_at(
         &self,
         local_surface_direction: DVec3,

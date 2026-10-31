@@ -5663,6 +5663,20 @@ impl State {
                         direction * (planet::planet_radius_meters() + altitude.max(ground + 60.0));
                 }
             }
+            // Villager cameras sit a few metres from someone on rough ground:
+            // keep them clear of the drawn terrain under the eye.
+            if route_pose.is_some()
+                && self
+                    .scenario
+                    .as_ref()
+                    .is_some_and(|s| matches!(s.name(), "village_people" | "village_children"))
+            {
+                let direction = position.normalize();
+                let altitude = position.length() - planet::planet_radius_meters();
+                if let Some(ground) = self.terrain.raster_surface_height_meters_at(direction, altitude) {
+                    position = direction * (planet::planet_radius_meters() + altitude.max(ground + 1.7));
+                }
+            }
             // A waterline scenario authors where to stand and which way to
             // look; how high the water is there is the spectrum's business.
             let (position, look_at) = match scenario_waterline_eye_height_meters {
@@ -6508,18 +6522,28 @@ impl State {
         self.people_lit.clear();
         self.people_outdoor.clear();
         let view_direction = self.camera.planet_frame_direction_dvec3(planet_rotation_radians);
-        let mut away = std::collections::HashSet::new();
-        if let Some(roads) = &self.road_network {
-            roads.drivers(camera_planet_frame_position, view_direction, &mut self.people_lit);
-            away = roads.driving_residents();
-        }
-        self.villages.update_people(
+        // Parked carts with their drivers out, and drivers on the road: the
+        // crowd walks owners down to their carts and visitors up from them.
+        let (parked, away) = match &self.road_network {
+            Some(roads) => {
+                roads.drivers(camera_planet_frame_position, view_direction, &mut self.people_lit);
+                roads.village_life()
+            }
+            None => Default::default(),
+        };
+        let (managed, boarded) = self.villages.update_people(
             delta_scene_time,
             &self.terrain,
             camera_planet_frame_position,
-            away,
+            &parked,
+            &away,
             &mut self.people_outdoor,
         );
+        if let Some(roads) = &mut self.road_network {
+            roads.set_crowd(managed, &boarded);
+            let (arrivals, departures) = roads.parking_counts();
+            self.artifacts.record_parking(parked.len(), arrivals, departures);
+        }
         self.people_renderer.update(
             &self.queue,
             camera_planet_frame_position,
@@ -6528,7 +6552,11 @@ impl State {
             &self.people_outdoor,
             self.road_network.as_ref().map(|r| r.field_frame()),
         );
-        self.artifacts.record_people(self.people_lit.len(), self.people_outdoor.len());
+        self.artifacts.record_people(
+            self.people_lit.len(),
+            self.people_outdoor.len(),
+            self.people_outdoor.iter().filter(|p| p.person.is_child()).count(),
+        );
         if self.camera_mode == CameraMode::Driving {
             let (forward, up) = self.driving_body_axes();
             let (solid, additive) = self.cart_orb.geometry(

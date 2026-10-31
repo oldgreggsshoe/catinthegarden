@@ -100,7 +100,9 @@ fn pose_at(phase:f32,walk:f32,sit:f32,skirt:bool)->Pose {
     }
     if bone==2u {
         let neck=vec3<f32>(0.0,0.0,0.875);
-        p=neck+yaw(p-neck,input.body.z);n=yaw(n,input.body.z);
+        // Children: a relatively larger head on the same skeleton.
+        let head=select(1.0,1.28,(selection&(1u<<24u))!=0u);
+        p=neck+yaw((p-neck)*head,input.body.z);n=yaw(n,input.body.z);
     }
     if bone>=1u && bone<=6u {
         let waist=vec3<f32>(0.0,0.0,0.58);

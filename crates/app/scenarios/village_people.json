@@ -52,7 +52,8 @@
   "assertions": {
     "require_finite_metrics": true,
     "expected_screenshots": 7,
-    "min_peak_walkers": 3
+    "min_peak_walkers": 3,
+    "min_peak_children": 1
   },
   "fixed_exposure": true
 }

@@ -272,6 +272,7 @@ impl NetworkRenderer {
             "road_traffic_tunnel" => self.traffic.inspection_pose(true),
             "cart_drivers" => self.traffic.driver_pose(false),
             "cart_driver_stop" => self.traffic.driver_pose(true),
+            "court_life" => self.traffic.court_pose(eye),
             "road_network_parking" => {
                 let up = eye.normalize();
                 let forward = (target - eye).normalize();
@@ -429,17 +430,20 @@ impl NetworkRenderer {
         for a in &sim.agents {
             let p = a.pose(alpha).position - eye;
             if p.length_squared() < 500.0 * 500.0 && p.dot(view) > -8.0 {
-                out.push(crate::traffic_render::driver(a, alpha, field, matching));
+                out.extend(crate::traffic_render::driver(a, alpha, field, matching));
             }
         }
     }
-    /// Residents currently out driving (they are not also on the footpaths).
-    pub fn driving_residents(&self) -> std::collections::HashSet<u64> {
-        self.traffic
-            .simulation
-            .as_ref()
-            .map(|sim| sim.agents.iter().filter(|a| a.home().is_some()).map(|a| a.driver).collect())
-            .unwrap_or_default()
+    /// Parked carts with their drivers out, and drivers who are not walking.
+    pub fn village_life(&self) -> (Vec<crate::traffic::ParkedCart>, std::collections::HashSet<u64>) {
+        self.traffic.life()
+    }
+    /// The village crowd's side of parking: who it walks, who is back at a cart.
+    pub fn set_crowd(&mut self, managed: std::collections::HashSet<u64>, boarded: &[u64]) {
+        self.traffic.set_crowd(managed, boarded);
+    }
+    pub fn parking_counts(&self) -> (u64, u64) {
+        self.traffic.parking_counts()
     }
     /// Tunnel lamp lists (for anything else lit in the bores) and their frame.
     pub fn lighting(&self) -> &wgpu::BindGroup {

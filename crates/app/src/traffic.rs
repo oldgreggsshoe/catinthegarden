@@ -10,6 +10,18 @@ use std::{
 
 pub const STEP: f64 = 1.0 / 30.0;
 pub const MAX_AGENTS: usize = 64;
+/// Carts standing in village court bays, on top of the moving traffic.
+pub const MAX_PARKED: usize = 96;
+pub const MAX_VEHICLES: usize = MAX_AGENTS + MAX_PARKED;
+/// Seconds to climb down from, or up onto, the driver's bench.
+pub const CLIMB_SECONDS: f64 = 1.1;
+/// Parking bays: a ring round each court, clear of the 6m turning circle
+/// (with the cart's half width) and of the road's approach sector.
+const BAY_RADIUS: f64 = 14.0;
+const BAY_SPACING: f64 = 5.4;
+const BAY_SECTOR: f64 = 2.1;
+/// Where the driver climbs in and out, in the cart's frame (near side, by the bench).
+pub const DOOR_SIDE: DVec3 = DVec3::new(-1.35, 0.95, 0.0);
 // Simulation seconds, not wall seconds. Covers 40x even at 5 FPS, while
 // bounding catch-up to ~240 safe fixed steps at extreme time multipliers.
 const MAX_ADVANCE_SECONDS: f64 = 8.0;
@@ -39,7 +51,7 @@ pub fn enabled_for(scenario: Option<&str>) -> bool {
             Ok("1" | "on") => true,
             _ => {
                 scenario.is_none()
-                    || matches!(scenario, Some("road_traffic" | "road_traffic_tunnel" | "cart_drivers" | "cart_driver_stop"))
+                    || matches!(scenario, Some("road_traffic" | "road_traffic_tunnel" | "cart_drivers" | "cart_driver_stop" | "court_life"))
             }
         }
 }
@@ -82,6 +94,8 @@ pub struct Route {
     destination: String,
     /// The village whose residents drive this route, if it touches one.
     home: Option<String>,
+    /// Which court (Network::courts) each stop is in.
+    stop_courts: Vec<Option<usize>>,
 }
 impl Route {
     pub fn at(&self, metres: f64) -> Pose {
@@ -596,6 +610,7 @@ fn itinerary(
             .court
             .map(|_| source.name.clone())
             .or_else(|| destination.court.map(|_| destination.name.clone())),
+        stop_courts: Vec::new(),
     };
     let last_forward = *forward.points.last()?;
     let first_back = reverse.points[0];
@@ -696,7 +711,59 @@ fn itinerary(
 pub struct Network {
     pub field: Arc<Field>,
     pub routes: Vec<Arc<Route>>,
+    pub courts: Vec<Court>,
     index: HashMap<Key, Vec<(usize, usize)>>,
+}
+
+/// A village's parking court: its bays and the way the road comes in.
+#[derive(Clone, Debug)]
+pub struct Court {
+    pub village: String,
+    pub centre: DVec3,
+    /// Direction the road enters, tangent to the ground.
+    pub forward: DVec3,
+    pub bays: Vec<Bay>,
+    key: Key,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct Bay {
+    pub position: DVec3,
+    /// Along the ring (a cart may stand either way round).
+    pub tangent: DVec3,
+}
+/// Bays on the court floor, each checked against the actual deck under the
+/// cart's four corners.
+fn bays(field: &Field, centre: DVec3, forward: DVec3) -> Vec<Bay> {
+    let up = centre.normalize();
+    let right = forward.cross(up).normalize();
+    let floor = field.frame.local(centre).z;
+    let on_floor = |p: DVec3| {
+        let local = field.frame.local(p);
+        field.frame.world(DVec3::new(local.x, local.y, floor))
+    };
+    let step = BAY_SPACING / BAY_RADIUS;
+    let count = (2.0 * BAY_SECTOR / step).floor() as usize + 1;
+    let mut bays = Vec::new();
+    for k in 0..count {
+        let angle = -BAY_SECTOR + k as f64 * step;
+        let out = forward * angle.cos() + right * angle.sin();
+        let tangent = (right * angle.cos() - forward * angle.sin()).normalize();
+        let position = on_floor(centre + out * BAY_RADIUS);
+        let side = tangent.cross(up).normalize();
+        let level = [-1.0, 1.0].iter().all(|&x| {
+            [-1.9, 1.9].iter().all(|&y| {
+                let q = position + side * x + tangent * y;
+                let h = q.length() - field.frame.radius;
+                field
+                    .deck_height(q.normalize(), h + 1.5)
+                    .is_some_and(|actual| (actual - h).abs() < 0.3)
+            })
+        });
+        if level {
+            bays.push(Bay { position, tangent });
+        }
+    }
+    bays
 }
 impl Network {
     fn build(
@@ -729,6 +796,24 @@ impl Network {
             }
         }
         ends.truncate(96);
+        let courts: Vec<Court> = graph
+            .ends
+            .iter()
+            .filter_map(|e| {
+                let centre = e.court?;
+                let up = centre.normalize();
+                let mut forward = centre - graph.nodes[e.node].position;
+                forward -= up * forward.dot(up);
+                let forward = forward.try_normalize()?;
+                Some(Court {
+                    village: e.name.clone(),
+                    centre,
+                    forward,
+                    bays: bays(&field, centre, forward),
+                    key: key(centre, 1.0),
+                })
+            })
+            .collect();
         let mut routes = Vec::new();
         let mut samples = 0;
         for round in 1..=4 {
@@ -746,7 +831,15 @@ impl Network {
                 if path.len() < 3 {
                     continue;
                 }
-                if let Some(route) = itinerary(&graph, &path, &ends[a], &ends[b], &field, &lamps) {
+                if let Some(mut route) = itinerary(&graph, &path, &ends[a], &ends[b], &field, &lamps) {
+                    route.stop_courts = route
+                        .stops
+                        .iter()
+                        .map(|&s| {
+                            let p = route.at(s).position;
+                            courts.iter().position(|c| c.centre.distance(p) < 9.0)
+                        })
+                        .collect();
                     if samples + route.samples.len() > 160_000 {
                         continue;
                     }
@@ -776,10 +869,11 @@ impl Network {
                     .push((r, i));
             }
         }
-        tracing::info!(target:"planet::traffic",nodes=graph.nodes.len(),destinations=ends.len(),routes=routes.len(),samples,build_ms=started.elapsed().as_secs_f64()*1000.0,"traffic routes ready");
+        tracing::info!(target:"planet::traffic",nodes=graph.nodes.len(),destinations=ends.len(),routes=routes.len(),samples,courts=courts.len(),bays=courts.iter().map(|c|c.bays.len()).sum::<usize>(),build_ms=started.elapsed().as_secs_f64()*1000.0,"traffic routes ready");
         Some(Self {
             field,
             routes,
+            courts,
             index,
         })
     }
@@ -836,8 +930,116 @@ pub struct Agent {
     pub travelled: f64,
     pub stranded: bool,
     /// Who drives: a resident of the route's home village (people::Person key).
+    /// Also who owns the cart: the same person always has the same cart.
     pub driver: u64,
     dwell_total: f64,
+    mode: Mode,
+    /// The driver's village (None for a traveller from beyond the roads).
+    home: Option<String>,
+}
+
+/// Off the lane: into a court bay, standing there, and out again.
+#[derive(Clone, Copy, Debug)]
+enum Mode {
+    Driving,
+    Parking {
+        path: [DVec3; 4],
+        length: f64,
+        s: f64,
+        prev: f64,
+        court: usize,
+        bay: usize,
+    },
+    Parked {
+        court: usize,
+        bay: usize,
+        position: DVec3,
+        heading: DVec3,
+        /// Seconds since the cart stopped in its bay.
+        since: f64,
+        /// When (simulation clock) the driver means to set off again.
+        until: f64,
+        /// Seconds since the driver was due back, once due.
+        recalled: Option<f64>,
+        /// Seconds into climbing back onto the bench.
+        boarding: Option<f64>,
+    },
+    Leaving {
+        path: [DVec3; 4],
+        length: f64,
+        s: f64,
+        prev: f64,
+        court: usize,
+        bay: usize,
+        rejoin: f64,
+    },
+}
+
+/// Where the driver is relative to the bench.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Seat {
+    Seated,
+    /// Climbing between bench (0) and ground (1).
+    Climbing { u: f64, down: bool },
+    /// Out of the cart (the village crowd has them).
+    Out,
+}
+
+/// A cart standing in a bay with its driver away from it.
+#[derive(Clone, Debug)]
+pub struct ParkedCart {
+    pub driver: u64,
+    /// Village whose court it stands in.
+    pub court: String,
+    /// The driver's own village (None for a traveller).
+    pub home: Option<String>,
+    /// Ground point by the bench where the driver gets in and out.
+    pub door: DVec3,
+    /// Seconds since the driver got down.
+    pub since: f64,
+    /// The driver is due back at the cart.
+    pub recalled: bool,
+}
+
+fn bezier_pose(path: &[DVec3; 4], t: f64) -> Pose {
+    let t = t.clamp(0.0, 1.0);
+    let [a, b, c, d] = *path;
+    let position = cubic(a, b, c, d, t);
+    let tangent = (b - a) * (3.0 * (1.0 - t).powi(2))
+        + (c - b) * (6.0 * t * (1.0 - t))
+        + (d - c) * (3.0 * t * t);
+    let up = position.normalize();
+    let forward = (tangent - up * tangent.dot(up)).normalize_or_zero();
+    Pose {
+        position,
+        forward,
+        tunnel: false,
+        light: 0,
+        limit: 2.4,
+    }
+}
+/// A smooth manoeuvre from one pose to another on the court floor.
+fn manoeuvre(from: DVec3, from_heading: DVec3, to: DVec3, to_heading: DVec3) -> ([DVec3; 4], f64) {
+    let reach = from.distance(to).max(6.0) / 2.6;
+    let path = [from, from + from_heading * reach, to - to_heading * reach, to];
+    let mut length = 0.0;
+    let mut last = from;
+    for i in 1..=24 {
+        let p = cubic(path[0], path[1], path[2], path[3], i as f64 / 24.0);
+        length += p.distance(last);
+        last = p;
+    }
+    (path, length)
+}
+fn stay_scale() -> f64 {
+    std::env::var("PLANET_PARKING_STAY_SCALE")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0)
+}
+fn parking_enabled() -> bool {
+    std::env::var("PLANET_PARKING").as_deref() != Ok("0")
 }
 impl Agent {
     /// Seconds into and total length of the current village stop, if stopped.
@@ -847,16 +1049,44 @@ impl Agent {
             (elapsed.min(self.dwell_total), self.dwell_total)
         })
     }
-    /// Whether the driver is a village resident (else a passing traveller).
-    pub fn home(&self) -> Option<&str> {
-        self.route.home.as_deref()
-    }
     pub fn pose(&self, alpha: f64) -> Pose {
-        self.route
-            .at(self.previous + (self.distance - self.previous) * alpha)
+        match self.mode {
+            Mode::Driving => self
+                .route
+                .at(self.previous + (self.distance - self.previous) * alpha),
+            Mode::Parking { path, length, s, prev, .. } | Mode::Leaving { path, length, s, prev, .. } => {
+                bezier_pose(&path, (prev + (s - prev) * alpha) / length)
+            }
+            Mode::Parked { position, heading, .. } => Pose {
+                position,
+                forward: heading,
+                tunnel: false,
+                light: 0,
+                limit: 0.0,
+            },
+        }
     }
     pub fn future_pose(&self, metres: f64) -> Pose {
-        self.route.at(self.distance + metres)
+        match self.mode {
+            Mode::Driving => self.route.at(self.distance + metres),
+            Mode::Parking { path, length, s, .. } | Mode::Leaving { path, length, s, .. } => {
+                bezier_pose(&path, (s + metres) / length)
+            }
+            Mode::Parked { .. } => self.pose(1.0),
+        }
+    }
+    pub fn seat(&self) -> Seat {
+        match self.mode {
+            Mode::Parked { since, boarding, .. } => match boarding {
+                Some(b) => Seat::Climbing { u: (1.0 - b / CLIMB_SECONDS).clamp(0.0, 1.0), down: false },
+                None if since < CLIMB_SECONDS => Seat::Climbing { u: since / CLIMB_SECONDS, down: true },
+                None => Seat::Out,
+            },
+            _ => Seat::Seated,
+        }
+    }
+    pub fn parked(&self) -> bool {
+        matches!(self.mode, Mode::Parked { .. })
     }
     pub fn wheel_angle(&self) -> f64 {
         (self.travelled / 0.52).rem_euclid(std::f64::consts::TAU)
@@ -872,6 +1102,30 @@ pub struct Simulation {
     pub waits: u64,
     initial: bool,
     target_population: usize,
+    /// Courts whose resident carts have been put in their bays.
+    seeded: HashMap<Key, DVec3>,
+    pub arrivals: u64,
+    pub departures: u64,
+    stay_scale: f64,
+    /// Chance a cart parks at a stop in its own village, and elsewhere
+    /// (zero when parking is switched off).
+    park_odds: [f64; 2],
+    /// From the village crowd: drivers it is walking about, and drivers who
+    /// have just reached their carts.
+    managed: std::collections::HashSet<u64>,
+    boarded: std::collections::HashSet<u64>,
+}
+fn departure(network: &Network, court: usize) -> Option<(usize, f64, i64)> {
+    network.routes.iter().enumerate().find_map(|(r, route)| {
+        route
+            .stop_courts
+            .iter()
+            .position(|&c| c == Some(court))
+            .map(|i| (r, route.stops[i], i as i64))
+    })
+}
+fn manoeuvre_speed(s: f64, length: f64) -> f64 {
+    (0.6 + 1.5 * s).min((2.0 * 1.2 * (length - s).max(0.0)).sqrt() + 0.25).clamp(0.25, 2.4)
 }
 fn ahead(p: Pose, q: DVec3) -> Option<f64> {
     let d = q - p.position;
@@ -892,10 +1146,135 @@ impl Simulation {
             waits: 0,
             initial: true,
             target_population: population(),
+            seeded: HashMap::new(),
+            arrivals: 0,
+            departures: 0,
+            stay_scale: stay_scale(),
+            park_odds: if parking_enabled() { [0.75, 0.4] } else { [0.0, 0.0] },
+            managed: Default::default(),
+            boarded: Default::default(),
+        }
+    }
+    fn bay_taken(&self, court: usize, bay: usize) -> bool {
+        self.agents.iter().any(|a| match a.mode {
+            Mode::Parking { court: c, bay: b, .. }
+            | Mode::Parked { court: c, bay: b, .. }
+            | Mode::Leaving { court: c, bay: b, .. } => c == court && b == bay,
+            Mode::Driving => false,
+        })
+    }
+    /// A resident of `home` not already driving or owning a cart in view, or
+    /// a traveller.
+    fn driver_for(&self, home: Option<&str>, seed: u64) -> u64 {
+        match home {
+            Some(home) => (0..crate::people::RESIDENTS)
+                .map(|k| {
+                    crate::people::resident_key(
+                        home,
+                        ((hash(seed ^ 0xd21e) + k as u64) % crate::people::RESIDENTS as u64) as u32,
+                    )
+                })
+                .find(|key| !self.agents.iter().any(|a| a.driver == *key))
+                .unwrap_or(hash(seed ^ 0x7ae1)),
+            None => hash(seed ^ 0x7ae1),
+        }
+    }
+    /// Courts near the eye start with some of their villagers' carts in bays.
+    fn seed_courts(&mut self, eye: DVec3) {
+        self.seeded.retain(|_, centre| centre.distance(eye) < 3600.0);
+        let network = self.network.clone();
+        let mut parked = self.agents.iter().filter(|a| a.parked()).count();
+        for (c, court) in network.courts.iter().enumerate() {
+            if court.centre.distance(eye) > 2500.0 || self.seeded.contains_key(&court.key) {
+                continue;
+            }
+            self.seeded.insert(court.key, court.centre);
+            let Some((r, stop, id)) = departure(&network, c) else {
+                continue;
+            };
+            let court_seed = hash(court.key[0] as u64 ^ hash(court.key[1] as u64 ^ hash(court.key[2] as u64)));
+            for (b, bay) in court.bays.iter().enumerate() {
+                if parked >= MAX_PARKED || self.agents.len() >= MAX_VEHICLES {
+                    return;
+                }
+                if unit(court_seed ^ b as u64) > 0.55 || self.bay_taken(c, b) {
+                    continue;
+                }
+                let seed = self.next_id;
+                self.next_id += 1;
+                let driver = self.driver_for(Some(&court.village), seed);
+                let heading = if unit(seed ^ 5) < 0.5 { bay.tangent } else { -bay.tangent };
+                self.agents.push(Agent {
+                    id: seed,
+                    kind: (hash(driver) % 2) as u32,
+                    route: network.routes[r].clone(),
+                    distance: stop,
+                    previous: stop,
+                    speed: 0.0,
+                    wait: 0.0,
+                    dwell: 0.0,
+                    served: id,
+                    held: None,
+                    fade: 0.0,
+                    travelled: 0.0,
+                    stranded: false,
+                    driver,
+                    dwell_total: 0.0,
+                    mode: Mode::Parked {
+                        court: c,
+                        bay: b,
+                        position: bay.position,
+                        heading,
+                        since: 60.0,
+                        until: self.clock + (5.0 + 295.0 * unit(seed ^ 11)) * self.stay_scale,
+                        recalled: None,
+                        boarding: None,
+                    },
+                    home: Some(court.village.clone()),
+                });
+                parked += 1;
+            }
         }
     }
     fn adopt(&mut self, network: Arc<Network>, eye: DVec3) {
+        let old = self.network.clone();
+        let clock = self.clock;
+        let scale = self.stay_scale;
         self.agents.retain_mut(|a| {
+            if let Mode::Parking { court, bay, .. }
+            | Mode::Parked { court, bay, .. }
+            | Mode::Leaving { court, bay, .. } = a.mode
+            {
+                // Same court, same bays (they are a function of its geometry);
+                // a manoeuvre in progress simply finishes in its bay.
+                let key = old.courts[court].key;
+                let Some(c) = network.courts.iter().position(|c| c.key == key) else {
+                    return false;
+                };
+                let (Some(slot), Some((r, stop, id))) = (network.courts[c].bays.get(bay), departure(&network, c)) else {
+                    return false;
+                };
+                a.route = network.routes[r].clone();
+                a.distance = stop;
+                a.previous = stop;
+                a.served = id;
+                a.held = None;
+                a.stranded = false;
+                a.mode = match a.mode {
+                    Mode::Parked { heading, since, until, recalled, boarding, .. } => Mode::Parked {
+                        court: c, bay, position: slot.position, heading, since, until, recalled, boarding,
+                    },
+                    Mode::Leaving { .. } => Mode::Parked {
+                        court: c, bay, position: slot.position, heading: slot.tangent,
+                        since: 60.0, until: clock, recalled: Some(60.0), boarding: Some(CLIMB_SECONDS),
+                    },
+                    _ => Mode::Parked {
+                        court: c, bay, position: slot.position, heading: slot.tangent,
+                        since: CLIMB_SECONDS, until: clock + 60.0 * scale, recalled: None, boarding: None,
+                    },
+                };
+                return true;
+            }
             let pose = a.pose(1.0);
             if let Some((r, s)) = network.remap(pose) {
                 a.route = network.routes[r].clone();
@@ -924,8 +1303,12 @@ impl Simulation {
         }
         self.agents
             .retain(|a| a.pose(1.0).position.distance_squared(eye) < 3500.0 * 3500.0);
+        if self.park_odds[0] > 0.0 {
+            self.seed_courts(eye);
+        }
         for _ in 0..128 {
-            if self.agents.len() >= self.target_population {
+            let moving = self.agents.iter().filter(|a| !a.parked()).count();
+            if moving >= self.target_population || self.agents.len() >= MAX_VEHICLES {
                 break;
             }
             let seed = self.next_id;
@@ -955,23 +1338,14 @@ impl Simulation {
             {
                 continue;
             }
-            // A resident of the home village not already driving another cart.
-            let driver = match route.home.as_deref() {
-                Some(home) => (0..crate::people::RESIDENTS)
-                    .map(|k| {
-                        crate::people::resident_key(
-                            home,
-                            ((hash(seed ^ 0xd21e) + k as u64) % crate::people::RESIDENTS as u64) as u32,
-                        )
-                    })
-                    .find(|key| !self.agents.iter().any(|a| a.driver == *key))
-                    .unwrap_or(hash(seed ^ 0x7ae1)),
-                None => hash(seed ^ 0x7ae1),
-            };
+            // A resident of the home village not already driving another cart;
+            // their cart is always the same kind.
+            let home = route.home.clone();
+            let driver = self.driver_for(home.as_deref(), seed);
             let route = route.clone();
             self.agents.push(Agent {
                 id: seed,
-                kind: (seed % 2) as u32,
+                kind: (hash(driver) % 2) as u32,
                 route,
                 distance: s,
                 previous: s,
@@ -985,6 +1359,8 @@ impl Simulation {
                 stranded: false,
                 driver,
                 dwell_total: 0.0,
+                mode: Mode::Driving,
+                home,
             });
         }
         if self.agents.len() >= self.target_population.min(4) {
@@ -1006,6 +1382,9 @@ impl Simulation {
         self.clock += STEP;
         for a in &mut self.agents {
             a.previous = a.distance;
+            if let Mode::Parking { s, prev, .. } | Mode::Leaving { s, prev, .. } = &mut a.mode {
+                *prev = *s;
+            }
             a.fade = (a.fade + STEP * 2.0).min(1.0);
             if a.held.is_some_and(|(_, end)| a.distance > end) {
                 a.held = None;
@@ -1020,7 +1399,7 @@ impl Simulation {
             .collect();
         let mut requests = BTreeMap::<Key, Vec<(usize, f64, f64, usize, f64)>>::new();
         for (i, a) in self.agents.iter_mut().enumerate() {
-            if a.held.is_some() || a.stranded {
+            if a.held.is_some() || a.stranded || !matches!(a.mode, Mode::Driving) {
                 continue;
             }
             if let Some((z, enter, exit)) = a.route.next_zone(a.distance) {
@@ -1083,10 +1462,105 @@ impl Simulation {
                 self.agents[i].wait = 0.0;
             }
         }
+        let mut occupied: std::collections::HashSet<(usize, usize)> = self
+            .agents
+            .iter()
+            .filter_map(|a| match a.mode {
+                Mode::Parking { court, bay, .. } | Mode::Parked { court, bay, .. } | Mode::Leaving { court, bay, .. } => {
+                    Some((court, bay))
+                }
+                Mode::Driving => None,
+            })
+            .collect();
         for i in 0..self.agents.len() {
             let a = &mut self.agents[i];
             if a.stranded {
                 a.speed = 0.0;
+                continue;
+            }
+            if !matches!(a.mode, Mode::Driving) {
+                let mut mode = a.mode;
+                let mut next = None;
+                match &mut mode {
+                    Mode::Parking { path, length, s, court, bay, .. } => {
+                        let v = manoeuvre_speed(*s, *length);
+                        *s = (*s + v * STEP).min(*length);
+                        a.speed = v;
+                        a.travelled += v * STEP;
+                        if *s >= *length - 1e-6 {
+                            let end = bezier_pose(path, 1.0);
+                            let visiting = a.home.as_deref() != Some(self.network.courts[*court].village.as_str());
+                            let u = unit(a.id ^ self.arrivals.wrapping_mul(31));
+                            let stay = if visiting { 30.0 + 120.0 * u } else { 60.0 + 240.0 * u };
+                            next = Some(Mode::Parked {
+                                court: *court,
+                                bay: *bay,
+                                position: path[3],
+                                heading: end.forward,
+                                since: 0.0,
+                                until: self.clock + stay * self.stay_scale,
+                                recalled: None,
+                                boarding: None,
+                            });
+                            a.held = None;
+                            a.speed = 0.0;
+                            self.arrivals += 1;
+                            tracing::debug!(target:"planet::traffic",id=a.id,court=%self.network.courts[*court].village,visiting,"cart parked");
+                        }
+                    }
+                    Mode::Parked { court, bay, position, heading, since, until, recalled, boarding } => {
+                        a.speed = 0.0;
+                        *since += STEP;
+                        if recalled.is_none() && self.clock >= *until {
+                            *recalled = Some(0.0);
+                        }
+                        if let Some(r) = recalled {
+                            *r += STEP;
+                            // Back at the cart, or nobody is walking them about
+                            // here (the crowd only lives near the camera).
+                            if boarding.is_none()
+                                && (self.boarded.remove(&a.driver)
+                                    || (*r > 0.5 && !self.managed.contains(&a.driver))
+                                    || *r > 300.0)
+                            {
+                                *boarding = Some(0.0);
+                            }
+                        }
+                        if let Some(b) = boarding {
+                            *b = (*b + STEP).min(CLIMB_SECONDS);
+                            let zone = a.route.next_zone(a.distance - 0.5);
+                            let free = zone.is_none_or(|(z, _, _)| !owners.contains_key(&a.route.zones[z].id));
+                            if *b >= CLIMB_SECONDS && free {
+                                let rejoin = a.distance + 9.0;
+                                let q = a.route.at(rejoin);
+                                let (path, length) = manoeuvre(*position, *heading, q.position, q.forward);
+                                if let Some((z, _, exit)) = zone {
+                                    let id = a.route.zones[z].id;
+                                    owners.insert(id, a.id);
+                                    a.held = Some((id, exit));
+                                }
+                                next = Some(Mode::Leaving { path, length, s: 0.0, prev: 0.0, court: *court, bay: *bay, rejoin });
+                            }
+                        }
+                    }
+                    Mode::Leaving { length, s, rejoin, .. } => {
+                        let v = manoeuvre_speed(*s, *length).max(0.8);
+                        *s = (*s + v * STEP).min(*length);
+                        a.speed = v;
+                        a.travelled += v * STEP;
+                        if *s >= *length - 1e-6 {
+                            a.distance = *rejoin;
+                            a.previous = *rejoin;
+                            next = Some(Mode::Driving);
+                            self.departures += 1;
+                        }
+                    }
+                    Mode::Driving => {}
+                }
+                if let Some(n) = next {
+                    mode = n;
+                }
+                a.mode = mode;
                 continue;
             }
             if a.dwell > 0.0 {
@@ -1136,10 +1610,45 @@ impl Simulation {
                 if s - a.distance < 0.03 && a.speed < 0.5 {
                     a.distance = s;
                     a.speed = 0.0;
-                    a.dwell = 8.0 + unit(a.id ^ id as u64) * 12.0;
-                    a.dwell_total = a.dwell;
                     a.served = id;
                     self.trips += 1;
+                    // Park in a free bay (usually at home, sometimes visiting),
+                    // or stop a moment and stretch one's legs.
+                    let court = a
+                        .route
+                        .stop_courts
+                        .get(id.rem_euclid(a.route.stops.len().max(1) as i64) as usize)
+                        .copied()
+                        .flatten();
+                    let bay = court.filter(|_| occupied.len() < MAX_PARKED).and_then(|c| {
+                        let home = a.home.as_deref() == Some(self.network.courts[c].village.as_str());
+                        let roll = unit(a.id ^ hash(id as u64) ^ self.trips);
+                        if roll >= self.park_odds[usize::from(!home)] {
+                            return None;
+                        }
+                        let court = &self.network.courts[c];
+                        let start = (hash(a.id ^ self.trips) % court.bays.len().max(1) as u64) as usize;
+                        (0..court.bays.len())
+                            .map(|k| (start + k) % court.bays.len())
+                            .find(|&b| !occupied.contains(&(c, b)))
+                            .map(|b| (c, b))
+                    });
+                    if let Some((c, b)) = bay {
+                        let at = a.route.at(s);
+                        let target = self.network.courts[c].bays[b];
+                        // Drive in facing on round the ring, the way it is going.
+                        let tangent = if target.tangent.dot(target.position - at.position) >= 0.0 {
+                            target.tangent
+                        } else {
+                            -target.tangent
+                        };
+                        let (path, length) = manoeuvre(at.position, at.forward, target.position, tangent);
+                        a.mode = Mode::Parking { path, length, s: 0.0, prev: 0.0, court: c, bay: b };
+                        occupied.insert((c, b));
+                    } else {
+                        a.dwell = 8.0 + unit(a.id ^ id as u64) * 12.0;
+                        a.dwell_total = a.dwell;
+                    }
                     tracing::debug!(target:"planet::traffic",id=a.id,source=%a.route.source,destination=%a.route.destination,"traffic arrived at village court");
                 }
             }
@@ -1153,6 +1662,32 @@ impl Simulation {
                 || a.distance < a.route.length - 0.03
                 || a.pose(1.0).position.distance(eye) < 1200.0
         });
+    }
+    /// Carts standing in bays with their drivers away from them, and the
+    /// drivers who are on the road (or on their benches) and so not walking.
+    pub fn life(&self) -> (Vec<ParkedCart>, std::collections::HashSet<u64>) {
+        let mut parked = Vec::new();
+        let mut away = std::collections::HashSet::new();
+        for a in &self.agents {
+            match (a.mode, a.seat()) {
+                (Mode::Parked { court, position, heading, since, recalled, .. }, Seat::Out) => {
+                    let up = position.normalize();
+                    let side = heading.cross(up).normalize();
+                    parked.push(ParkedCart {
+                        driver: a.driver,
+                        court: self.network.courts[court].village.clone(),
+                        home: a.home.clone(),
+                        door: position + side * DOOR_SIDE.x + heading * DOOR_SIDE.y,
+                        since: since - CLIMB_SECONDS,
+                        recalled: recalled.is_some(),
+                    });
+                }
+                _ => {
+                    away.insert(a.driver);
+                }
+            }
+        }
+        (parked, away)
     }
     pub fn blocks_motion(&self, from: DVec3, to: DVec3, heading: DVec3) -> bool {
         self.agents.iter().any(|a| {
@@ -1390,6 +1925,49 @@ impl Controller {
             }
         }
     }
+    /// Carts standing in bays with their drivers away from them, and the
+    /// drivers who are on the road (or on their benches) and so not walking.
+    pub fn life(&self) -> (Vec<ParkedCart>, std::collections::HashSet<u64>) {
+        self.simulation.as_ref().map(|s| s.life()).unwrap_or_default()
+    }
+    /// The crowd's side: who it is walking about, and who reached their cart.
+    pub fn set_crowd(&mut self, managed: std::collections::HashSet<u64>, boarded: &[u64]) {
+        if let Some(sim) = &mut self.simulation {
+            sim.managed = managed;
+            sim.boarded.extend(boarded.iter().copied());
+            // Nobody waits for a boarding that is no longer pending.
+            let waiting: std::collections::HashSet<u64> = sim
+                .agents
+                .iter()
+                .filter(|a| matches!(a.mode, Mode::Parked { recalled: Some(_), boarding: None, .. }))
+                .map(|a| a.driver)
+                .collect();
+            sim.boarded.retain(|d| waiting.contains(d));
+        }
+    }
+    /// Carts parked so far, and carts that have pulled out of a bay.
+    pub fn parking_counts(&self) -> (u64, u64) {
+        self.simulation.as_ref().map_or((0, 0), |s| (s.arrivals, s.departures))
+    }
+    /// A raised view over the busiest court near the eye: the bays, the
+    /// turning circle and the road coming in.
+    pub fn court_pose(&self, eye: DVec3) -> Option<(DVec3, DVec3)> {
+        let sim = self.simulation.as_ref()?;
+        let courts = &sim.network.courts;
+        let c = match self.followed.get().map(|c| c as usize).filter(|&c| c < courts.len()) {
+            Some(c) => c,
+            None => {
+                let c = (0..courts.len())
+                    .filter(|&c| courts[c].centre.distance(eye) < 2500.0 && courts[c].bays.len() >= 4)
+                    .min_by(|&x, &y| courts[x].centre.distance(eye).total_cmp(&courts[y].centre.distance(eye)))?;
+                self.followed.set(Some(c as u64));
+                c
+            }
+        };
+        let court = &courts[c];
+        let up = court.centre.normalize();
+        Some((court.centre - court.forward * 27.0 + up * 12.0, court.centre + court.forward * 3.0))
+    }
     pub fn matches_field(&self, field: &Arc<Field>) -> bool {
         self.simulation
             .as_ref()
@@ -1493,6 +2071,8 @@ mod tests {
             stranded: false,
             driver: id,
             dwell_total: 0.0,
+            mode: Mode::Driving,
+            home: None,
         }
     }
     #[test]
@@ -1679,6 +2259,7 @@ mod tests {
         let stop = route.stops[0];
         let eye = route.at(stop).position;
         let mut sim = Simulation::new(network);
+        sim.park_odds = [0.0, 0.0];
         sim.agents = vec![agent(route, 1, stop - 1.0, 1.0)];
         let mut old = sim.agents[0].distance;
         let mut parked = false;
@@ -1694,6 +2275,66 @@ mod tests {
         assert!(parked);
         assert!(sim.trips > 0);
         assert!(sim.agents[0].distance > stop + 5.0);
+    }
+    #[test]
+    fn carts_park_in_a_free_bay_wait_for_their_driver_and_pull_out_again() {
+        let network = route_network();
+        assert!(network.courts.iter().all(|c| c.bays.len() >= 6), "{:?}", network.courts.iter().map(|c| c.bays.len()).collect::<Vec<_>>());
+        let route = network.routes[0].clone();
+        let stop = route.stops[0];
+        assert!(route.stop_courts[0].is_some());
+        // Bays clear of the turning circle and of each other, on the floor.
+        for court in &network.courts {
+            for (i, a) in court.bays.iter().enumerate() {
+                let r = (a.position - court.centre).length();
+                assert!((13.9..14.1).contains(&r), "{r}");
+                for b in &court.bays[i + 1..] {
+                    assert!(a.position.distance(b.position) > 5.0);
+                }
+            }
+        }
+        let eye = route.at(stop).position;
+        for managed in [true, false] {
+            let mut sim = Simulation::new(network.clone());
+            sim.park_odds = [1.0, 1.0];
+            sim.stay_scale = 0.02;
+            sim.agents = vec![agent(route.clone(), 7, stop - 1.0, 1.0)];
+            let driver = sim.agents[0].driver;
+            let mut last = sim.agents[0].pose(1.0).position;
+            let (mut saw_parked, mut saw_out, mut waited) = (false, false, 0);
+            for _ in 0..3000 {
+                sim.tick(None, eye);
+                let a = &sim.agents[0];
+                for alpha in [0.5, 1.0] {
+                    let p = a.pose(alpha).position;
+                    assert!(p.distance(last) < 0.2, "jump {}", p.distance(last));
+                    last = p;
+                }
+                let (parked, away) = sim.life();
+                if let Some(cart) = parked.first() {
+                    saw_out = true;
+                    assert!(!away.contains(&driver));
+                    assert!(cart.door.distance(a.pose(1.0).position) < 2.0);
+                    if managed {
+                        sim.managed = [driver].into();
+                        if cart.recalled {
+                            // Waits for the walking driver, then they arrive.
+                            waited += 1;
+                            if waited > 90 {
+                                sim.boarded.insert(driver);
+                            }
+                        }
+                    }
+                }
+                saw_parked |= a.parked();
+                if sim.departures > 0 && matches!(a.mode, Mode::Driving) && a.distance > stop + 12.0 {
+                    break;
+                }
+            }
+            assert!(saw_parked && saw_out && sim.arrivals == 1 && sim.departures == 1, "{managed}");
+            assert_eq!(waited > 90, managed);
+            assert!(sim.agents[0].distance > stop + 12.0);
+        }
     }
     fn crossing_route(frame: crate::road_network_field::Frame, east: bool) -> Arc<Route> {
         let direction = if east { frame.across } else { frame.forward };
@@ -1725,6 +2366,7 @@ mod tests {
             source: "START".into(),
             destination: "DESTINATION".into(),
             home: None,
+            stop_courts: Vec::new(),
         })
     }
     #[test]
